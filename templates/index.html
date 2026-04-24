@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>XSP PUT Monitor</title>
+    <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
+    <style>
+        :root {
+            --sidebar-width: 280px;
+            --bg-dark: #0d1117;
+            --card-bg: #161b22;
+            --border: #30364d;
+            --blue: #58a6ff;
+            --green: #7ee787;
+            --red: #ff7b72;
+        }
+
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; 
+            background-color: var(--bg-dark); 
+            color: #c9d1d9; 
+            margin: 0; 
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* SIDEBAR STYLES */
+        #sidebar { 
+            width: var(--sidebar-width);
+            background-color: var(--card-bg);
+            border-right: 1px solid var(--border);
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 100;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #sidebar.collapsed {
+            transform: translateX(-100%);
+        }
+
+        /* MAIN CONTENT AREA */
+        #main-content { 
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            padding: 20px;
+            transition: margin-left 0.3s ease;
+            box-sizing: border-box;
+        }
+
+        #main-content.expanded {
+            margin-left: 0;
+        }
+
+        /* FLOATING TOGGLE BUTTON */
+        #toggle-btn {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            z-index: 200;
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid var(--border);
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+
+        /* HEADER SECTION */
+        #header { 
+            display: flex; 
+            gap: 40px; 
+            background: var(--card-bg); 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin-bottom: 20px; 
+            border: 1px solid var(--border);
+        }
+
+        .stat { display: flex; flex-direction: column; }
+        .label { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-bottom: 5px; }
+        .val { font-size: 24px; font-weight: bold; color: var(--blue); }
+
+        /* GRID AND CARDS */
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); 
+            gap: 20px; 
+        }
+
+        .card { 
+            background: var(--card-bg); 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid var(--border); 
+        }
+
+        .card h3 { margin: 0 0 12px 0; font-size: 16px; color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+
+        /* TABLE STYLES */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; color: #8b949e; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+        td { padding: 8px 4px; border-bottom: 1px solid #21262d; }
+
+        /* INPUTS */
+        .input-group { margin-bottom: 15px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-dark); }
+        .input-group label { display: block; font-size: 10px; color: var(--blue); margin-bottom: 5px; }
+        input { 
+            width: 100%; 
+            background: #161b22; 
+            border: 1px solid var(--border); 
+            color: white; 
+            padding: 6px; 
+            margin-bottom: 5px; 
+            font-size: 12px; 
+            border-radius: 4px; 
+            box-sizing: border-box;
+        }
+        .sync-btn { 
+            background: #238636; 
+            color: white; 
+            border: none; 
+            padding: 12px; 
+            width: 100%; 
+            cursor: pointer; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            margin-top: 10px;
+        }
+
+        .star { color: #f1e05a; font-weight: bold; margin-right: 4px; }
+        .update-flash { animation: flash 0.5s ease-out; }
+        @keyframes flash { from { background: rgba(56, 139, 253, 0.2); } to { background: transparent; } }
+    </style>
+</head>
+<body>
+
+    <button id="toggle-btn" onclick="toggleSidebar()">⬅️ Hide Sidebar</button>
+
+    <div id="sidebar">
+        <h2 style="font-size: 18px; margin-top: 0;">⭐ Watchlist</h2>
+        <div id="watchlist-inputs">
+            <script>
+                for(let i=1; i<=5; i++) {
+                    document.write(`
+                        <div class="input-group">
+                            <label>GROUP ${i}</label>
+                            <input type="text" id="date-${i}" placeholder="YYMMDD (e.g. 260421)">
+                            <input type="number" id="short-${i}" placeholder="Short Strike">
+                            <input type="number" id="long-${i}" placeholder="Long Strike">
+                        </div>
+                    `);
+                }
+            </script>
+        </div>
+        <button class="sync-btn" onclick="saveWatchlist()">💾 Sync Devices</button>
+    </div>
+
+    <div id="main-content">
+        <div id="header">
+            <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
+            <div class="stat"><span class="label">93% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
+            <div class="stat"><span class="label">98% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
+        </div>
+        <div id="container" class="grid"></div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        function toggleSidebar() {
+            const sb = document.getElementById('sidebar');
+            const mc = document.getElementById('main-content');
+            const btn = document.getElementById('toggle-btn');
+            
+            sb.classList.toggle('collapsed');
+            mc.classList.toggle('expanded');
+            btn.innerText = sb.classList.contains('collapsed') ? '➡️ Show Sidebar' : '⬅️ Hide Sidebar';
+        }
+
+        function saveWatchlist() {
+            const watchlist = [];
+            for(let i=1; i<=5; i++) {
+                watchlist.push({
+                    date: document.getElementById(`date-${i}`).value,
+                    short: document.getElementById(`short-${i}`).value,
+                    long: document.getElementById(`long-${i}`).value
+                });
+            }
+            socket.emit('update_watchlist', watchlist);
+        }
+
+        socket.on('sync_watchlist', (watchlist) => {
+            watchlist.forEach((group, index) => {
+                const i = index + 1;
+                if(i <= 5) {
+                    document.getElementById(`date-${i}`).value = group.date || '';
+                    document.getElementById(`short-${i}`).value = group.short || '';
+                    document.getElementById(`long-${i}`).value = group.long || '';
+                }
+            });
+        });
+
+        socket.on('index_update', d => {
+            document.getElementById('p-idx').innerText = d.price.toFixed(2);
+            document.getElementById('p-floor').innerText = d.floor.toFixed(2);
+            document.getElementById('p-ceil').innerText = d.ceiling.toFixed(2);
+        });
+
+        socket.on('option_update', d => {
+            const container = document.getElementById('container');
+            const cardId = `c-${d.expiry}`;
+            let card = document.getElementById(cardId);
+
+            if (!card) {
+                const dateObj = new Date(d.expiry.replace(/-/g, '/'));
+                const weekday = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+                
+                card = document.createElement('div');
+                card.id = cardId; card.className = 'card';
+                card.dataset.expiry = d.expiry;
+                card.innerHTML = `<h3>${d.expiry} (${weekday})</h3>
+                    <table><thead><tr><th>Strike</th><th style="color:var(--red)">Bid</th><th style="color:var(--green)">Ask</th><th>Mid</th><th>Δ</th></tr></thead>
+                    <tbody id="b-${d.expiry}"></tbody></table>`;
+                container.appendChild(card);
+                sortElements(container, 'expiry', true);
+            }
+
+            const body = document.getElementById(`b-${d.expiry}`);
+            const rowId = `r-${d.symbol.replace(/\./g,'_')}`;
+            let row = document.getElementById(rowId);
+            
+            if (!row) {
+                row = document.createElement('tr');
+                row.id = rowId; row.dataset.strike = d.strike;
+                body.appendChild(row);
+            }
+
+            const star = d.is_watched ? '<span class="star">★</span>' : '';
+            row.innerHTML = `
+                <td>${star}<b>${d.strike.toFixed(1)}</b></td>
+                <td style="color: var(--red)">${d.bid.toFixed(2)}</td>
+                <td style="color: var(--green)">${d.ask.toFixed(2)}</td>
+                <td style="color: var(--blue)">${d.mid.toFixed(2)}</td>
+                <td>${d.delta.toFixed(3)}</td>
+            `;
+            
+            row.classList.add('update-flash');
+            setTimeout(() => row.classList.remove('update-flash'), 500);
+            sortElements(body, 'strike', false);
+        });
+
+        // 监听有效日期列表，清理过期的卡片
+        socket.on('active_dates', (validDates) => {
+            const container = document.getElementById('container');
+            const cards = Array.from(container.getElementsByClassName('card'));
+
+            cards.forEach(card => {
+                const cardExpiry = card.dataset.expiry; // 获取卡片的日期数据
+                // 如果当前显示的卡片日期不在有效列表中，直接删掉
+                if (!validDates.includes(cardExpiry)) {
+                    card.remove();
+                }
+            });
+        });
+
+        function sortElements(parent, key, isStr) {
+            const items = Array.from(parent.children);
+            items.sort((a,b) => isStr ? a.dataset[key].localeCompare(b.dataset[key]) : parseFloat(a.dataset[key]) - parseFloat(b.dataset[key]));
+            items.forEach(it => parent.appendChild(it));
+        }
+    </script>
+</body>
+</html>
