@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>XSP PUT Monitor</title>
+    <title>XSP Options Monitor</title>
     <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
     <style>
         :root {
@@ -166,8 +166,8 @@
     <div id="main-content">
         <div id="header">
             <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
-            <div class="stat"><span class="label">93% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
-            <div class="stat"><span class="label">98% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
+            <div class="stat"><span class="label">90% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
+            <div class="stat"><span class="label">105% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
         </div>
         <div id="container" class="grid"></div>
     </div>
@@ -243,13 +243,15 @@
                 body.appendChild(row);
             }
 
-            const star = d.is_watched ? '<span class="star">★</span>' : '';
             row.innerHTML = `
-                <td>${star}<b>${d.strike.toFixed(1)}</b></td>
+                <td>
+                    ${d.is_watched ? '<span class="star">★</span>' : ''}
+                    <b style="color: ${d.opt_type === 'C' ? 'var(--green)' : 'white'}">${d.strike.toFixed(1)}${d.opt_type}</b>
+                </td>
                 <td style="color: var(--red)">${d.bid.toFixed(2)}</td>
                 <td style="color: var(--green)">${d.ask.toFixed(2)}</td>
                 <td style="color: var(--blue)">${d.mid.toFixed(2)}</td>
-                <td>${d.delta.toFixed(3)}</td>
+                <td style="color: ${d.delta < 0 ? 'var(--red)' : 'var(--green)'}">${d.delta.toFixed(3)}</td>
             `;
             
             row.classList.add('update-flash');
