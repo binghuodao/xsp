@@ -88,7 +88,6 @@ def format_row(row):
         'symbol': symbol, 'strike': strike, 'expiry': expiry, 'opt_type': opt_type,
         'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'is_watched': is_watched
     }
-    print (f"✅ Parsed {symbol}: Strike={strike}, Expiry={expiry}, Type={opt_type}, Delta={delta:.2f}, Watched={is_watched}")
     return result
     
 def generate_xsp_symbols(current_price, floor_price, ceiling_price):
@@ -133,15 +132,20 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
     c_end = int((ceiling_price // 5) * 5)
 
     for ds in dates:
+        # get option chain from yfinance
+        ticker = yf.Ticker("^XSP")
+        opt_chain = ticker.option_chain(datetime.strptime(date_str, "%y%m%d").strftime("%Y-%m-%d"))
         # Generate Puts (ensure start < end)
         if p_start <= p_end:
             for strike in range(p_start, p_end + 5, 5):
-                symbols.append(f"US.XSP{ds}P{int(strike * 1000)}")
+                if strike in opt_chain.puts['strike'].values:
+                    symbols.append(f"US.XSP{ds}P{int(strike * 1000)}")
         
         # Generate Calls (ensure start < end)
         if c_start <= c_end:
             for strike in range(c_start, c_end + 5, 5):
-                symbols.append(f"US.XSP{ds}C{int(strike * 1000)}")
+                if strike in opt_chain.calls['strike'].values:
+                    symbols.append(f"US.XSP{ds}C{int(strike * 1000)}")
         
         if len(symbols) >= 399: break
     
