@@ -131,10 +131,10 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
     c_start = int((current_price // 5) * 5) + 5
     c_end = int((ceiling_price // 5) * 5)
 
+    ticker = yf.Ticker("^XSP")
     for ds in dates:
         # get option chain from yfinance
-        ticker = yf.Ticker("^XSP")
-        opt_chain = ticker.option_chain(datetime.strptime(date_str, "%y%m%d").strftime("%Y-%m-%d"))
+        opt_chain = ticker.option_chain(datetime.strptime(ds, "%y%m%d").strftime("%Y-%m-%d"))
         # Generate Puts (ensure start < end)
         if p_start <= p_end:
             for strike in range(p_start, p_end + 5, 5):
