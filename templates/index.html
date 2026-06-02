@@ -243,15 +243,26 @@
                 body.appendChild(row);
             }
 
+            let bidHtml = `<td style="color: var(--red)">${d.bid.toFixed(2)}</td>`;
+            let askHtml = `<td style="color: var(--green)">${d.ask.toFixed(2)}</td>`;
+
+            if (d.is_watched && d.ob_bid && d.ob_ask) {
+                let bidStr = d.ob_bid.map(b => `<div style="font-size: 11px; line-height: 1.4;">${b[0].toFixed(2)} <span style="font-size: 9px; color: #8b949e">(${b[1]})</span></div>`).join('');
+                let askStr = d.ob_ask.map(a => `<div style="font-size: 11px; line-height: 1.4;">${a[0].toFixed(2)} <span style="font-size: 9px; color: #8b949e">(${a[1]})</span></div>`).join('');
+                
+                bidHtml = `<td style="color: var(--red); vertical-align: middle;">${bidStr}</td>`;
+                askHtml = `<td style="color: var(--green); vertical-align: middle;">${askStr}</td>`;
+            }
+
             row.innerHTML = `
-                <td>
+                <td style="vertical-align: middle;">
                     ${d.is_watched ? '<span class="star">★</span>' : ''}
                     <b style="color: ${d.opt_type === 'C' ? 'var(--green)' : 'white'}">${d.strike.toFixed(1)}${d.opt_type}</b>
                 </td>
-                <td style="color: var(--red)">${d.bid.toFixed(2)}</td>
-                <td style="color: var(--green)">${d.ask.toFixed(2)}</td>
-                <td style="color: var(--blue)">${d.mid.toFixed(2)}</td>
-                <td style="color: ${d.delta < 0 ? 'var(--red)' : 'var(--green)'}">${d.delta.toFixed(3)}</td>
+                ${bidHtml}
+                ${askHtml}
+                <td style="color: var(--blue); vertical-align: middle;">${d.mid.toFixed(2)}</td>
+                <td style="color: ${d.delta < 0 ? 'var(--red)' : 'var(--green)'}; vertical-align: middle;">${d.delta.toFixed(3)}</td>
             `;
             
             row.classList.add('update-flash');

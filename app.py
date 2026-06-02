@@ -7,14 +7,28 @@ from flask import Flask, render_template
 from flask_socketio import SocketIO
 from moomoo import *
 import yfinance as yf
+import argparse
+import os
+import json
 
-# --- CONFIGURATION ---
+# --- COMMAND LINE ARGS & CONFIGURATION ---
+parser = argparse.ArgumentParser(description="XSP Options Monitor")
+parser.add_argument("--floor", type=float, default=0.9, help="Floor percentage (default: 0.9)")
+parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
+parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
+parser.add_argument("--watchlist-size", type=int, default=5, help="Watchlist size (default: 5)")
+parser.add_argument("--option-days", type=int, default=7, help="Option days (default: 7)")
+args, unknown = parser.parse_known_args()
+
 OPEND_ADDR = '127.0.0.1'
 OPEND_PORT = 11111
-FLOOR_PERCENT = 0.90  
-CEILING_PERCENT = 1.05
+FLOOR_PERCENT = args.floor
+CEILING_PERCENT = args.ceiling
 REF_SYMBOL = 'US.SPY'  
-REFRESH_INTERVAL = 5
+REFRESH_INTERVAL = args.refresh
+WATCHLIST_SIZE = args.watchlist_size
+OPTION_DAYS = args.option_days
+WATCHLIST_FILE = 'watchlist.json'
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -24,7 +38,14 @@ latest_data = {
     "index": {"price": 0, "floor": 0, "ceiling": 0},
     "options": {}
 }
-user_watchlist = [] # List of {'date': '260421', 'short': '600', 'long': '595'}
+
+user_watchlist = []
+if os.path.exists(WATCHLIST_FILE):
+    try:
+        with open(WATCHLIST_FILE, 'r') as f:
+            user_watchlist = json.load(f)
+    except Exception as e:
+        print(f"⚠️ Failed to load watchlist: {e}")
 
 
 def get_xsp_anchor_price():
@@ -111,7 +132,7 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
     
     dates = []
     check_date = now
-    while len(dates) < 14:
+    while len(dates) < OPTION_DAYS:
         # Step 1: Define date_str FIRST
         date_str = check_date.strftime('%y%m%d')
         
@@ -193,6 +214,7 @@ def start_moomoo():
                 ret, data = quote_ctx.get_market_snapshot(all_symbols)
                 
                 if ret == RET_OK and not data.empty:
+                    updated_symbols = []
                     for _, row in data.iterrows():
                         # A. 处理指数/基准
                         if row['code'] == REF_SYMBOL:
@@ -206,18 +228,48 @@ def start_moomoo():
                         
                         # B. 处理期权数据
                         else:
+                            item = format_row(row)
+                            if not item:
+                                continue
                             delta = float(row.get('option_delta') or 0.0)
-                            # NEW FILTER: Only process and emit if Delta is -0.15 or more (e.g., -0.10)
-                            if delta >= -0.15 and delta <= 0.15:
-                                item = format_row(row)
+                            # Bypass delta filter if option is watched
+                            if (delta >= -0.15 and delta <= 0.15) or item['is_watched']:
                                 latest_data["options"][row['code']] = item
-                                socketio.emit('option_update', item)
+                                updated_symbols.append(row['code'])
                             else:
                                 # Optional: If it was in our cache but no longer qualifies, remove it
                                 if row['code'] in latest_data["options"]:
                                     del latest_data["options"][row['code']]
                                     # Tell frontend to remove the row
                                     socketio.emit('remove_row', {'symbol': row['code'], 'expiry': row.get('strike_time')})
+                    
+                    # Manage Order Book Subscriptions for watched options
+                    watched_symbols = {sym for sym, item in latest_data["options"].items() if item['is_watched']}
+                    global current_subscribed_ob
+                    if 'current_subscribed_ob' not in globals():
+                        current_subscribed_ob = set()
+                    
+                    new_to_subscribe = watched_symbols - current_subscribed_ob
+                    to_unsubscribe = current_subscribed_ob - watched_symbols
+                    
+                    if new_to_subscribe:
+                        quote_ctx.subscribe(list(new_to_subscribe), [SubType.ORDER_BOOK], subscribe_push=False)
+                    if to_unsubscribe:
+                        quote_ctx.unsubscribe(list(to_unsubscribe), [SubType.ORDER_BOOK])
+                        
+                    current_subscribed_ob = watched_symbols
+                    
+                    # Fetch order book for watched symbols
+                    for sym in watched_symbols:
+                        ret_ob, ob_data = quote_ctx.get_order_book(sym, num=3)
+                        if ret_ob == RET_OK:
+                            latest_data["options"][sym]['ob_ask'] = ob_data['Ask']
+                            latest_data["options"][sym]['ob_bid'] = ob_data['Bid']
+                    
+                    # Emit updates to frontend
+                    for sym in updated_symbols:
+                        socketio.emit('option_update', latest_data["options"][sym])
+                        
                 else:
                     print(f"⚠️ API 请求未返回数据: {data}")
 
@@ -230,12 +282,17 @@ def start_moomoo():
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', watchlist_size=WATCHLIST_SIZE)
 
 @socketio.on('update_watchlist')
 def handle_watchlist(data):
     global user_watchlist
     user_watchlist = data
+    try:
+        with open(WATCHLIST_FILE, 'w') as f:
+            json.dump(user_watchlist, f)
+    except Exception as e:
+        print(f"⚠️ Failed to save watchlist: {e}")
     # 核心：广播给所有连接的客户端，触发它们的回写逻辑
     socketio.emit('sync_watchlist', user_watchlist)
 
