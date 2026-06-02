@@ -89,6 +89,9 @@ def format_row(row):
     last = float(row.get('last_price') or 0.0)
     mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
     delta = float(row.get('option_delta') or 0.0)
+    gamma = float(row.get('option_gamma') or 0.0)
+    theta = float(row.get('option_theta') or 0.0)
+    vega = float(row.get('option_vega') or 0.0)
 
     # 过滤逻辑 (Put 看负 Delta, Call 看正 Delta)
     # 如果刚开盘 Delta 还没算出来，可以先注释掉这两行
@@ -99,15 +102,20 @@ def format_row(row):
     is_watched = False
     for group in user_watchlist:
         if group.get('date') == d_str:
-            # 匹配短腿或长腿行权价
-            s_price = str(int(float(group.get('short', 0))))
-            l_price = str(int(float(group.get('long', 0))))
-            if s_price in strike_raw or l_price in strike_raw:
-                is_watched = True
-                break
+            try:
+                # 匹配短腿或长腿行权价
+                short_val = group.get('short')
+                long_val = group.get('long')
+                s_price = str(int(float(short_val))) if short_val else ""
+                l_price = str(int(float(long_val))) if long_val else ""
+                if (s_price and s_price in strike_raw) or (l_price and l_price in strike_raw):
+                    is_watched = True
+                    break
+            except Exception:
+                continue
     result = {
         'symbol': symbol, 'strike': strike, 'expiry': expiry, 'opt_type': opt_type,
-        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'is_watched': is_watched
+        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'is_watched': is_watched
     }
     return result
     
@@ -191,6 +199,7 @@ def start_moomoo():
 
                 # 1. 动态确定本次需要拉取的代码列表
                 current_price = latest_data["index"]["price"]
+                valid_dates = []
                 if current_price <= 0:
                     # 第一次运行或没拿到价格：只请求 SPY
                     all_symbols = [REF_SYMBOL]
@@ -201,14 +210,40 @@ def start_moomoo():
                     opt_symbols = generate_xsp_symbols(current_price, floor, ceiling)
                     
                     # 提取当前所有有效的到期日 (YYYY-MM-DD 格式)
-                    # 逻辑：从 symbols 列表推导
                     valid_dates = sorted(list(set([
                         f"20{s[6:8]}-{s[8:10]}-{s[10:12]}" for s in opt_symbols
                     ])))
-                    # 通知前端当前的有效日期
-                    socketio.emit('active_dates', valid_dates)
-
                     all_symbols = opt_symbols
+
+                # 注入 Watchlist 中的两腿，确保一定能请求到快照数据
+                for group in user_watchlist:
+                    ds = group.get('date')
+                    s_strike = group.get('short')
+                    l_strike = group.get('long')
+                    if ds and s_strike and l_strike:
+                        try:
+                            s_val = float(s_strike)
+                            l_val = float(l_strike)
+                            opt_type = 'P' if s_val > l_val else 'C'
+                            
+                            s_sym = f"US.XSP{ds}{opt_type}{int(s_val * 1000)}"
+                            l_sym = f"US.XSP{ds}{opt_type}{int(l_val * 1000)}"
+                            
+                            if s_sym not in all_symbols:
+                                all_symbols.append(s_sym)
+                            if l_sym not in all_symbols:
+                                all_symbols.append(l_sym)
+                                
+                            # 同时也把对应的到期日加入 valid_dates，防止被前端过滤掉卡片
+                            expiry_date = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
+                            if expiry_date not in valid_dates:
+                                valid_dates.append(expiry_date)
+                        except Exception as e:
+                            print(f"⚠️ 解析 Watchlist 代码异常: {e}")
+
+                if current_price > 0:
+                    socketio.emit('active_dates', sorted(valid_dates))
+
                 print(f"🔍 Requesting snapshot for {len(all_symbols)} symbols (Index Price: {current_price:.2f})...")
                 # 2. 发起合并快照请求
                 ret, data = quote_ctx.get_market_snapshot(all_symbols)
@@ -269,6 +304,88 @@ def start_moomoo():
                     # Emit updates to frontend
                     for sym in updated_symbols:
                         socketio.emit('option_update', latest_data["options"][sym])
+
+                    # 3. 计算和广播 Watchlist 中的差价组合 (Spreads) 数据
+                    for idx, group in enumerate(user_watchlist):
+                        ds = group.get('date')
+                        s_strike = group.get('short')
+                        l_strike = group.get('long')
+                        entry_val = group.get('entry')
+                        
+                        if ds and s_strike and l_strike:
+                            try:
+                                s_val = float(s_strike)
+                                l_val = float(l_strike)
+                                opt_type = 'P' if s_val > l_val else 'C'
+                                
+                                s_sym = f"US.XSP{ds}{opt_type}{int(s_val * 1000)}"
+                                l_sym = f"US.XSP{ds}{opt_type}{int(l_val * 1000)}"
+                                
+                                if s_sym in latest_data["options"] and l_sym in latest_data["options"]:
+                                    short_opt = latest_data["options"][s_sym]
+                                    long_opt = latest_data["options"][l_sym]
+                                    
+                                    # Spread pricing (Bid / Ask / Mid)
+                                    spread_bid = short_opt['bid'] - long_opt['ask']
+                                    spread_ask = short_opt['ask'] - long_opt['bid']
+                                    spread_mid = short_opt['mid'] - long_opt['mid']
+                                    
+                                    # Aggregated Greeks
+                                    spread_delta = short_opt['delta'] - long_opt['delta']
+                                    spread_gamma = short_opt.get('gamma', 0.0) - long_opt.get('gamma', 0.0)
+                                    spread_theta = short_opt.get('theta', 0.0) - long_opt.get('theta', 0.0)
+                                    spread_vega = short_opt.get('vega', 0.0) - long_opt.get('vega', 0.0)
+                                    
+                                    # P&L tracking
+                                    pnl = None
+                                    pnl_percent = None
+                                    entry_credit = None
+                                    if entry_val and str(entry_val).strip() != '':
+                                        entry_credit = float(entry_val)
+                                        # Realized P&L = Entry Credit - current cost to close (spread_ask)
+                                        pnl = entry_credit - spread_ask
+                                        pnl_percent = (pnl / entry_credit) * 100 if entry_credit > 0 else 0.0
+                                    
+                                    # Safety metrics (distance in % to short leg / breakeven)
+                                    dist_to_short = 0.0
+                                    dist_to_be = 0.0
+                                    
+                                    if current_price > 0:
+                                        if opt_type == 'P':
+                                            dist_to_short = (current_price - s_val) / current_price * 100
+                                            if entry_credit is not None:
+                                                be_price = s_val - entry_credit
+                                                dist_to_be = (current_price - be_price) / current_price * 100
+                                        else:
+                                            dist_to_short = (s_val - current_price) / current_price * 100
+                                            if entry_credit is not None:
+                                                be_price = s_val + entry_credit
+                                                dist_to_be = (be_price - current_price) / current_price * 100
+                                    
+                                    spread_info = {
+                                        "group_index": idx + 1,
+                                        "date": ds,
+                                        "expiry": f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}",
+                                        "opt_type": opt_type,
+                                        "short": s_val,
+                                        "long": l_val,
+                                        "width": abs(s_val - l_val),
+                                        "entry": entry_credit,
+                                        "bid": spread_bid,
+                                        "ask": spread_ask,
+                                        "mid": spread_mid,
+                                        "delta": spread_delta,
+                                        "gamma": spread_gamma,
+                                        "theta": spread_theta,
+                                        "vega": spread_vega,
+                                        "pnl": pnl,
+                                        "pnl_percent": pnl_percent,
+                                        "dist_to_short": dist_to_short,
+                                        "dist_to_be": dist_to_be
+                                    }
+                                    socketio.emit('spread_update', spread_info)
+                            except Exception as ex:
+                                print(f"⚠️ 计算 Group {idx+1} 差价异常: {ex}")
                         
                 else:
                     print(f"⚠️ API 请求未返回数据: {data}")

@@ -138,6 +138,198 @@
         .star { color: #f1e05a; font-weight: bold; margin-right: 4px; }
         .update-flash { animation: flash 0.5s ease-out; }
         @keyframes flash { from { background: rgba(56, 139, 253, 0.2); } to { background: transparent; } }
+
+        /* SPREAD CARD SPECIFIC STYLES */
+        .spread-card {
+            background: linear-gradient(135deg, #1f242d 0%, #161b22 100%);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+        }
+
+        .spread-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: var(--blue);
+        }
+
+        .spread-card.put-spread::before {
+            background: #f0883e; /* Orange for put spreads */
+        }
+
+        .spread-card.call-spread::before {
+            background: var(--green); /* Green for call spreads */
+        }
+
+        .spread-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+            border-color: #444c66;
+        }
+
+        .spread-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 10px;
+        }
+
+        .spread-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: bold;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .spread-badge {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .badge-put { background: rgba(240, 136, 62, 0.15); color: #f0883e; border: 1px solid rgba(240, 136, 62, 0.3); }
+        .badge-call { background: rgba(126, 231, 135, 0.15); color: var(--green); border: 1px solid rgba(126, 231, 135, 0.3); }
+
+        .spread-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+
+        .metric-item {
+            background: #0d1117;
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(48, 54, 77, 0.5);
+            text-align: center;
+        }
+
+        .metric-item .m-lbl {
+            font-size: 9px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        .metric-item .m-val {
+            font-size: 14px;
+            font-weight: bold;
+            color: #c9d1d9;
+        }
+
+        .spread-pnl-section {
+            background: rgba(88, 166, 255, 0.05);
+            border: 1px solid rgba(88, 166, 255, 0.15);
+            border-radius: 8px;
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .spread-pnl-section.profit {
+            background: rgba(126, 231, 135, 0.05);
+            border-color: rgba(126, 231, 135, 0.2);
+        }
+
+        .spread-pnl-section.loss {
+            background: rgba(255, 123, 114, 0.05);
+            border-color: rgba(255, 123, 114, 0.2);
+        }
+
+        .pnl-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .pnl-percent {
+            font-size: 11px;
+            margin-left: 6px;
+            font-weight: normal;
+        }
+
+        .waterline-section {
+            background: #0d1117;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+        }
+
+        .waterline-title {
+            font-size: 10px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+            display: block;
+        }
+
+        .waterline-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+
+        .waterline-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .waterline-label {
+            color: #c9d1d9;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .waterline-value {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .wl-safe { background: rgba(126, 231, 135, 0.15); color: var(--green); border: 1px solid rgba(126, 231, 135, 0.3); }
+        .wl-warning { background: rgba(240, 136, 62, 0.15); color: #f0883e; border: 1px solid rgba(240, 136, 62, 0.3); }
+        .wl-danger { background: rgba(255, 123, 114, 0.15); color: var(--red); border: 1px solid rgba(255, 123, 114, 0.3); animation: pulse 1s infinite alternate; }
+
+        @keyframes pulse {
+            from { box-shadow: 0 0 2px rgba(255,123,114,0.3); }
+            to { box-shadow: 0 0 10px rgba(255,123,114,0.7); }
+        }
+
+        .spread-greeks {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            border-top: 1px solid var(--border);
+            padding-top: 10px;
+            color: #8b949e;
+        }
+
+        .greek-item b {
+            color: #c9d1d9;
+        }
     </style>
 </head>
 <body>
@@ -156,6 +348,7 @@
                             <input type="text" id="date-${i}" placeholder="YYMMDD (e.g. 260421)">
                             <input type="number" id="short-${i}" placeholder="Short Strike">
                             <input type="number" id="long-${i}" placeholder="Long Strike">
+                            <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Credit (e.g. 1.20)">
                         </div>
                     `);
                 }
@@ -170,6 +363,15 @@
             <div class="stat"><span class="label">90% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
             <div class="stat"><span class="label">105% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
         </div>
+
+        <!-- SPREADS SECTION -->
+        <h2 style="font-size: 18px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+            <span>📊 Active Spreads (差价组合)</span>
+            <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
+        </h2>
+        <div id="spreads-container" class="grid" style="margin-bottom: 30px;"></div>
+
+        <h2 style="font-size: 18px; margin-bottom: 15px;">⛓️ Option Chains (期权链)</h2>
         <div id="container" class="grid"></div>
     </div>
 
@@ -192,7 +394,8 @@
                 watchlist.push({
                     date: document.getElementById(`date-${i}`).value,
                     short: document.getElementById(`short-${i}`).value,
-                    long: document.getElementById(`long-${i}`).value
+                    long: document.getElementById(`long-${i}`).value,
+                    entry: document.getElementById(`entry-${i}`).value
                 });
             }
             socket.emit('update_watchlist', watchlist);
@@ -205,8 +408,18 @@
                     document.getElementById(`date-${i}`).value = group.date || '';
                     document.getElementById(`short-${i}`).value = group.short || '';
                     document.getElementById(`long-${i}`).value = group.long || '';
+                    document.getElementById(`entry-${i}`).value = group.entry || '';
+                    
+                    // Clear spread card if inputs are emptied
+                    if (!group.date || !group.short || !group.long) {
+                        const card = document.getElementById(`sc-${i}`);
+                        if (card) {
+                            card.remove();
+                        }
+                    }
                 }
             });
+            updateActiveSpreadCount();
         });
 
         socket.on('index_update', d => {
@@ -289,6 +502,126 @@
             const items = Array.from(parent.children);
             items.sort((a,b) => isStr ? a.dataset[key].localeCompare(b.dataset[key]) : parseFloat(a.dataset[key]) - parseFloat(b.dataset[key]));
             items.forEach(it => parent.appendChild(it));
+        }
+
+        // 监听差价组合的实时推送并渲染
+        socket.on('spread_update', d => {
+            const container = document.getElementById('spreads-container');
+            const cardId = `sc-${d.group_index}`;
+            let card = document.getElementById(cardId);
+
+            if (!card) {
+                card = document.createElement('div');
+                card.id = cardId;
+                container.appendChild(card);
+            }
+
+            // 动态应用卡片类别
+            card.className = `spread-card ${d.opt_type === 'P' ? 'put-spread' : 'call-spread'}`;
+            
+            // 盈亏格式化
+            let pnlHtml = '--';
+            let pnlClass = '';
+            if (d.pnl !== null) {
+                const prefix = d.pnl >= 0 ? '+' : '';
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div class="pnl-value" style="color: ${d.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+                            ${prefix}$${(d.pnl * 100).toFixed(1)} 
+                            <span class="pnl-percent" style="font-size: 12px; font-weight: bold;">(${prefix}${d.pnl_percent.toFixed(1)}%)</span>
+                        </div>
+                    </div>
+                `;
+                pnlClass = d.pnl >= 0 ? 'profit' : 'loss';
+            } else {
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div style="font-size: 13px; color:#8b949e">Enter Entry Credit to track</div>
+                    </div>
+                `;
+            }
+
+            // 安全水位判断逻辑
+            const getWaterlineClass = (val) => {
+                if (val <= 1.0) return 'wl-danger';
+                if (val <= 2.5) return 'wl-warning';
+                return 'wl-safe';
+            };
+
+            const shortWlClass = getWaterlineClass(d.dist_to_short);
+            const beWlClass = d.entry !== null ? getWaterlineClass(d.dist_to_be) : '';
+
+            card.innerHTML = `
+                <div class="spread-header">
+                    <h3>
+                        Group ${d.group_index}: ${d.short.toFixed(1)} / ${d.long.toFixed(1)}
+                    </h3>
+                    <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
+                        ${d.opt_type === 'P' ? 'Put Spread' : 'Call Spread'}
+                    </span>
+                </div>
+                
+                <div style="font-size: 11px; color:#8b949e; margin-top:-10px; margin-bottom:12px;">
+                    Expiry: <b>${d.expiry}</b> | Width: <b>$${d.width.toFixed(1)}</b>
+                </div>
+
+                <div class="spread-metrics">
+                    <div class="metric-item">
+                        <span class="m-lbl">Bid (Credit)</span>
+                        <span class="m-val" style="color:var(--green)">$${d.bid.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Ask (Debit)</span>
+                        <span class="m-val" style="color:var(--red)">$${d.ask.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Mid (Fair)</span>
+                        <span class="m-val" style="color:var(--blue)">$${d.mid.toFixed(2)}</span>
+                    </div>
+                </div>
+
+                <div class="spread-pnl-section ${pnlClass}">
+                    ${pnlHtml}
+                    ${d.entry !== null ? `<div style="text-align: right;"><span class="label" style="margin-bottom: 2px;">Entry</span><b style="font-size: 16px; color: white;">$${d.entry.toFixed(2)}</b></div>` : ''}
+                </div>
+
+                <div class="waterline-section">
+                    <span class="waterline-title">Safety Waterline (安全水位垫)</span>
+                    <div class="waterline-row">
+                        <span class="waterline-label">🛡️ Dist. to Short leg (${d.short.toFixed(0)})</span>
+                        <span class="waterline-value ${shortWlClass}">${d.dist_to_short >= 0 ? '+' : ''}${d.dist_to_short.toFixed(2)}%</span>
+                    </div>
+                    ${d.entry !== null ? `
+                    <div class="waterline-row">
+                        <span class="waterline-label">🎯 Dist. to Breakeven (${d.opt_type === 'P' ? (d.short - d.entry).toFixed(1) : (d.short + d.entry).toFixed(1)})</span>
+                        <span class="waterline-value ${beWlClass}">${d.dist_to_be >= 0 ? '+' : ''}${d.dist_to_be.toFixed(2)}%</span>
+                    </div>
+                    ` : ''}
+                </div>
+
+                <div class="spread-greeks">
+                    <div class="greek-item">Delta: <b style="color: ${d.delta < 0 ? 'var(--red)' : 'var(--green)'}">${d.delta.toFixed(3)}</b></div>
+                    <div class="greek-item">Gamma: <b>${d.gamma.toFixed(4)}</b></div>
+                    <div class="greek-item">Theta: <b style="color: var(--green)">${d.theta > 0 ? '+' : ''}${d.theta.toFixed(3)}</b></div>
+                </div>
+            `;
+            
+            updateActiveSpreadCount();
+        });
+
+        function updateActiveSpreadCount() {
+            const container = document.getElementById('spreads-container');
+            const countBadge = document.getElementById('spread-count');
+            const activeCards = container.getElementsByClassName('spread-card').length;
+            
+            if (activeCards > 0) {
+                countBadge.innerText = `${activeCards} Active`;
+                countBadge.style.display = 'inline-block';
+            } else {
+                countBadge.style.display = 'none';
+            }
         }
     </script>
 </body>
