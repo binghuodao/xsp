@@ -362,6 +362,14 @@
             <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
             <div class="stat"><span class="label">90% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
             <div class="stat"><span class="label">105% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
+            <div class="stat">
+                <span class="label">VIX INDEX (Rank / Pct)</span>
+                <span id="p-vix" class="val" style="color:#c9d1d9">-- <span style="font-size:12px; color:#8b949e">(Rank: --% | Pct: --%)</span></span>
+            </div>
+            <div class="stat">
+                <span class="label">14D ATR (Daily Wave)</span>
+                <span id="p-atr" class="val" style="color:#f1e05a">-- <span style="font-size:12px; color:#8b949e">pts</span></span>
+            </div>
         </div>
 
         <!-- SPREADS SECTION -->
@@ -426,6 +434,12 @@
             document.getElementById('p-idx').innerText = d.price.toFixed(2);
             document.getElementById('p-floor').innerText = d.floor.toFixed(2);
             document.getElementById('p-ceil').innerText = d.ceiling.toFixed(2);
+            if (d.vix !== undefined) {
+                document.getElementById('p-vix').innerHTML = `${d.vix.toFixed(2)} <span style="font-size:12px; color:#8b949e">(Rank: ${d.vix_rank.toFixed(0)}% | Pct: ${d.vix_percentile.toFixed(0)}%)</span>`;
+            }
+            if (d.atr_14 !== undefined) {
+                document.getElementById('p-atr').innerHTML = `${d.atr_14.toFixed(2)} <span style="font-size:12px; color:#8b949e">pts</span>`;
+            }
         });
 
         socket.on('option_update', d => {
@@ -515,6 +529,8 @@
                 card.id = cardId;
                 container.appendChild(card);
             }
+            // 设定 expiry dataset 用于前端自动排序
+            card.dataset.expiry = d.expiry;
 
             // 动态应用卡片类别
             card.className = `spread-card ${d.opt_type === 'P' ? 'put-spread' : 'call-spread'}`;
@@ -553,6 +569,64 @@
             const shortWlClass = getWaterlineClass(d.dist_to_short);
             const beWlClass = d.entry !== null ? getWaterlineClass(d.dist_to_be) : '';
 
+            // 期望波动区间 (Expected Move) 可视化数轴设计
+            let emHtml = '';
+            if (d.expected_move && d.index_price) {
+                const lowerEM = d.index_price - d.expected_move;
+                const upperEM = d.index_price + d.expected_move;
+                
+                let isInside = false;
+                if (d.opt_type === 'P') {
+                    isInside = d.short >= lowerEM;
+                } else {
+                    isInside = d.short <= upperEM;
+                }
+                
+                const emBadgeClass = isInside ? 'wl-warning' : 'wl-safe';
+                const emBadgeText = isInside ? '⚠️ Inside EM' : '🛡️ Outside EM';
+                
+                // 数轴区间为 index ± 2*EM
+                const minScale = d.index_price - 2 * d.expected_move;
+                const maxScale = d.index_price + 2 * d.expected_move;
+                let shortPct = ((d.short - minScale) / (maxScale - minScale)) * 100;
+                shortPct = Math.max(0, Math.min(100, shortPct)); // clamp 0-100
+                
+                const markerColor = d.opt_type === 'P' ? '#f0883e' : 'var(--green)';
+                
+                emHtml = `
+                    <div class="waterline-section" style="margin-bottom: 15px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span class="waterline-title" style="margin-bottom: 0;">Expected Move (期望波动)</span>
+                            <span class="waterline-value ${emBadgeClass}">${emBadgeText}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #8b949e; margin-bottom: 6px;">
+                            <span>-EM: <b>${lowerEM.toFixed(1)}</b></span>
+                            <span style="color: var(--blue);">Index: <b>${d.index_price.toFixed(1)}</b></span>
+                            <span>+EM: <b>${upperEM.toFixed(1)}</b></span>
+                        </div>
+                        
+                        <!-- 动态可视化数轴 -->
+                        <div style="position: relative; height: 6px; background: #21262d; border-radius: 3px; margin: 15px 0 22px 0; border: 1px solid rgba(255,255,255,0.05);">
+                            <!-- EM 1-std 绿色/蓝色高亮区间 (25% 到 75%) -->
+                            <div style="position: absolute; left: 25%; width: 50%; height: 100%; background: rgba(88, 166, 255, 0.15); border-radius: 3px;"></div>
+                            
+                            <!-- 当前价格 Index 点 -->
+                            <div style="position: absolute; left: 50%; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); transform: translateX(-50%); box-shadow: 0 0 6px var(--blue);"></div>
+                            
+                            <!-- 短腿 Strike 刻度线 -->
+                            <div style="position: absolute; left: ${shortPct}%; top: -6px; width: 3px; height: 16px; background: ${markerColor}; border-radius: 1px;" title="Short Strike: ${d.short}">
+                                <span style="position: absolute; top: 18px; left: 50%; transform: translateX(-50%); font-size: 9px; color: ${markerColor}; font-weight: bold; white-space: nowrap;">
+                                    ${d.short.toFixed(0)} (Short)
+                                </span>
+                            </div>
+                        </div>
+                        <div style="font-size: 10px; color: #8b949e; text-align: center; margin-top: 10px; border-top: 1px solid rgba(48, 54, 77, 0.3); padding-top: 6px;">
+                            Implied Daily Range: <b>±${d.expected_move.toFixed(1)}</b> pts
+                        </div>
+                    </div>
+                `;
+            }
+
             card.innerHTML = `
                 <div class="spread-header">
                     <h3>
@@ -587,6 +661,9 @@
                     ${d.entry !== null ? `<div style="text-align: right;"><span class="label" style="margin-bottom: 2px;">Entry</span><b style="font-size: 16px; color: white;">$${d.entry.toFixed(2)}</b></div>` : ''}
                 </div>
 
+                <!-- 期望波动数轴 -->
+                ${emHtml}
+
                 <div class="waterline-section">
                     <span class="waterline-title">Safety Waterline (安全水位垫)</span>
                     <div class="waterline-row">
@@ -607,6 +684,9 @@
                     <div class="greek-item">Theta: <b style="color: var(--green)">${d.theta > 0 ? '+' : ''}${d.theta.toFixed(3)}</b></div>
                 </div>
             `;
+            
+            // 实时按照到期日进行排序
+            sortElements(container, 'expiry', true);
             
             updateActiveSpreadCount();
         });

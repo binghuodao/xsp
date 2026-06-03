@@ -48,6 +48,60 @@ if os.path.exists(WATCHLIST_FILE):
         print(f"⚠️ Failed to load watchlist: {e}")
 
 
+# 历史统计缓存 (用于 VIX 和 ATR 计算)
+historical_stats = {
+    "vix": 15.0,  # 默认值
+    "vix_rank": 0.0,
+    "vix_percentile": 0.0,
+    "atr_14": 5.0,  # 默认值
+    "last_updated": 0
+}
+
+def update_historical_data():
+    global historical_stats
+    now_ts = time.time()
+    # 2小时更新一次
+    if now_ts - historical_stats["last_updated"] < 7200:
+        return
+    
+    try:
+        print("🔄 Fetching historical data for VIX and ATR from YFinance...")
+        # VIX 1 year history
+        vix_ticker = yf.Ticker("^VIX")
+        vix_hist = vix_ticker.history(period="1y")
+        if not vix_hist.empty:
+            current_vix = vix_hist['Close'].iloc[-1]
+            vix_min = vix_hist['Close'].min()
+            vix_max = vix_hist['Close'].max()
+            vix_rank = (current_vix - vix_min) / (vix_max - vix_min) if (vix_max - vix_min) > 0 else 0.0
+            vix_percentile = (vix_hist['Close'] < current_vix).mean()
+            
+            historical_stats["vix"] = float(current_vix)
+            historical_stats["vix_rank"] = float(vix_rank) * 100
+            historical_stats["vix_percentile"] = float(vix_percentile) * 100
+            
+        # XSP ATR 14
+        xsp_ticker = yf.Ticker("^XSP")
+        xsp_hist = xsp_ticker.history(period="1mo")
+        if len(xsp_hist) >= 15:
+            highs = xsp_hist['High']
+            lows = xsp_hist['Low']
+            closes = xsp_hist['Close'].shift(1)
+            
+            tr1 = highs - lows
+            tr2 = (highs - closes).abs()
+            tr3 = (lows - closes).abs()
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr_14 = tr.iloc[-14:].mean()
+            historical_stats["atr_14"] = float(atr_14)
+            
+        historical_stats["last_updated"] = now_ts
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}")
+    except Exception as e:
+        print(f"⚠️ Failed to update historical data: {e}")
+
+
 def get_xsp_anchor_price():
     try:
         # ^XSP is the Yahoo Finance symbol for the Mini-SPX Index
@@ -188,17 +242,24 @@ def start_moomoo():
     with OpenQuoteContext(host=OPEND_ADDR, port=OPEND_PORT) as quote_ctx:
         while True:
             try:
+                # 检查并更新历史统计数据 (VIX, ATR)
+                update_historical_data()
+                
                 price = get_xsp_anchor_price()
                 if price > 0:
                     latest_data["index"] = {
                         "price": price, 
                         "floor": price * FLOOR_PERCENT,
-                        "ceiling": price * CEILING_PERCENT
+                        "ceiling": price * CEILING_PERCENT,
+                        "vix": historical_stats["vix"],
+                        "vix_rank": historical_stats["vix_rank"],
+                        "vix_percentile": historical_stats["vix_percentile"],
+                        "atr_14": historical_stats["atr_14"]
                     }
                 socketio.emit('index_update', latest_data["index"])
 
                 # 1. 动态确定本次需要拉取的代码列表
-                current_price = latest_data["index"]["price"]
+                current_price = latest_data["index"].get("price", 0)
                 valid_dates = []
                 if current_price <= 0:
                     # 第一次运行或没拿到价格：只请求 SPY
@@ -257,7 +318,11 @@ def start_moomoo():
                             latest_data["index"] = {
                                 "price": p, 
                                 "floor": p * FLOOR_PERCENT,
-                                "ceiling": p * CEILING_PERCENT
+                                "ceiling": p * CEILING_PERCENT,
+                                "vix": historical_stats["vix"],
+                                "vix_rank": historical_stats["vix_rank"],
+                                "vix_percentile": historical_stats["vix_percentile"],
+                                "atr_14": historical_stats["atr_14"]
                             }
                             socketio.emit('index_update', latest_data["index"])
                         
@@ -336,6 +401,28 @@ def start_moomoo():
                                     spread_theta = short_opt.get('theta', 0.0) - long_opt.get('theta', 0.0)
                                     spread_vega = short_opt.get('vega', 0.0) - long_opt.get('vega', 0.0)
                                     
+                                    # Expected Move (EM) dynamically computed using ATM options
+                                    expected_move = None
+                                    expiry_date_str = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
+                                    expiry_options = [opt for opt in latest_data["options"].values() if opt['expiry'] == expiry_date_str]
+                                    strikes = sorted(list(set([opt['strike'] for opt in expiry_options])))
+                                    if strikes and current_price > 0:
+                                        atm_strike = min(strikes, key=lambda x: abs(x - current_price))
+                                        atm_call = next((opt for opt in expiry_options if opt['strike'] == atm_strike and opt['opt_type'] == 'C'), None)
+                                        atm_put = next((opt for opt in expiry_options if opt['strike'] == atm_strike and opt['opt_type'] == 'P'), None)
+                                        if atm_call and atm_put:
+                                            expected_move = 0.85 * (atm_call['mid'] + atm_put['mid'])
+                                            
+                                    # Fallback Expected Move using VIX
+                                    if expected_move is None and current_price > 0 and historical_stats["vix"] > 0:
+                                        try:
+                                            expiry_dt = datetime.strptime(ds, "%y%m%d")
+                                            today_date = datetime.now().date()
+                                            days_to_expiry = max((expiry_dt.date() - today_date).days, 0.5)
+                                            expected_move = current_price * (historical_stats["vix"] / 100.0) * ((days_to_expiry / 365.0) ** 0.5)
+                                        except Exception as e:
+                                            print(f"⚠️ Fallback Expected Move computation error: {e}")
+                                    
                                     # P&L tracking
                                     pnl = None
                                     pnl_percent = None
@@ -365,7 +452,7 @@ def start_moomoo():
                                     spread_info = {
                                         "group_index": idx + 1,
                                         "date": ds,
-                                        "expiry": f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}",
+                                        "expiry": expiry_date_str,
                                         "opt_type": opt_type,
                                         "short": s_val,
                                         "long": l_val,
@@ -381,7 +468,9 @@ def start_moomoo():
                                         "pnl": pnl,
                                         "pnl_percent": pnl_percent,
                                         "dist_to_short": dist_to_short,
-                                        "dist_to_be": dist_to_be
+                                        "dist_to_be": dist_to_be,
+                                        "expected_move": expected_move,
+                                        "index_price": current_price
                                     }
                                     socketio.emit('spread_update', spread_info)
                             except Exception as ex:
