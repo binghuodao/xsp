@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XSP 权利金路径分析 | Premium Path Analyzer</title>
+  <meta name="description" content="分析 XSP 期权权利金日内历史路径，识别下跌日中的权利金高点时段">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+  <style>
+    :root {
+      --bg:        #070b14;
+      --bg2:       #0d1220;
+      --bg3:       #131929;
+      --border:    rgba(255,255,255,0.07);
+      --glass:     rgba(255,255,255,0.04);
+      --glass2:    rgba(255,255,255,0.08);
+      --text:      #e2e8f0;
+      --text2:     #94a3b8;
+      --text3:     #64748b;
+      --indigo:    #6366f1;
+      --indigo2:   #818cf8;
+      --down:      #f87171;
+      --down2:     #ef4444;
+      --up:        #4ade80;
+      --up2:       #22c55e;
+      --amber:     #fbbf24;
+      --blue:      #60a5fa;
+      --pink:      #f472b6;
+      --purple:    #c084fc;
+
+      --asia-pm:      rgba(251,191,36,0.15);
+      --pre-market:   rgba(96,165,250,0.12);
+      --open-30:      rgba(244,114,182,0.15);
+      --regular:      rgba(192,132,252,0.08);
+
+      --asia-pm-solid:    #fbbf24;
+      --pre-market-solid: #60a5fa;
+      --open-30-solid:    #f472b6;
+      --regular-solid:    #c084fc;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── HEADER ─────────────────────────────── */
+    header {
+      background: linear-gradient(135deg, #0f1628 0%, #1a1040 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(16px);
+    }
+    .header-inner {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 58px;
+      gap: 16px;
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .back-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--text2); text-decoration: none; font-size: 13px;
+      font-weight: 500; padding: 5px 12px;
+      border: 1px solid var(--border); border-radius: 8px;
+      transition: all .2s; white-space: nowrap;
+    }
+    .back-btn:hover { color: var(--text); background: var(--glass2); }
+    .header-title { display: flex; flex-direction: column; }
+    .header-title h1 { font-size: 15px; font-weight: 700; color: var(--text); }
+    .header-title span { font-size: 11px; color: var(--text3); letter-spacing: .5px; }
+    .status-pill {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 20px;
+      border: 1px solid; transition: all .3s;
+    }
+    .status-pill.loading { color: var(--amber); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .status-pill.ok      { color: var(--up);    border-color: rgba(74,222,128,.35); background: rgba(74,222,128,.08); }
+    .status-pill.error   { color: var(--down);  border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.08); }
+
+    /* ── FILTER BAR ──────────────────────────── */
+    .filter-bar {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+    }
+    .filter-inner {
+      max-width: 1600px; margin: 0 auto;
+      display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    }
+    .filter-group { display: flex; align-items: center; gap: 8px; }
+    .filter-group label { font-size: 11px; color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; }
+    select {
+      background: var(--bg3); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 10px; font-size: 13px; font-family: inherit;
+      outline: none; cursor: pointer; transition: border-color .2s;
+    }
+    select:hover { border-color: rgba(255,255,255,.2); }
+    select:focus { border-color: var(--indigo); }
+    select:disabled { opacity: .4; cursor: not-allowed; }
+
+    .seg-btns { display: flex; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .seg-btn {
+      background: transparent; color: var(--text2);
+      border: none; padding: 6px 14px; font-size: 12px; font-weight: 600;
+      font-family: inherit; cursor: pointer; transition: all .15s;
+    }
+    .seg-btn.active { background: var(--indigo); color: #fff; }
+    .seg-btn:not(.active):hover { background: var(--glass2); color: var(--text); }
+
+    .refresh-btn {
+      margin-left: auto;
+      background: linear-gradient(135deg, var(--indigo), #4f46e5);
+      color: #fff; border: none; border-radius: 8px;
+      padding: 7px 16px; font-size: 13px; font-weight: 600;
+      font-family: inherit; cursor: pointer; transition: all .2s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .refresh-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(99,102,241,.4); }
+    .refresh-btn:active { transform: translateY(0); }
+    .refresh-btn.spinning .spin-icon { animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── PAGE BODY ───────────────────────────── */
+    .page-body {
+      max-width: 1600px; margin: 0 auto;
+      padding: 20px 24px;
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      grid-template-rows: auto auto;
+      gap: 16px;
+    }
+
+    /* ── CARDS ───────────────────────────────── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-title {
+      font-size: 14px; font-weight: 700; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card-subtitle { font-size: 11px; color: var(--text3); margin-top: 2px; }
+    .card-body { padding: 16px 20px; }
+
+    /* ── PATH CHART ──────────────────────────── */
+    .chart-card { grid-row: 1; grid-column: 1; }
+    .chart-wrap { position: relative; height: 360px; padding: 12px 8px 4px; }
+    .chart-footer {
+      padding: 10px 20px 14px;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .session-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .sess-dot {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 500; color: var(--text2);
+    }
+    .sess-dot span {
+      width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+    }
+    .tz-note { font-size: 10px; color: var(--text3); }
+
+    /* ── RIGHT SIDEBAR ───────────────────────── */
+    .sidebar { grid-row: 1; grid-column: 2; display: flex; flex-direction: column; gap: 16px; }
+
+    /* Percentile gauge */
+    .gauge-card .card-body { padding: 12px 20px 16px; text-align: center; }
+    .gauge-svg-wrap { position: relative; width: 190px; margin: 0 auto 10px; }
+    .gauge-svg { width: 100%; }
+    .gauge-arc-bg { stroke: #1e293b; }
+    .gauge-arc-fill { transition: stroke-dashoffset .8s cubic-bezier(.4,0,.2,1); }
+    .gauge-center {
+      position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+      text-align: center; pointer-events: none;
+    }
+    .gauge-pct { font-size: 32px; font-weight: 800; line-height: 1; }
+    .gauge-lbl { font-size: 10px; color: var(--text3); font-weight: 500; margin-top: 1px; }
+    .pct-desc { font-size: 12px; color: var(--text2); line-height: 1.55; }
+    .pct-desc strong { color: var(--text); }
+    .pct-badge {
+      display: inline-block; margin-top: 8px;
+      padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700;
+    }
+    .pct-badge.high   { background: rgba(248,113,113,.15); color: var(--down); border: 1px solid rgba(248,113,113,.3); }
+    .pct-badge.medium { background: rgba(251,191,36,.12);  color: var(--amber); border: 1px solid rgba(251,191,36,.3); }
+    .pct-badge.low    { background: rgba(74,222,128,.1);   color: var(--up);   border: 1px solid rgba(74,222,128,.3); }
+
+    /* Quick stats */
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat-box {
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 12px;
+    }
+    .stat-box .lbl { font-size: 10px; color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 3px; }
+    .stat-box .val { font-size: 18px; font-weight: 700; color: var(--text); }
+    .stat-box .val.down { color: var(--down); }
+    .stat-box .val.up   { color: var(--up); }
+    .stat-box .val.accent { color: var(--indigo2); }
+
+    /* ── BOTTOM: Session stats + Day list ─────── */
+    .bottom-row {
+      grid-column: 1 / -1;
+      display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px;
+    }
+
+    /* Session bar chart */
+    .session-bars-wrap { height: 180px; padding: 8px 0 0; }
+
+    /* Day list */
+    .day-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    .day-list::-webkit-scrollbar { width: 4px; }
+    .day-list::-webkit-scrollbar-track { background: transparent; }
+    .day-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .day-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; border-radius: 8px;
+      background: var(--bg3); border: 1px solid var(--border);
+      font-size: 12px; cursor: pointer; transition: all .15s;
+    }
+    .day-row:hover { border-color: rgba(255,255,255,.15); background: var(--glass2); }
+    .day-row.active { border-color: var(--indigo); background: rgba(99,102,241,.1); }
+    .day-row .date { font-weight: 600; color: var(--text); flex: 0 0 90px; }
+    .day-row .chg {
+      font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+    }
+    .day-row .chg.down { background: rgba(248,113,113,.15); color: var(--down); }
+    .day-row .chg.up   { background: rgba(74,222,128,.12);  color: var(--up); }
+    .day-row .peak-sess { font-size: 11px; color: var(--text3); flex: 1; text-align: right; }
+
+    /* empty / loading states */
+    .empty-state {
+      text-align: center; padding: 48px 24px;
+      color: var(--text3); font-size: 13px; line-height: 1.7;
+    }
+    .empty-state .icon { font-size: 36px; margin-bottom: 12px; display: block; }
+
+    /* Responsive */
+    @media (max-width: 1100px) {
+      .page-body { grid-template-columns: 1fr; }
+      .chart-card { grid-column: 1; }
+      .sidebar { grid-row: auto; grid-column: 1; flex-direction: row; }
+      .sidebar .card { flex: 1; }
+      .bottom-row { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      .filter-inner { gap: 12px; }
+      .sidebar { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── HEADER ─────────────────────────────── -->
+<header>
+  <div class="header-inner">
+    <div class="header-left">
+      <a href="/" class="back-btn">← 实时看板</a>
+      <div class="header-title">
+        <h1>日内权利金路径分析</h1>
+        <span>Intraday Premium Path Analyzer</span>
+      </div>
+    </div>
+    <span class="status-pill loading" id="statusPill">载入中…</span>
+  </div>
+</header>
+
+<!-- ─── FILTER BAR ────────────────────────── -->
+<div class="filter-bar">
+  <div class="filter-inner">
+
+    <div class="filter-group">
+      <label>组合</label>
+      <select id="groupSelect">
+        <option value="1">Group 1</option>
+      </select>
+    </div>
+
+    <div class="filter-group">
+      <label>分析对象</label>
+      <select id="roleSelect">
+        <option value="spread">价差 Spread</option>
+        <option value="short">短腿 Short</option>
+        <option value="long">长腿 Long</option>
+      </select>
+    </div>
+
+    <div class="filter-group">
+      <label>日期</label>
+      <div class="seg-btns">
+        <button class="seg-btn active" id="btnAll"  onclick="setFilter('all')">全部</button>
+        <button class="seg-btn"        id="btnDown" onclick="setFilter('down')">仅下跌日</button>
+        <button class="seg-btn"        id="btnUp"   onclick="setFilter('up')">仅上涨日</button>
+      </div>
+    </div>
+
+    <div class="filter-group" id="minDropWrap" style="display:none">
+      <label>最小跌幅</label>
+      <select id="minDropSelect">
+        <option value="0">任意</option>
+        <option value="0.3">&gt;0.3%</option>
+        <option value="0.5">&gt;0.5%</option>
+        <option value="1.0">&gt;1.0%</option>
+        <option value="1.5">&gt;1.5%</option>
+      </select>
+    </div>
+
+    <button class="refresh-btn" id="refreshBtn" onclick="loadData()">
+      <span class="spin-icon">⟳</span> 刷新数据
+    </button>
+  </div>
+</div>
+
+<!-- ─── PAGE BODY ─────────────────────────── -->
+<div class="page-body">
+
+  <!-- PATH CHART -->
+  <div class="card chart-card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">📈 日内权利金路径</div>
+        <div class="card-subtitle">每条线 = 一个历史交易日 · X 轴 = 美东时间 (ET) · 灰色区间 = P10 / P90</div>
+      </div>
+      <div id="dayCountBadge" style="font-size:12px;color:var(--text3)"></div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="pathChart"></canvas>
+    </div>
+    <div class="chart-footer">
+      <div class="session-legend">
+        <span class="sess-dot"><span style="background:var(--asia-pm-solid)"></span>亚洲下午盘 22:00-04:00 ET</span>
+        <span class="sess-dot"><span style="background:var(--pre-market-solid)"></span>美前市 04:00-09:30 ET</span>
+        <span class="sess-dot"><span style="background:var(--open-30-solid)"></span>开盘30分 09:30-10:00 ET</span>
+        <span class="sess-dot"><span style="background:var(--regular-solid)"></span>正式交易 10:00-16:00 ET</span>
+      </div>
+      <span class="tz-note">AEST（6月）= ET + 14h &nbsp;|&nbsp; 负值 = 前一晚 ET 时段</span>
+    </div>
+  </div>
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- Percentile Gauge -->
+    <div class="card gauge-card">
+      <div class="card-header">
+        <div class="card-title">🎯 当前时段历史分位</div>
+      </div>
+      <div class="card-body">
+        <div class="gauge-svg-wrap">
+          <svg viewBox="0 0 200 130" class="gauge-svg">
+            <path d="M 24 110 A 76 76 0 0 1 176 110"
+                  fill="none" stroke="#1e2a3a" stroke-width="18" stroke-linecap="round" class="gauge-arc-bg"/>
+            <path id="gaugeArc" d="M 24 110 A 76 76 0 0 1 176 110"
+                  fill="none" stroke="url(#gaugeGrad)" stroke-width="18" stroke-linecap="round"
+                  class="gauge-arc-fill"
+                  stroke-dasharray="238.76" stroke-dashoffset="238.76"/>
+            <defs>
+              <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%"   stop-color="#22c55e"/>
+                <stop offset="50%"  stop-color="#fbbf24"/>
+                <stop offset="100%" stop-color="#ef4444"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <div class="gauge-center">
+            <div class="gauge-pct" id="gaugePct" style="color:var(--text3)">--</div>
+            <div class="gauge-lbl">历史分位</div>
+          </div>
+        </div>
+        <p class="pct-desc" id="pctDesc">
+          选择 Watchlist 组合并等待数据载入后，此处将显示当前权利金处于历史下跌日同时段的哪个百分位。
+        </p>
+        <div id="pctBadge"></div>
+      </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📊 统计概览</div>
+      </div>
+      <div class="card-body">
+        <div class="stat-grid">
+          <div class="stat-box">
+            <div class="lbl">总录制天数</div>
+            <div class="val accent" id="statTotal">--</div>
+          </div>
+          <div class="stat-box">
+            <div class="lbl">下跌日</div>
+            <div class="val down" id="statDown">--</div>
+          </div>
+          <div class="stat-box">
+            <div class="lbl">当前 Mid</div>
+            <div class="val" id="statCurrentMid">--</div>
+          </div>
+          <div class="stat-box">
+            <div class="lbl">下跌日中位数</div>
+            <div class="val" id="statMedian">--</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+
+  <!-- BOTTOM ROW -->
+  <div class="bottom-row">
+
+    <!-- Session peak bar chart -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">⏰ 权利金日内高点出现时段（下跌日）</div>
+          <div class="card-subtitle">在历史下跌日中，各时段占据权利金最高点的比例</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="session-bars-wrap">
+          <canvas id="sessionChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Day list -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📅 历史交易日清单</div>
+      </div>
+      <div class="card-body" style="padding:10px 14px">
+        <div class="day-list" id="dayList">
+          <div class="empty-state"><span class="icon">📭</span>暂无录制数据<br>服务启动后每 10 分钟自动记录一次</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /bottom-row -->
+
+</div><!-- /page-body -->
+
+<script>
+// ── STATE ────────────────────────────────────────────
+let pathData    = {};   // { "YYYY-MM-DD": [{ts, offset_min, session, xsp, vix, bid, ask, mid}, ...] }
+let dailyRet    = {};   // { "YYYY-MM-DD": {close, prev_close, change_pct, is_down} }
+let filterMode  = 'all';
+let pathChart   = null;
+let sessionChart= null;
+
+// ── UTIL ─────────────────────────────────────────────
+function offsetToETLabel(min) {
+  const norm = ((min % 1440) + 1440) % 1440;
+  const h = String(Math.floor(norm / 60)).padStart(2,'0');
+  const m = String(norm % 60).padStart(2,'0');
+  return `${h}:${m}`;
+}
+
+function getSessionForOffset(min) {
+  if (min >= -120 && min < 240) return 'asia_pm';
+  if (min >= 240  && min < 570) return 'pre_market';
+  if (min >= 570  && min < 600) return 'open_30';
+  return 'regular';
+}
+
+function sessionColor(sess, alpha=1) {
+  const map = {
+    asia_pm:    `rgba(251,191,36,${alpha})`,
+    pre_market: `rgba(96,165,250,${alpha})`,
+    open_30:    `rgba(244,114,182,${alpha})`,
+    regular:    `rgba(192,132,252,${alpha})`,
+  };
+  return map[sess] || `rgba(148,163,184,${alpha})`;
+}
+
+function fmt(v, d=2) {
+  if (v == null || isNaN(v)) return '--';
+  return v.toFixed(d);
+}
+
+// Current ET offset_min (now)
+function currentOffsetMin() {
+  const now = new Date();
+  // Get ET midnight for today's trade_date
+  // Approximate: use the browser's own computation via Intl
+  const etParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: 'numeric', hour12: false
+  }).formatToParts(now);
+  const hET = parseInt(etParts.find(p=>p.type==='hour').value);
+  const mET = parseInt(etParts.find(p=>p.type==='minute').value);
+  let t = hET * 60 + mET;
+  if (t >= 22 * 60) t -= 24 * 60; // 22:00-23:59 → negative next day offset
+  return t;
+}
+
+// ── FILTER ───────────────────────────────────────────
+function setFilter(mode) {
+  filterMode = mode;
+  ['btnAll','btnDown','btnUp'].forEach(id => document.getElementById(id).classList.remove('active'));
+  document.getElementById('btn' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
+  document.getElementById('minDropWrap').style.display = mode === 'down' ? 'flex' : 'none';
+  renderAll();
+}
+
+function filteredDates() {
+  const minDrop = parseFloat(document.getElementById('minDropSelect').value || '0');
+  return Object.keys(pathData).filter(d => {
+    const ret = dailyRet[d];
+    if (filterMode === 'all')  return true;
+    if (!ret) return false;
+    if (filterMode === 'down') return ret.is_down && Math.abs(ret.change_pct) >= minDrop;
+    if (filterMode === 'up')   return !ret.is_down;
+    return true;
+  }).sort();
+}
+
+// ── DATA LOAD ────────────────────────────────────────
+async function loadData() {
+  const btn  = document.getElementById('refreshBtn');
+  const pill = document.getElementById('statusPill');
+  btn.classList.add('spinning');
+  pill.className = 'status-pill loading';
+  pill.textContent = '载入中…';
+
+  try {
+    const group = document.getElementById('groupSelect').value || 1;
+    const role  = document.getElementById('roleSelect').value  || 'spread';
+
+    const [snapRes, retRes, grpRes] = await Promise.all([
+      fetch(`/api/history/snapshots?group=${group}&role=${role}`).then(r=>r.json()),
+      fetch('/api/history/daily_returns').then(r=>r.json()),
+      fetch('/api/history/groups').then(r=>r.json()),
+    ]);
+
+    if (snapRes.status !== 'ok') throw new Error(snapRes.message);
+    pathData = snapRes.data || {};
+    dailyRet = retRes.status === 'ok' ? (retRes.data || {}) : {};
+
+    // Populate group selector
+    if (grpRes.status === 'ok' && grpRes.data.length > 0) {
+      const sel = document.getElementById('groupSelect');
+      const cur = sel.value;
+      sel.innerHTML = grpRes.data.map(g => {
+        const label = g.opt_type === 'P'
+          ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
+          : `G${g.group_idx} Call ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
+        return `<option value="${g.group_idx}"${g.group_idx==cur?' selected':''}>${label}</option>`;
+      }).join('');
+    }
+
+    pill.className = 'status-pill ok';
+    pill.textContent = `已加载 ${Object.keys(pathData).length} 天`;
+    renderAll();
+  } catch(e) {
+    pill.className = 'status-pill error';
+    pill.textContent = '载入失败: ' + e.message;
+  } finally {
+    btn.classList.remove('spinning');
+  }
+}
+
+// ── RENDER ALL ───────────────────────────────────────
+function renderAll() {
+  renderPathChart();
+  renderSessionChart();
+  renderDayList();
+  renderPercentile();
+  renderStats();
+}
+
+// ── PATH CHART ───────────────────────────────────────
+function renderPathChart() {
+  const dates = filteredDates();
+  document.getElementById('dayCountBadge').textContent = `${dates.length} 个交易日`;
+
+  // Session background annotation regions
+  const annotations = {
+    asia_pm: {
+      type: 'box', xMin: -120, xMax: 240,
+      backgroundColor: 'rgba(251,191,36,0.05)', borderWidth: 0,
+      label: { display: false }
+    },
+    pre_market: {
+      type: 'box', xMin: 240, xMax: 570,
+      backgroundColor: 'rgba(96,165,250,0.04)', borderWidth: 0
+    },
+    open_30: {
+      type: 'box', xMin: 570, xMax: 600,
+      backgroundColor: 'rgba(244,114,182,0.08)', borderWidth: 0
+    },
+    regular: {
+      type: 'box', xMin: 600, xMax: 960,
+      backgroundColor: 'rgba(192,132,252,0.04)', borderWidth: 0
+    },
+    nowLine: {
+      type: 'line', xMin: currentOffsetMin(), xMax: currentOffsetMin(),
+      borderColor: 'rgba(255,255,255,0.35)', borderWidth: 1.5,
+      borderDash: [4,4],
+      label: {
+        display: true, content: '现在', position: 'start',
+        color: 'rgba(255,255,255,0.6)', font: { size: 10 },
+        backgroundColor: 'rgba(0,0,0,0.5)', padding: 3
+      }
+    }
+  };
+
+  // Build percentile bands from down days (for background reference)
+  const allX = new Set();
+  dates.forEach(d => (pathData[d]||[]).forEach(p => allX.add(p.offset_min)));
+  const sortedX = [...allX].sort((a,b)=>a-b);
+
+  function percentileBand(pct) {
+    return sortedX.map(x => {
+      const vals = dates
+        .flatMap(d => (pathData[d]||[]).filter(p => Math.abs(p.offset_min - x) < 8).map(p => p.mid))
+        .filter(v => v != null && v >= 0);
+      if (!vals.length) return null;
+      vals.sort((a,b)=>a-b);
+      const idx = Math.min(Math.floor(vals.length * pct), vals.length - 1);
+      return { x, y: vals[idx] };
+    }).filter(Boolean);
+  }
+
+  const p10 = percentileBand(0.10);
+  const p90 = percentileBand(0.90);
+  const p50 = percentileBand(0.50);
+
+  // Line datasets: one per day
+  const lineDatasets = dates.map((d, i) => {
+    const ret   = dailyRet[d];
+    const isDown = ret?.is_down;
+    const alpha = Math.max(0.12, 0.7 - dates.length * 0.02);
+    const color = isDown
+      ? `rgba(248,113,113,${alpha})`
+      : `rgba(74,222,128,${alpha})`;
+
+    const pts = (pathData[d] || [])
+      .sort((a,b)=>a.offset_min-b.offset_min)
+      .map(p => ({ x: p.offset_min, y: p.mid }));
+
+    return {
+      label: d, data: pts, borderColor: color,
+      backgroundColor: 'transparent',
+      borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 4,
+      tension: 0.35, fill: false,
+    };
+  });
+
+  // Band datasets (P10 fill to P90)
+  const bandDatasets = [
+    {
+      label: 'P90', data: p90, borderColor: 'rgba(148,163,184,0.3)',
+      backgroundColor: 'rgba(99,102,241,0.08)', borderWidth: 0.8,
+      pointRadius: 0, tension: 0.4, fill: '+1',
+    },
+    {
+      label: 'P10', data: p10, borderColor: 'rgba(148,163,184,0.3)',
+      backgroundColor: 'transparent', borderWidth: 0.8,
+      pointRadius: 0, tension: 0.4, fill: false,
+    },
+    {
+      label: 'P50 中位', data: p50, borderColor: 'rgba(148,163,184,0.55)',
+      backgroundColor: 'transparent', borderWidth: 1.4,
+      pointRadius: 0, tension: 0.4, fill: false,
+      borderDash: [5, 4],
+    },
+  ];
+
+  const datasets = [...bandDatasets, ...lineDatasets];
+
+  if (pathChart) pathChart.destroy();
+
+  const ctx = document.getElementById('pathChart').getContext('2d');
+  pathChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      parsing: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          enabled: true,
+          backgroundColor: 'rgba(13,18,32,0.95)',
+          borderColor: 'rgba(255,255,255,0.1)',
+          borderWidth: 1,
+          titleColor: '#94a3b8',
+          bodyColor: '#e2e8f0',
+          padding: 10,
+          callbacks: {
+            title: items => {
+              const x = items[0]?.parsed?.x;
+              if (x == null) return '';
+              return `${offsetToETLabel(x)} ET`;
+            },
+            label: item => {
+              if (!['P90','P10','P50 中位'].includes(item.dataset.label) && item.parsed.y != null) {
+                const d = item.dataset.label;
+                const ret = dailyRet[d];
+                const chg = ret ? ` (${ret.change_pct > 0 ? '+' : ''}${ret.change_pct.toFixed(2)}%)` : '';
+                return ` ${d}${chg}: $${fmt(item.parsed.y, 4)}`;
+              }
+              return null;
+            }
+          }
+        },
+        annotation: { annotations }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          min: -120, max: 960,
+          ticks: {
+            color: '#64748b', font: { size: 10 },
+            stepSize: 60,
+            callback: v => offsetToETLabel(v),
+          },
+          grid: { color: 'rgba(255,255,255,0.04)' },
+        },
+        y: {
+          ticks: { color: '#64748b', font: { size: 10 }, callback: v => `$${v.toFixed(2)}` },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+        }
+      }
+    }
+  });
+}
+
+// ── SESSION CHART ─────────────────────────────────────
+function renderSessionChart() {
+  const dates = Object.keys(pathData).filter(d => {
+    const ret = dailyRet[d];
+    return ret && ret.is_down;
+  });
+
+  const counts = { asia_pm: 0, pre_market: 0, open_30: 0, regular: 0 };
+
+  for (const d of dates) {
+    const pts = pathData[d] || [];
+    if (!pts.length) continue;
+    const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
+    if (best && counts[best.session] !== undefined) counts[best.session]++;
+  }
+
+  const total   = Object.values(counts).reduce((a,b)=>a+b,0) || 1;
+  const labels  = ['亚洲下午盘\n(22-04 ET)', '美前市\n(04-09:30 ET)', '开盘30分\n(09:30-10 ET)', '正式交易\n(10-16 ET)'];
+  const keys    = ['asia_pm','pre_market','open_30','regular'];
+  const values  = keys.map(k => Math.round(counts[k] / total * 100));
+  const colors  = keys.map(k => sessionColor(k, 0.85));
+  const borders = keys.map(k => sessionColor(k, 1));
+
+  if (sessionChart) sessionChart.destroy();
+  const ctx2 = document.getElementById('sessionChart').getContext('2d');
+  sessionChart = new Chart(ctx2, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: values, backgroundColor: colors, borderColor: borders,
+        borderWidth: 1.5, borderRadius: 6,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: item => ` ${item.parsed.y}%（${keys.map(k=>counts[k])[item.dataIndex]}天）`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { display: false } },
+        y: {
+          min: 0, max: 100,
+          ticks: { color: '#64748b', font: { size: 10 }, callback: v => v + '%' },
+          grid: { color: 'rgba(255,255,255,0.04)' }
+        }
+      }
+    }
+  });
+}
+
+// ── DAY LIST ─────────────────────────────────────────
+function renderDayList() {
+  const list = document.getElementById('dayList');
+  const dates = Object.keys(pathData).sort().reverse();
+
+  if (!dates.length) {
+    list.innerHTML = '<div class="empty-state"><span class="icon">📭</span>暂无录制数据<br>服务启动后每 10 分钟自动记录一次</div>';
+    return;
+  }
+
+  list.innerHTML = dates.map(d => {
+    const ret = dailyRet[d];
+    const chgTxt = ret ? `${ret.change_pct > 0 ? '+' : ''}${ret.change_pct.toFixed(2)}%` : '?';
+    const chgCls = ret?.is_down ? 'down' : 'up';
+
+    // Find peak session for this day
+    const pts = pathData[d] || [];
+    const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
+    const sessLabels = { asia_pm:'亚洲下午', pre_market:'美前市', open_30:'开盘30分', regular:'正式交易' };
+    const peakSess = best ? (sessLabels[best.session] || best.session) : '--';
+    const peakMid  = best ? `$${fmt(best.mid, 4)}` : '--';
+
+    return `<div class="day-row" onclick="highlightDay('${d}')">
+      <span class="date">${d}</span>
+      <span class="chg ${chgCls}">${chgTxt}</span>
+      <span class="peak-sess">高点 ${peakMid} @ ${peakSess}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── PERCENTILE GAUGE ──────────────────────────────────
+function renderPercentile() {
+  const curOffset = currentOffsetMin();
+  const WINDOW    = 20; // ±20 min window
+
+  // Only use down days for percentile
+  const downDates = Object.keys(pathData).filter(d => dailyRet[d]?.is_down);
+
+  const historicalMids = downDates.flatMap(d =>
+    (pathData[d] || [])
+      .filter(p => Math.abs(p.offset_min - curOffset) <= WINDOW && p.mid != null && p.mid >= 0)
+      .map(p => p.mid)
+  );
+
+  // Current mid = latest snapshot of today's data
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const todayPts = (pathData[today] || []).sort((a,b) => b.ts - a.ts);
+  const curMid   = todayPts.length ? todayPts[0].mid : null;
+
+  const arc    = document.getElementById('gaugeArc');
+  const pctEl  = document.getElementById('gaugePct');
+  const descEl = document.getElementById('pctDesc');
+  const badge  = document.getElementById('pctBadge');
+  const TOTAL  = 238.76; // full arc dasharray
+
+  if (!historicalMids.length || curMid == null) {
+    arc.style.strokeDashoffset = TOTAL;
+    pctEl.textContent = '--';
+    pctEl.style.color = 'var(--text3)';
+    descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>没有足够的历史数据（需要下跌日的同时段快照）`;
+    badge.innerHTML = '';
+    return;
+  }
+
+  const below = historicalMids.filter(m => m < curMid).length;
+  const pct   = Math.round(below / historicalMids.length * 100);
+
+  arc.style.strokeDashoffset = TOTAL * (1 - pct / 100);
+  pctEl.textContent = pct + 'th';
+  pctEl.style.color = pct >= 75 ? 'var(--down)' : pct >= 45 ? 'var(--amber)' : 'var(--up)';
+
+  const sessLabel = { asia_pm:'亚洲下午盘', pre_market:'美前市', open_30:'开盘30分', regular:'正式交易' };
+  const curSess   = getSessionForOffset(curOffset);
+  descEl.innerHTML = `
+    当前 <strong>$${fmt(curMid, 4)}</strong>（${sessLabel[curSess] || curSess}）<br>
+    高于 <strong>${historicalMids.length}</strong> 个下跌日同时段样本的 <strong>${pct}%</strong>。
+  `;
+
+  let badgeCls, badgeTxt;
+  if (pct >= 80) {
+    badgeCls = 'high'; badgeTxt = '🔥 接近历史高位，可考虑入场';
+  } else if (pct >= 50) {
+    badgeCls = 'medium'; badgeTxt = '⚡ 中等偏高，具备参考性';
+  } else {
+    badgeCls = 'low'; badgeTxt = '✅ 偏低，历史上仍有上升空间';
+  }
+  badge.innerHTML = `<span class="pct-badge ${badgeCls}">${badgeTxt}</span>`;
+}
+
+// ── STATS ────────────────────────────────────────────
+function renderStats() {
+  const allDates   = Object.keys(pathData);
+  const downDates  = allDates.filter(d => dailyRet[d]?.is_down);
+
+  document.getElementById('statTotal').textContent = allDates.length || '--';
+  document.getElementById('statDown').textContent  = downDates.length || '--';
+
+  // Current mid
+  const today    = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const todayPts = (pathData[today] || []).sort((a,b) => b.ts - a.ts);
+  document.getElementById('statCurrentMid').textContent =
+    todayPts.length ? `$${fmt(todayPts[0].mid, 4)}` : '--';
+
+  // Median peak across down days
+  const peaks = downDates
+    .map(d => { const pts = pathData[d]||[]; return pts.length ? Math.max(...pts.map(p=>p.mid)) : null; })
+    .filter(v => v != null).sort((a,b)=>a-b);
+
+  document.getElementById('statMedian').textContent =
+    peaks.length ? `$${fmt(peaks[Math.floor(peaks.length/2)], 4)}` : '--';
+}
+
+// ── HIGHLIGHT DAY ─────────────────────────────────────
+function highlightDay(d) {
+  if (!pathChart) return;
+  pathChart.data.datasets.forEach(ds => {
+    if (['P90','P10','P50 中位'].includes(ds.label)) return;
+    ds.borderWidth = ds.label === d ? 2.5 : 0.8;
+    ds.borderColor = ds.label === d ? 'rgba(255,255,255,0.9)' : ds.borderColor;
+  });
+  pathChart.update('none');
+
+  document.querySelectorAll('.day-row').forEach(el => {
+    el.classList.toggle('active', el.querySelector('.date')?.textContent === d);
+  });
+}
+
+// ── INIT ─────────────────────────────────────────────
+document.getElementById('groupSelect').addEventListener('change', loadData);
+document.getElementById('roleSelect').addEventListener('change', loadData);
+document.getElementById('minDropSelect').addEventListener('change', renderAll);
+
+window.addEventListener('load', loadData);
+</script>
+</body>
+</html>

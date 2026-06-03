@@ -3,13 +3,15 @@ import threading
 import pytz
 import pandas as pd
 from datetime import datetime, timedelta
-from flask import Flask, render_template
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 from moomoo import *
 import yfinance as yf
 import argparse
 import os
 import json
+import sqlite3
+from collections import defaultdict
 
 # --- COMMAND LINE ARGS & CONFIGURATION ---
 parser = argparse.ArgumentParser(description="XSP Options Monitor")
@@ -29,6 +31,12 @@ REFRESH_INTERVAL = args.refresh
 WATCHLIST_SIZE = args.watchlist_size
 OPTION_DAYS = args.option_days
 WATCHLIST_FILE = 'watchlist.json'
+
+# --- PREMIUM LOGGER SETTINGS ---
+DB_PATH      = 'premium_log.db'
+LOG_INTERVAL = 600          # seconds between DB snapshots (10 min)
+ET_TZ        = pytz.timezone('America/New_York')
+last_log_ts  = 0.0
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -56,6 +64,152 @@ historical_stats = {
     "atr_14": 5.0,  # 默认值
     "last_updated": 0
 }
+
+def init_db():
+    """Create the SQLite premium_log table if it doesn't exist."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS premium_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          INTEGER NOT NULL,
+            trade_date  TEXT    NOT NULL,
+            session     TEXT    NOT NULL,
+            xsp_price   REAL,
+            vix         REAL,
+            group_idx   INTEGER,
+            opt_symbol  TEXT,
+            strike      REAL,
+            expiry      TEXT,
+            opt_type    TEXT,
+            role        TEXT,
+            bid         REAL,
+            ask         REAL,
+            mid         REAL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pl_date ON premium_log(trade_date, group_idx, role)")
+    conn.commit()
+    conn.close()
+    print(f"✅ Premium Logger DB ready: {DB_PATH}")
+
+
+def get_trade_date_and_session(ts_unix):
+    """
+    Map a UTC Unix timestamp to a US trade date (ET calendar date) and session label.
+
+    Sessions (all in ET):
+      asia_pm    22:00 prev-day – 04:00  (user's AEST afternoon / evening)
+      pre_market 04:00 – 09:30
+      open_30    09:30 – 10:00  (first 30 min; IV-release window)
+      regular    10:00 – 22:00
+
+    Recordings at 22:00-23:59 ET are attributed to the NEXT calendar day so
+    that every 'asia_pm' snapshot for a given US trading day shares the same
+    trade_date key.  Down/up classification is then done by comparing XSP
+    close vs prev_close on that same ET date.
+    """
+    dt_utc = datetime.fromtimestamp(ts_unix, tz=pytz.utc)
+    dt_et  = dt_utc.astimezone(ET_TZ)
+    t      = dt_et.hour * 60 + dt_et.minute   # minutes since ET midnight
+
+    if t >= 22 * 60:                      # 22:00-23:59 → next day's asia_pm
+        trade_date = (dt_et + timedelta(days=1)).strftime('%Y-%m-%d')
+        session    = 'asia_pm'
+    elif t < 4 * 60:                      # 00:00-03:59 → same day asia_pm
+        trade_date = dt_et.strftime('%Y-%m-%d')
+        session    = 'asia_pm'
+    elif t < 9 * 60 + 30:                 # 04:00-09:29
+        trade_date = dt_et.strftime('%Y-%m-%d')
+        session    = 'pre_market'
+    elif t < 10 * 60:                     # 09:30-09:59
+        trade_date = dt_et.strftime('%Y-%m-%d')
+        session    = 'open_30'
+    else:                                  # 10:00+
+        trade_date = dt_et.strftime('%Y-%m-%d')
+        session    = 'regular'
+
+    return trade_date, session
+
+
+def log_premium_snapshot():
+    """
+    Self-throttled logger: persists a premium snapshot to SQLite at most once
+    every LOG_INTERVAL seconds.  Records short leg, long leg, and spread
+    (bid / ask / mid) for every watchlist group, plus XSP price and VIX.
+    Older-than-90-day rows are pruned on every write.
+    """
+    global last_log_ts, latest_data, user_watchlist
+
+    now_ts = time.time()
+    if now_ts - last_log_ts < LOG_INTERVAL:
+        return
+    last_log_ts = now_ts
+
+    trade_date, session = get_trade_date_and_session(now_ts)
+    xsp_price = latest_data["index"].get("price", 0)
+    vix       = latest_data["index"].get("vix", 0)
+
+    if xsp_price <= 0:
+        return  # anchor price not yet available
+
+    rows = []
+    for idx, group in enumerate(user_watchlist):
+        ds       = group.get('date')
+        s_strike = group.get('short')
+        l_strike = group.get('long')
+        if not (ds and s_strike and l_strike):
+            continue
+        try:
+            s_val    = float(s_strike)
+            l_val    = float(l_strike)
+            opt_type = 'P' if s_val > l_val else 'C'
+            s_sym    = f"US.XSP{ds}{opt_type}{int(s_val * 1000)}"
+            l_sym    = f"US.XSP{ds}{opt_type}{int(l_val * 1000)}"
+            expiry   = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
+
+            if s_sym in latest_data["options"]:
+                o = latest_data["options"][s_sym]
+                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                             idx + 1, s_sym, s_val, expiry, opt_type, 'short',
+                             o['bid'], o['ask'], o['mid']))
+
+            if l_sym in latest_data["options"]:
+                o = latest_data["options"][l_sym]
+                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                             idx + 1, l_sym, l_val, expiry, opt_type, 'long',
+                             o['bid'], o['ask'], o['mid']))
+
+            if s_sym in latest_data["options"] and l_sym in latest_data["options"]:
+                so = latest_data["options"][s_sym]
+                lo = latest_data["options"][l_sym]
+                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                             idx + 1, f"{s_sym}|{l_sym}", None, expiry, opt_type, 'spread',
+                             round(so['bid'] - lo['ask'], 4),
+                             round(so['ask'] - lo['bid'], 4),
+                             round(so['mid'] - lo['mid'], 4)))
+        except Exception as e:
+            print(f"⚠️ log_premium_snapshot group {idx + 1} error: {e}")
+
+    if not rows:
+        return
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.executemany("""
+            INSERT INTO premium_log
+                (ts, trade_date, session, xsp_price, vix,
+                 group_idx, opt_symbol, strike, expiry, opt_type, role,
+                 bid, ask, mid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        cutoff = int(now_ts - 90 * 86400)
+        conn.execute("DELETE FROM premium_log WHERE ts < ?", (cutoff,))
+        conn.commit()
+        conn.close()
+        print(f"📝 Logged {len(rows)} premium rows | {trade_date} | {session} | XSP={xsp_price:.2f}")
+    except Exception as e:
+        print(f"⚠️ DB write error: {e}")
+
 
 def update_historical_data():
     global historical_stats
@@ -530,6 +684,7 @@ def start_moomoo():
                     print(f"⚠️ API 请求未返回数据: {data}")
 
                 # 3. 控制频率
+                log_premium_snapshot()
                 time.sleep(REFRESH_INTERVAL)
                 
             except Exception as e:
@@ -539,6 +694,121 @@ def start_moomoo():
 @app.route('/')
 def index():
     return render_template('index.html', watchlist_size=WATCHLIST_SIZE)
+
+
+@app.route('/history')
+def history_page():
+    return render_template('history.html')
+
+
+@app.route('/api/history/snapshots')
+def api_history_snapshots():
+    """
+    Return all recorded premium snapshots for a given watchlist group and role.
+    Each data point includes offset_min = minutes from ET midnight of trade_date,
+    so the frontend can align multiple calendar dates on the same X axis.
+    """
+    group_idx = request.args.get('group', 1, type=int)
+    role      = request.args.get('role', 'spread')
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT trade_date, ts, session, xsp_price, vix, bid, ask, mid
+            FROM premium_log
+            WHERE group_idx = ? AND role = ?
+            ORDER BY ts ASC
+        """, (group_idx, role)).fetchall()
+        conn.close()
+
+        days = defaultdict(list)
+        for r in rows:
+            dt_et = datetime.fromtimestamp(r['ts'], tz=pytz.utc).astimezone(ET_TZ)
+            midnight_et = ET_TZ.localize(
+                datetime(int(r['trade_date'][:4]),
+                         int(r['trade_date'][5:7]),
+                         int(r['trade_date'][8:10]), 0, 0, 0)
+            )
+            offset_min = round((dt_et.timestamp() - midnight_et.timestamp()) / 60)
+            days[r['trade_date']].append({
+                'ts':         r['ts'],
+                'offset_min': offset_min,
+                'session':    r['session'],
+                'xsp':        r['xsp_price'],
+                'vix':        r['vix'],
+                'bid':        r['bid'],
+                'ask':        r['ask'],
+                'mid':        r['mid'],
+            })
+        return jsonify({'status': 'ok', 'data': dict(days)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/history/daily_returns')
+def api_history_daily_returns():
+    """
+    For each trade date in the DB, fetch XSP OHLC from yfinance and return
+    the daily change %.  Down day = change_pct < 0 (close < prev_close).
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM premium_log ORDER BY trade_date"
+        ).fetchall()]
+        conn.close()
+
+        if not dates:
+            return jsonify({'status': 'ok', 'data': {}})
+
+        ticker    = yf.Ticker("^XSP")
+        hist      = ticker.history(period="3mo")
+        if hist.empty:
+            return jsonify({'status': 'ok', 'data': {}})
+
+        date_strs = hist.index.strftime('%Y-%m-%d').tolist()
+        result    = {}
+        for d in dates:
+            try:
+                if d in date_strs:
+                    i      = date_strs.index(d)
+                    close  = float(hist['Close'].iloc[i])
+                    prev_c = float(hist['Close'].iloc[i - 1]) if i > 0 else close
+                    chg    = (close - prev_c) / prev_c * 100
+                    result[d] = {
+                        'close':      round(close, 2),
+                        'prev_close': round(prev_c, 2),
+                        'change_pct': round(chg, 3),
+                        'is_down':    chg < 0
+                    }
+            except Exception:
+                pass
+        return jsonify({'status': 'ok', 'data': result})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/history/groups')
+def api_history_groups():
+    """Return all watchlist groups that have logged data, with metadata."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("""
+            SELECT group_idx, expiry, opt_type,
+                   MAX(CASE WHEN role='short' THEN strike END) as short_strike,
+                   MIN(CASE WHEN role='long'  THEN strike END) as long_strike,
+                   COUNT(DISTINCT trade_date) as day_count
+            FROM premium_log
+            GROUP BY group_idx, expiry, opt_type
+            ORDER BY group_idx
+        """).fetchall()
+        conn.close()
+        result = [{'group_idx': r[0], 'expiry': r[1], 'opt_type': r[2],
+                   'short_strike': r[3], 'long_strike': r[4], 'day_count': r[5]}
+                  for r in rows]
+        return jsonify({'status': 'ok', 'data': result})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 @socketio.on('update_watchlist')
 def handle_watchlist(data):
@@ -562,6 +832,7 @@ def handle_connect():
         socketio.emit('option_update', latest_data["options"][sym])
 
 if __name__ == '__main__':
+    init_db()
     t = threading.Thread(target=start_moomoo, daemon=True)
     t.start()
     print(f"🌍 Dashboard: http://127.0.0.1:3000")
