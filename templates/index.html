@@ -679,9 +679,9 @@
                 </div>
 
                 <div class="spread-greeks">
-                    <div class="greek-item">Delta: <b style="color: ${d.delta < 0 ? 'var(--red)' : 'var(--green)'}">${d.delta.toFixed(3)}</b></div>
-                    <div class="greek-item">Gamma: <b>${d.gamma.toFixed(4)}</b></div>
-                    <div class="greek-item">Theta: <b style="color: var(--green)">${d.theta > 0 ? '+' : ''}${d.theta.toFixed(3)}</b></div>
+                    <div class="greek-item">Delta: <b style="color: ${d.short_delta < 0 ? 'var(--red)' : 'var(--green)'}">${d.short_delta.toFixed(3)}</b> <span style="font-size: 10px; color: #8b949e;">(${d.delta >= 0 ? '+' : ''}${d.delta.toFixed(3)})</span></div>
+                    <div class="greek-item">Gamma: <b>${d.short_gamma.toFixed(4)}</b> <span style="font-size: 10px; color: #8b949e;">(${d.gamma >= 0 ? '+' : ''}${d.gamma.toFixed(4)})</span></div>
+                    <div class="greek-item">Theta: <b style="color: var(--green)">${d.short_theta > 0 ? '+' : ''}${d.short_theta.toFixed(3)}</b> <span style="font-size: 10px; color: #8b949e;">(${d.theta >= 0 ? '+' : ''}${d.theta.toFixed(3)})</span></div>
                 </div>
             `;
             
