@@ -449,6 +449,45 @@ def start_moomoo():
                                                 be_price = s_val + entry_credit
                                                 dist_to_be = (be_price - current_price) / current_price * 100
                                     
+                                    # Calculate Entry Quality Score (EQS)
+                                    entry_score = None
+                                    score_pe = None
+                                    score_atr = None
+                                    score_vix = None
+                                    dte_val = None
+                                    pe_ratio = None
+                                    atr_buffers = None
+                                    try:
+                                        if current_price > 0 and abs(short_opt['delta']) > 0 and abs(s_val - l_val) > 0 and spread_bid > 0:
+                                            # --- Component 1: Premium Efficiency (50% weight) ---
+                                            # How much credit you collect relative to the risk you take.
+                                            # Formula: Credit / (|Delta| * Width). Higher = more premium per unit of risk.
+                                            # A ratio of 0.67 (e.g., $0.35 on a 5-wide with delta 0.10) would score 100.
+                                            pe_ratio = spread_bid / (abs(short_opt['delta']) * abs(s_val - l_val))
+                                            score_pe = min(max(pe_ratio * 150.0, 0.0), 100.0)
+
+                                            # --- Component 2: ATR Safety Buffer (30% weight) ---
+                                            # How many ATR multiples away is your short leg?
+                                            # This scales by sqrt(DTE) to account for time: a strike 10pts away
+                                            # is safer for a 4-day expiry than a 1-day expiry.
+                                            expiry_dt = datetime.strptime(ds, "%y%m%d")
+                                            today_date = datetime.now().date()
+                                            dte_val = max((expiry_dt.date() - today_date).days, 0.5)
+                                            atr_val = historical_stats.get("atr_14", 5.0)
+                                            atr_move = atr_val * (dte_val ** 0.5)
+                                            dist_pts = abs(current_price - s_val)
+                                            atr_buffers = dist_pts / atr_move if atr_move > 0 else 1.0
+                                            # 2+ ATR buffers = 100, 1 ATR = 50, 0 ATR = 0
+                                            score_atr = min(atr_buffers * 50.0, 100.0)
+
+                                            # --- Component 3: VIX Environment (20% weight) ---
+                                            # High VIX Rank = elevated implied volatility = fatter premiums = better time to sell.
+                                            score_vix = historical_stats.get("vix_rank", 0.0)
+
+                                            entry_score = (score_vix * 0.20) + (score_pe * 0.50) + (score_atr * 0.30)
+                                    except Exception as es_err:
+                                        print(f"⚠️ 计算 Entry Score 异常: {es_err}")
+
                                     spread_info = {
                                         "group_index": idx + 1,
                                         "date": ds,
@@ -474,7 +513,14 @@ def start_moomoo():
                                         "dist_to_short": dist_to_short,
                                         "dist_to_be": dist_to_be,
                                         "expected_move": expected_move,
-                                        "index_price": current_price
+                                        "index_price": current_price,
+                                        "entry_score": entry_score,
+                                        "score_pe": score_pe,
+                                        "score_atr": score_atr,
+                                        "score_vix": score_vix,
+                                        "pe_ratio": pe_ratio,
+                                        "atr_buffers": atr_buffers,
+                                        "dte": dte_val
                                     }
                                     socketio.emit('spread_update', spread_info)
                             except Exception as ex:

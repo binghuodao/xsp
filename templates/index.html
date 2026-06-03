@@ -627,19 +627,89 @@
                 `;
             }
 
+            // Entry Quality Score (EQS) badge + breakdown
+            let scoreHtml = '';
+            if (d.entry_score !== null && d.entry_score !== undefined) {
+                const s = d.entry_score;
+                let scoreText = 'Poor';
+                let scoreGradient = 'linear-gradient(90deg, #f85149, #b91c1c)';
+                if (s >= 80) {
+                    scoreText = '🔥 Excellent';
+                    scoreGradient = 'linear-gradient(90deg, #22c55e, #16a34a)';
+                } else if (s >= 65) {
+                    scoreText = '👍 Good';
+                    scoreGradient = 'linear-gradient(90deg, #4ade80, #22c55e)';
+                } else if (s >= 45) {
+                    scoreText = '😐 Fair';
+                    scoreGradient = 'linear-gradient(90deg, #facc15, #ca8a04)';
+                }
+
+                const fmtSub = (val) => val !== null && val !== undefined ? val.toFixed(0) : '–';
+
+                // Sub-score rows: label | mini bar | value
+                const subBar = (val, label, hint) => {
+                    if (val === null || val === undefined) return '';
+                    const pct = Math.min(Math.max(val, 0), 100);
+                    const color = pct >= 65 ? '#22c55e' : pct >= 40 ? '#facc15' : '#f85149';
+                    return `
+                        <div style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+                            <span style="width:68px;font-size:10px;color:#8b949e;white-space:nowrap;" title="${hint}">${label}</span>
+                            <div style="flex:1;height:5px;border-radius:3px;background:#30363d;overflow:hidden;">
+                                <div style="height:100%;width:${pct}%;background:${color};border-radius:3px;transition:width 0.4s;"></div>
+                            </div>
+                            <span style="width:28px;text-align:right;font-size:10px;color:${color};font-weight:600;">${fmtSub(val)}</span>
+                        </div>`;
+                };
+
+                const peHint = d.pe_ratio !== null && d.pe_ratio !== undefined
+                    ? `PE Ratio ${d.pe_ratio.toFixed(3)} = Credit / (|Δ| × Width)` : 'Premium Efficiency';
+                const atrHint = d.atr_buffers !== null && d.atr_buffers !== undefined
+                    ? `${d.atr_buffers.toFixed(2)} ATR-multiples to short leg (DTE-scaled)` : 'ATR Buffer Safety';
+                const vixHint = 'VIX Rank over past year (0=low vol, 100=high vol)';
+
+                scoreHtml = `
+                <div class="eqs-panel" style="
+                    background: rgba(22,27,34,0.85);
+                    border: 1px solid rgba(255,255,255,0.08);
+                    border-radius: 10px;
+                    padding: 10px 12px;
+                    margin: 8px 0 4px;
+                ">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;">
+                        <span style="font-size:11px;color:#8b949e;letter-spacing:.5px;">ENTRY SCORE</span>
+                        <div style="display:flex;align-items:center;gap:7px;">
+                            <span style="font-size:18px;font-weight:700;color:#fff;">${s.toFixed(0)}</span>
+                            <span style="font-size:11px;background:${scoreGradient};-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:600;">${scoreText}</span>
+                        </div>
+                    </div>
+                    <div style="height:4px;border-radius:3px;background:#30363d;overflow:hidden;margin-bottom:9px;">
+                        <div style="height:100%;width:${s}%;background:${scoreGradient};border-radius:3px;transition:width 0.6s;"></div>
+                    </div>
+                    ${subBar(d.score_pe,  'Premium Eff.', peHint)}
+                    ${subBar(d.score_atr, 'ATR Buffer',   atrHint)}
+                    ${subBar(d.score_vix, 'VIX Env.',     vixHint)}
+                    <div style="margin-top:6px;font-size:9px;color:#484f58;text-align:right;">PE×50% + ATR×30% + VIX×20%</div>
+                </div>`;
+            }
+
+
             card.innerHTML = `
                 <div class="spread-header">
                     <h3>
                         Group ${d.group_index}: ${d.short.toFixed(1)} / ${d.long.toFixed(1)}
                     </h3>
-                    <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
-                        ${d.opt_type === 'P' ? 'Put Spread' : 'Call Spread'}
-                    </span>
+                    <div style="display: flex; gap: 5px; align-items: center;">
+                        <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
+                            ${d.opt_type === 'P' ? 'Put' : 'Call'}
+                        </span>
+                    </div>
                 </div>
                 
-                <div style="font-size: 11px; color:#8b949e; margin-top:-10px; margin-bottom:12px;">
-                    Expiry: <b>${d.expiry}</b> | Width: <b>$${d.width.toFixed(1)}</b>
+                <div style="font-size: 11px; color:#8b949e; margin-top:-10px; margin-bottom:4px;">
+                    Expiry: <b>${d.expiry}</b> | Width: <b>$${d.width.toFixed(1)}</b> | DTE: <b>${d.dte !== null && d.dte !== undefined ? d.dte : '–'}</b>
                 </div>
+
+                ${scoreHtml}
 
                 <div class="spread-metrics">
                     <div class="metric-item">
