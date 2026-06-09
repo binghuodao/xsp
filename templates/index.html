@@ -440,7 +440,9 @@
             document.getElementById('p-floor').innerText = d.floor.toFixed(2);
             document.getElementById('p-ceil').innerText = d.ceiling.toFixed(2);
             if (d.vix !== undefined) {
-                document.getElementById('p-vix').innerHTML = `${d.vix.toFixed(2)} <span style="font-size:12px; color:#8b949e">(Rank: ${d.vix_rank.toFixed(0)}% | Pct: ${d.vix_percentile.toFixed(0)}%)</span>`;
+                const vixColor = d.vix <= 15 ? 'var(--green)' : d.vix >= 22 ? 'var(--red)' : '#f0883e';
+                document.getElementById('p-vix').innerHTML = `<span style="color:${vixColor}">${d.vix.toFixed(2)}</span> <span style="font-size:12px; color:#8b949e">(Rank: ${d.vix_rank.toFixed(0)}% | Pct: ${d.vix_percentile.toFixed(0)}%)</span>`;
+                document.getElementById('p-vix').style.color = vixColor;
             }
             if (d.atr_14 !== undefined) {
                 document.getElementById('p-atr').innerHTML = `${d.atr_14.toFixed(2)} <span style="font-size:12px; color:#8b949e">pts</span>`;
