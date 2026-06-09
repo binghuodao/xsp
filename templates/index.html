@@ -370,6 +370,10 @@
                 <span class="label">14D ATR (Daily Wave)</span>
                 <span id="p-atr" class="val" style="color:#f1e05a">-- <span style="font-size:12px; color:#8b949e">pts</span></span>
             </div>
+            <div class="stat">
+                <span class="label">20D EMA</span>
+                <span id="p-ema" class="val" style="color:#c9d1d9">--</span>
+            </div>
         </div>
 
         <!-- SPREADS SECTION -->
@@ -446,6 +450,11 @@
             }
             if (d.atr_14 !== undefined) {
                 document.getElementById('p-atr').innerHTML = `${d.atr_14.toFixed(2)} <span style="font-size:12px; color:#8b949e">pts</span>`;
+            }
+            if (d.ema_20 !== undefined && d.price > 0) {
+                const emaColor = d.price >= d.ema_20 ? 'var(--green)' : '#f0883e';
+                document.getElementById('p-ema').innerHTML = `${d.ema_20.toFixed(2)} <span style="font-size:12px; color:#8b949e">(${d.price >= d.ema_20 ? 'Price Above' : 'Price Below'})</span>`;
+                document.getElementById('p-ema').style.color = emaColor;
             }
         });
 

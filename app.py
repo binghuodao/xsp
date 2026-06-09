@@ -62,6 +62,7 @@ historical_stats = {
     "vix_rank": 0.0,
     "vix_percentile": 0.0,
     "atr_14": 5.0,  # 默认值
+    "ema_20": 0.0,  # 默认值
     "last_updated": 0
 }
 
@@ -234,9 +235,9 @@ def update_historical_data():
             historical_stats["vix_rank"] = float(vix_rank) * 100
             historical_stats["vix_percentile"] = float(vix_percentile) * 100
             
-        # XSP ATR 14
+        # XSP ATR 14 & EMA 20
         xsp_ticker = yf.Ticker("^XSP")
-        xsp_hist = xsp_ticker.history(period="1mo")
+        xsp_hist = xsp_ticker.history(period="2mo")
         if len(xsp_hist) >= 15:
             highs = xsp_hist['High']
             lows = xsp_hist['Low']
@@ -249,9 +250,13 @@ def update_historical_data():
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr_14 = tr.iloc[-14:].mean()
             historical_stats["atr_14"] = float(atr_14)
+
+        if len(xsp_hist) >= 20:
+            ema_20 = xsp_hist['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            historical_stats["ema_20"] = float(ema_20)
             
         historical_stats["last_updated"] = now_ts
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}")
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}")
     except Exception as e:
         print(f"⚠️ Failed to update historical data: {e}")
 
@@ -408,7 +413,8 @@ def start_moomoo():
                         "vix": historical_stats["vix"],
                         "vix_rank": historical_stats["vix_rank"],
                         "vix_percentile": historical_stats["vix_percentile"],
-                        "atr_14": historical_stats["atr_14"]
+                        "atr_14": historical_stats["atr_14"],
+                        "ema_20": historical_stats["ema_20"]
                     }
                 socketio.emit('index_update', latest_data["index"])
 
@@ -476,7 +482,8 @@ def start_moomoo():
                                 "vix": historical_stats["vix"],
                                 "vix_rank": historical_stats["vix_rank"],
                                 "vix_percentile": historical_stats["vix_percentile"],
-                                "atr_14": historical_stats["atr_14"]
+                                "atr_14": historical_stats["atr_14"],
+                                "ema_20": historical_stats["ema_20"]
                             }
                             socketio.emit('index_update', latest_data["index"])
                         
