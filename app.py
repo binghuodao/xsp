@@ -63,6 +63,7 @@ historical_stats = {
     "vix_percentile": 0.0,
     "atr_14": 5.0,  # 默认值
     "ema_20": 0.0,  # 默认值
+    "skew": 0.0,    # 默认值
     "last_updated": 0
 }
 
@@ -254,9 +255,9 @@ def update_historical_data():
         if len(xsp_hist) >= 20:
             ema_20 = xsp_hist['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
             historical_stats["ema_20"] = float(ema_20)
-            
+
         historical_stats["last_updated"] = now_ts
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}")
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}")
     except Exception as e:
         print(f"⚠️ Failed to update historical data: {e}")
 
@@ -305,6 +306,7 @@ def format_row(row):
     gamma = float(row.get('option_gamma') or 0.0)
     theta = float(row.get('option_theta') or 0.0)
     vega = float(row.get('option_vega') or 0.0)
+    iv = float(row.get('option_implied_volatility') or 0.0)
 
     # 过滤逻辑 (Put 看负 Delta, Call 看正 Delta)
     # 如果刚开盘 Delta 还没算出来，可以先注释掉这两行
@@ -328,7 +330,7 @@ def format_row(row):
                 continue
     result = {
         'symbol': symbol, 'strike': strike, 'expiry': expiry, 'opt_type': opt_type,
-        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'is_watched': is_watched
+        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'iv': iv, 'is_watched': is_watched
     }
     return result
     
@@ -389,10 +391,67 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
                 if strike in opt_chain.calls['strike'].values:
                     symbols.append(f"US.XSP{ds}C{int(strike * 1000)}")
         
+        # Force-add ATM option(s) for SKEW calculation
+        atm_strike = round(current_price / 5) * 5
+        for t in ('P', 'C'):
+            sym = f"US.XSP{ds}{t}{int(atm_strike * 1000)}"
+            if sym not in symbols:
+                symbols.append(sym)
+        
         if len(symbols) >= 399: break
     
     print(f"📊 Generated {len(symbols)} total contracts (Puts & Calls)")
     return symbols[:399]
+
+
+def calc_skew_from_options():
+    """Calculate SKEW = 4% deep Put IV - ATM IV using cached Moomoo option data.
+    Finds the expiry closest to 5 trading days out.
+    """
+    global latest_data, historical_stats
+    price = latest_data["index"].get("price", 0)
+    if price <= 0:
+        return
+
+    today = datetime.now(ET_TZ).date()
+    options = latest_data["options"]
+
+    # Gather unique expiry dates from cached options, pick the 5th
+    expiries = sorted(set(
+        datetime.strptime(opt['expiry'], '%Y-%m-%d').date()
+        for opt in options.values()
+    ))
+    future_expiries = [e for e in expiries if e > today]
+    if len(future_expiries) < 5:
+        return
+    expiry_str = future_expiries[4].strftime('%Y-%m-%d')  # 5th = index 4
+
+    # Filter options for this expiry
+    exp_opts = [opt for opt in options.values() if opt['expiry'] == expiry_str]
+
+    # Find ATM strike (closest to current price)
+    strikes = sorted(set(opt['strike'] for opt in exp_opts))
+    if not strikes:
+        return
+    atm_strike = min(strikes, key=lambda s: abs(s - price))
+    atm_put = next((opt for opt in exp_opts if opt['strike'] == atm_strike and opt['opt_type'] == 'P'), None)
+
+    if not atm_put or atm_put['iv'] <= 0:
+        return
+
+    # Find 4% deep OTM put
+    deep_target = price * 0.96
+    puts = [opt for opt in exp_opts if opt['opt_type'] == 'P']
+    if not puts:
+        return
+    deep_put = min(puts, key=lambda p: abs(p['strike'] - deep_target))
+    if deep_put['iv'] <= 0:
+        return
+
+    skew_val = (deep_put['iv'] - atm_put['iv'])  # in decimal (0.15 = 15 points)
+
+    historical_stats["skew"] = round(skew_val, 1)
+    latest_data["index"]["skew"] = historical_stats["skew"]
 
 def start_moomoo():
     global latest_data
@@ -414,7 +473,8 @@ def start_moomoo():
                         "vix_rank": historical_stats["vix_rank"],
                         "vix_percentile": historical_stats["vix_percentile"],
                         "atr_14": historical_stats["atr_14"],
-                        "ema_20": historical_stats["ema_20"]
+                        "ema_20": historical_stats["ema_20"],
+                        "skew": historical_stats["skew"]
                     }
                 socketio.emit('index_update', latest_data["index"])
 
@@ -483,7 +543,8 @@ def start_moomoo():
                                 "vix_rank": historical_stats["vix_rank"],
                                 "vix_percentile": historical_stats["vix_percentile"],
                                 "atr_14": historical_stats["atr_14"],
-                                "ema_20": historical_stats["ema_20"]
+                                "ema_20": historical_stats["ema_20"],
+                                "skew": historical_stats["skew"]
                             }
                             socketio.emit('index_update', latest_data["index"])
                         
@@ -493,8 +554,9 @@ def start_moomoo():
                             if not item:
                                 continue
                             delta = float(row.get('option_delta') or 0.0)
-                            # Bypass delta filter if option is watched
-                            if (delta >= -0.15 and delta <= 0.15) or item['is_watched']:
+                            # Bypass delta filter if option is watched or ATM
+                            is_atm = current_price > 0 and abs(item['strike'] - current_price) <= 2.5
+                            if (delta >= -0.15 and delta <= 0.15) or item['is_watched'] or is_atm:
                                 latest_data["options"][row['code']] = item
                                 updated_symbols.append(row['code'])
                             else:
@@ -690,7 +752,11 @@ def start_moomoo():
                 else:
                     print(f"⚠️ API 请求未返回数据: {data}")
 
-                # 3. 控制频率
+                # 4. 从现有 Moomoo 期权链计算 SKEW 并更新显示
+                calc_skew_from_options()
+                socketio.emit('index_update', latest_data["index"])
+
+                # 5. 控制频率
                 log_premium_snapshot()
                 time.sleep(REFRESH_INTERVAL)
                 
