@@ -373,9 +373,14 @@
         </div>
 
         <!-- SPREADS SECTION -->
-        <h2 style="font-size: 18px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
-            <span>📊 Active Spreads (差价组合)</span>
-            <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
+        <h2 style="font-size: 18px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span>📊 Active Spreads (差价组合)</span>
+                <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
+            </div>
+            <a href="/history" style="font-size: 13px; color: #58a6ff; text-decoration: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: #21262d; border: 1px solid #30364d; border-radius: 6px; font-weight: 500; transition: background .2s;" onmouseover="this.style.background='#30363d'" onmouseout="this.style.background='#21262d'">
+                📈 进入历史路径分析
+            </a>
         </h2>
         <div id="spreads-container" class="grid" style="margin-bottom: 30px;"></div>
 
@@ -702,6 +707,9 @@
                         <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
                             ${d.opt_type === 'P' ? 'Put' : 'Call'}
                         </span>
+                        <a href="/history?group=${d.group_index}&role=spread" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该组合的历史路径">
+                            📈 历史
+                        </a>
                     </div>
                 </div>
                 
