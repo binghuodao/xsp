@@ -459,12 +459,12 @@
                 document.getElementById('p-atr').innerHTML = `${d.atr_14.toFixed(2)} <span style="font-size:12px; color:#8b949e">pts</span>`;
             }
             if (d.ema_20 !== undefined && d.price > 0) {
-                const emaColor = d.price >= d.ema_20 ? 'var(--green)' : '#f0883e';
+                const emaColor = d.price >= d.ema_20 ? 'var(--green)' : 'var(--red)';
                 document.getElementById('p-ema').innerHTML = `${d.ema_20.toFixed(2)} <span style="font-size:12px; color:#8b949e">(${d.price >= d.ema_20 ? 'Price Above' : 'Price Below'})</span>`;
                 document.getElementById('p-ema').style.color = emaColor;
             }
             if (d.skew !== undefined) {
-                const skewColor = d.skew > 15 ? 'var(--red)' : 'var(--green)';
+                const skewColor = d.skew > 15 ? 'var(--red)' : d.skew >= 12 ? '#f0883e' : 'var(--green)';
                 document.getElementById('p-skew').innerHTML = `${d.skew.toFixed(1)} <span style="font-size:12px; color:#8b949e">pts</span>`;
                 document.getElementById('p-skew').style.color = skewColor;
             }
