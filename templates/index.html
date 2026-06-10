@@ -384,6 +384,8 @@
         <h2 style="font-size: 18px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span>📊 Active Spreads (差价组合)</span>
+                <span id="traffic-light" style="display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #30364d; background: #8b949e;" title="综合信号: 绿=全安全, 黄=注意, 红=有风险"></span>
+                <span id="traffic-text" style="font-size: 16px; font-weight: bold; background: #21262d; border: 1px solid var(--border); padding: 2px 10px; border-radius: 6px; color: #8b949e;">加载中</span>
                 <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
                 <span id="short-delta-sum" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: var(--green);">ΣΔ Short: --</span>
             </div>
@@ -444,6 +446,7 @@
             });
             updateActiveSpreadCount();
             updateShortDeltaSum();
+            updateTrafficLight();
         });
 
         socket.on('index_update', d => {
@@ -468,6 +471,7 @@
                 document.getElementById('p-skew').innerHTML = `${d.skew.toFixed(1)} <span style="font-size:12px; color:#8b949e">pts</span>`;
                 document.getElementById('p-skew').style.color = skewColor;
             }
+            updateTrafficLight();
         });
 
         socket.on('option_update', d => {
@@ -556,6 +560,25 @@
             const sum = keys.reduce((acc, k) => acc + shortDeltas[k], 0);
             el.textContent = `ΣΔ Short: ${sum >= 0 ? '+' : ''}${sum.toFixed(3)}`;
             el.style.color = sum >= -0.5 ? 'var(--green)' : 'var(--red)';
+        }
+
+        function updateTrafficLight() {
+            const light = document.getElementById('traffic-light');
+            const signals = ['p-vix', 'p-ema', 'p-skew', 'short-delta-sum'];
+            let hasRed = false, hasYellow = false;
+            for (const id of signals) {
+                const el = document.getElementById(id);
+                if (!el) continue;
+                const color = getComputedStyle(el).color;
+                if (color.includes('255, 123, 114')) hasRed = true;
+                else if (color.includes('240, 136, 62')) hasYellow = true;
+            }
+            const bg = hasRed ? 'var(--red)' : hasYellow ? '#f0883e' : 'var(--green)';
+            const txt = hasRed ? '禁止开仓' : hasYellow ? '减仓' : '可满仓';
+            light.style.background = bg;
+            const textEl = document.getElementById('traffic-text');
+            textEl.style.color = bg;
+            textEl.textContent = txt;
         }
 
         // 监听差价组合的实时推送并渲染
@@ -806,6 +829,7 @@
             // 更新短腿 Delta 总和
             shortDeltas[d.group_index] = d.short_delta;
             updateShortDeltaSum();
+            updateTrafficLight();
         });
 
         function updateActiveSpreadCount() {
