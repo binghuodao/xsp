@@ -385,6 +385,7 @@
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span>📊 Active Spreads (差价组合)</span>
                 <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
+                <span id="short-delta-sum" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: var(--green);">ΣΔ Short: --</span>
             </div>
             <a href="/history" style="font-size: 13px; color: #58a6ff; text-decoration: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: #21262d; border: 1px solid #30364d; border-radius: 6px; font-weight: 500; transition: background .2s;" onmouseover="this.style.background='#30363d'" onmouseout="this.style.background='#21262d'">
                 📈 进入历史路径分析
@@ -437,10 +438,12 @@
                         if (card) {
                             card.remove();
                         }
+                        delete shortDeltas[i];
                     }
                 }
             });
             updateActiveSpreadCount();
+            updateShortDeltaSum();
         });
 
         socket.on('index_update', d => {
@@ -541,6 +544,18 @@
             const items = Array.from(parent.children);
             items.sort((a,b) => isStr ? a.dataset[key].localeCompare(b.dataset[key]) : parseFloat(a.dataset[key]) - parseFloat(b.dataset[key]));
             items.forEach(it => parent.appendChild(it));
+        }
+
+        // 短腿 Delta 求和追踪
+        const shortDeltas = {};
+
+        function updateShortDeltaSum() {
+            const el = document.getElementById('short-delta-sum');
+            const keys = Object.keys(shortDeltas);
+            if (keys.length === 0) { el.textContent = 'ΣΔ Short: --'; return; }
+            const sum = keys.reduce((acc, k) => acc + shortDeltas[k], 0);
+            el.textContent = `ΣΔ Short: ${sum >= 0 ? '+' : ''}${sum.toFixed(3)}`;
+            el.style.color = sum >= -0.5 ? 'var(--green)' : 'var(--red)';
         }
 
         // 监听差价组合的实时推送并渲染
@@ -785,8 +800,12 @@
             
             // 实时按照到期日进行排序
             sortElements(container, 'expiry', true);
-            
+
             updateActiveSpreadCount();
+
+            // 更新短腿 Delta 总和
+            shortDeltas[d.group_index] = d.short_delta;
+            updateShortDeltaSum();
         });
 
         function updateActiveSpreadCount() {
