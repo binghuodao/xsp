@@ -553,18 +553,8 @@ def start_moomoo():
                             item = format_row(row)
                             if not item:
                                 continue
-                            delta = float(row.get('option_delta') or 0.0)
-                            # Bypass delta filter if option is watched or ATM
-                            is_atm = current_price > 0 and abs(item['strike'] - current_price) <= 2.5
-                            if (delta >= -0.15 and delta <= 0.15) or item['is_watched'] or is_atm:
-                                latest_data["options"][row['code']] = item
-                                updated_symbols.append(row['code'])
-                            else:
-                                # Optional: If it was in our cache but no longer qualifies, remove it
-                                if row['code'] in latest_data["options"]:
-                                    del latest_data["options"][row['code']]
-                                    # Tell frontend to remove the row
-                                    socketio.emit('remove_row', {'symbol': row['code'], 'expiry': row.get('strike_time')})
+                            latest_data["options"][row['code']] = item
+                            updated_symbols.append(row['code'])
                     
                     # Manage Order Book Subscriptions for watched options
                     watched_symbols = {sym for sym, item in latest_data["options"].items() if item['is_watched']}
