@@ -659,6 +659,12 @@
                 const maxScale = d.index_price + 2 * d.expected_move;
                 let shortPct = ((d.short - minScale) / (maxScale - minScale)) * 100;
                 shortPct = Math.max(0, Math.min(100, shortPct)); // clamp 0-100
+
+                let putWallPct = null;
+                if (d.put_wall !== null && d.put_wall !== undefined) {
+                    putWallPct = ((d.put_wall - minScale) / (maxScale - minScale)) * 100;
+                    putWallPct = Math.max(0, Math.min(100, putWallPct));
+                }
                 
                 const markerColor = d.opt_type === 'P' ? '#f0883e' : 'var(--green)';
                 
@@ -672,6 +678,7 @@
                             <span>-EM: <b>${lowerEM.toFixed(1)}</b></span>
                             <span style="color: var(--blue);">Index: <b>${d.index_price.toFixed(1)}</b></span>
                             <span>+EM: <b>${upperEM.toFixed(1)}</b></span>
+                            ${d.put_wall ? `<span style="color: #ff6b6b;">GEX: <b>${d.put_wall.toFixed(1)}</b></span>` : ''}
                         </div>
                         
                         <!-- 动态可视化数轴 -->
@@ -688,6 +695,13 @@
                                     ${d.short.toFixed(0)} (Short)
                                 </span>
                             </div>
+                            ${putWallPct !== null ? `
+                            <!-- Gamma 敞口峰值 刻度线 -->
+                            <div style="position: absolute; left: ${putWallPct}%; top: -6px; width: 3px; height: 16px; background: #ff6b6b; border-radius: 1px; opacity: 0.7;" title="GEX Peak: ${d.put_wall}">
+                                <span style="position: absolute; top: 28px; left: 50%; transform: translateX(-50%); font-size: 8px; color: #ff6b6b; font-weight: bold; white-space: nowrap; opacity: 0.8;">
+                                    ${d.put_wall.toFixed(0)} (GEX)
+                                </span>
+                            </div>` : ''}
                         </div>
                         <div style="font-size: 10px; color: #8b949e; text-align: center; margin-top: 10px; border-top: 1px solid rgba(48, 54, 77, 0.3); padding-top: 6px;">
                             Implied Daily Range: <b>±${d.expected_move.toFixed(1)}</b> pts

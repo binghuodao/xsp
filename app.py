@@ -307,6 +307,7 @@ def format_row(row):
     theta = float(row.get('option_theta') or 0.0)
     vega = float(row.get('option_vega') or 0.0)
     iv = float(row.get('option_implied_volatility') or 0.0)
+    open_interest = int(row.get('option_open_interest') or 0)
 
     # 过滤逻辑 (Put 看负 Delta, Call 看正 Delta)
     # 如果刚开盘 Delta 还没算出来，可以先注释掉这两行
@@ -330,7 +331,7 @@ def format_row(row):
                 continue
     result = {
         'symbol': symbol, 'strike': strike, 'expiry': expiry, 'opt_type': opt_type,
-        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'iv': iv, 'is_watched': is_watched
+        'bid': bid, 'ask': ask, 'mid': mid, 'delta': delta, 'gamma': gamma, 'theta': theta, 'vega': vega, 'iv': iv, 'is_watched': is_watched, 'open_interest': open_interest
     }
     return result
     
@@ -583,6 +584,16 @@ def start_moomoo():
                     for sym in updated_symbols:
                         socketio.emit('option_update', latest_data["options"][sym])
 
+                    # 计算各到期日 Gamma 敞口峰值 (Gamma × OI 最大的行权价)
+                    put_walls = {}
+                    for opt in latest_data["options"].values():
+                        exp = opt['expiry']
+                        oi = opt.get('open_interest', 0)
+                        gamma = abs(opt.get('gamma', 0))
+                        gex = gamma * oi
+                        if opt['opt_type'] == 'P' and oi > 0 and gamma > 0:
+                            if exp not in put_walls or gex > put_walls[exp]['gex']:
+                                put_walls[exp] = {'strike': opt['strike'], 'oi': oi, 'gex': gex}
                     # 3. 计算和广播 Watchlist 中的差价组合 (Spreads) 数据
                     for idx, group in enumerate(user_watchlist):
                         ds = group.get('date')
@@ -733,7 +744,8 @@ def start_moomoo():
                                         "score_vix": score_vix,
                                         "pe_ratio": pe_ratio,
                                         "atr_buffers": atr_buffers,
-                                        "dte": dte_val
+                                        "dte": dte_val,
+                                        "put_wall": put_walls.get(expiry_date_str, {}).get('strike')
                                     }
                                     socketio.emit('spread_update', spread_info)
                             except Exception as ex:
