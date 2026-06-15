@@ -319,14 +319,17 @@ def format_row(row):
     for group in user_watchlist:
         if group.get('date') == d_str:
             try:
-                # 匹配短腿或长腿行权价
                 short_val = group.get('short')
                 long_val = group.get('long')
-                s_price = str(int(float(short_val))) if short_val else ""
-                l_price = str(int(float(long_val))) if long_val else ""
-                if (s_price and s_price in strike_raw) or (l_price and l_price in strike_raw):
-                    is_watched = True
-                    break
+                mid_val = group.get('mid')
+                s_strike = int(float(short_val)) if short_val else None
+                l_strike = int(float(long_val)) if long_val else None
+                m_strike = int(float(mid_val)) if mid_val else None
+                if s_strike is not None and l_strike is not None:
+                    group_type = 'P' if s_strike > l_strike else 'C'
+                    if opt_type == group_type and strike in (s_strike, l_strike, m_strike):
+                        is_watched = True
+                        break
             except Exception:
                 continue
     result = {
@@ -600,6 +603,7 @@ def start_moomoo():
                         s_strike = group.get('short')
                         l_strike = group.get('long')
                         entry_val = group.get('entry')
+                        m_strike = group.get('mid')
                         
                         if ds and s_strike and l_strike:
                             try:
@@ -747,7 +751,73 @@ def start_moomoo():
                                         "dte": dte_val,
                                         "put_wall": put_walls.get(expiry_date_str, {}).get('strike')
                                     }
-                                    socketio.emit('spread_update', spread_info)
+                                    if not (m_strike and str(m_strike).strip()):
+                                        socketio.emit('spread_update', spread_info)
+
+                                    # --- Symmetric Butterfly (对称蝴蝶) ---
+                                    if m_strike and str(m_strike).strip():
+                                        try:
+                                            m_val = float(m_strike)
+                                            lower = min(s_val, l_val)
+                                            upper = max(s_val, l_val)
+                                            if lower < m_val < upper:
+                                                bfly_type = opt_type
+                                                lower_sym = f"US.XSP{ds}{bfly_type}{int(lower * 1000)}"
+                                                mid_sym = f"US.XSP{ds}{bfly_type}{int(m_val * 1000)}"
+                                                upper_sym = f"US.XSP{ds}{bfly_type}{int(upper * 1000)}"
+
+                                                if (lower_sym in latest_data["options"] and
+                                                    mid_sym in latest_data["options"] and
+                                                    upper_sym in latest_data["options"]):
+
+                                                    low_opt = latest_data["options"][lower_sym]
+                                                    mid_opt = latest_data["options"][mid_sym]
+                                                    up_opt = latest_data["options"][upper_sym]
+
+                                                    bfly_bid = low_opt['bid'] + up_opt['bid'] - 2 * mid_opt['ask']
+                                                    bfly_ask = low_opt['ask'] + up_opt['ask'] - 2 * mid_opt['bid']
+                                                    bfly_mid = low_opt['mid'] + up_opt['mid'] - 2 * mid_opt['mid']
+
+                                                    bfly_delta = low_opt['delta'] + up_opt['delta'] - 2 * mid_opt['delta']
+                                                    bfly_gamma = low_opt.get('gamma',0.0) + up_opt.get('gamma',0.0) - 2 * mid_opt.get('gamma',0.0)
+                                                    bfly_theta = low_opt.get('theta',0.0) + up_opt.get('theta',0.0) - 2 * mid_opt.get('theta',0.0)
+                                                    bfly_vega = low_opt.get('vega',0.0) + up_opt.get('vega',0.0) - 2 * mid_opt.get('vega',0.0)
+
+                                                    bfly_pnl = None
+                                                    bfly_pnl_percent = None
+                                                    bfly_entry = None
+                                                    if entry_val and str(entry_val).strip() != '':
+                                                        bfly_entry = float(entry_val)
+                                                        bfly_pnl = bfly_bid - bfly_entry
+                                                        bfly_pnl_percent = (bfly_pnl / bfly_entry) * 100 if bfly_entry > 0 else 0.0
+
+                                                    bfly_info = {
+                                                        "group_index": idx + 1,
+                                                        "date": ds,
+                                                        "expiry": expiry_date_str,
+                                                        "opt_type": bfly_type,
+                                                        "lower": lower,
+                                                        "mid_strike": m_val,
+                                                        "upper": upper,
+                                                        "width": upper - lower,
+                                                        "entry": bfly_entry,
+                                                        "bid": round(bfly_bid, 2),
+                                                        "ask": round(bfly_ask, 2),
+                                                        "mid": round(bfly_mid, 2),
+                                                        "delta": round(bfly_delta, 3),
+                                                        "gamma": round(bfly_gamma, 4),
+                                                        "theta": round(bfly_theta, 3),
+                                                        "vega": round(bfly_vega, 3),
+                                                        "pnl": bfly_pnl,
+                                                        "pnl_percent": bfly_pnl_percent,
+                                                        "expected_move": expected_move,
+                                                        "index_price": current_price,
+                                                        "dte": dte_val,
+                                                    }
+                                                    socketio.emit('butterfly_update', bfly_info)
+                                        except Exception as bf_ex:
+                                            print(f"⚠️ 计算 Group {idx+1} 蝴蝶异常: {bf_ex}")
+
                             except Exception as ex:
                                 print(f"⚠️ 计算 Group {idx+1} 差价异常: {ex}")
                         

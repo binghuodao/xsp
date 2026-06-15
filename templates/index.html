@@ -347,6 +347,7 @@
                             <label>GROUP ${i}</label>
                             <input type="text" id="date-${i}" placeholder="YYMMDD (e.g. 260421)">
                             <input type="number" id="short-${i}" placeholder="Short Strike">
+                            <input type="number" id="mid-${i}" placeholder="Mid Strike (Butterfly)">
                             <input type="number" id="long-${i}" placeholder="Long Strike">
                             <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Credit (e.g. 1.20)">
                         </div>
@@ -395,6 +396,10 @@
         </h2>
         <div id="spreads-container" class="grid" style="margin-bottom: 30px;"></div>
 
+        <!-- BUTTERFLIES SECTION -->
+        <h2 style="font-size: 18px; margin-bottom: 15px;">🦋 Symmetric Butterflies (对称蝴蝶)</h2>
+        <div id="butterflies-container" class="grid" style="margin-bottom: 30px;"></div>
+
         <h2 style="font-size: 18px; margin-bottom: 15px;">⛓️ Option Chains (期权链)</h2>
         <div id="container" class="grid"></div>
     </div>
@@ -415,12 +420,13 @@
         function saveWatchlist() {
             const watchlist = [];
             for(let i=1; i<=WATCHLIST_SIZE; i++) {
-                watchlist.push({
-                    date: document.getElementById(`date-${i}`).value,
-                    short: document.getElementById(`short-${i}`).value,
-                    long: document.getElementById(`long-${i}`).value,
-                    entry: document.getElementById(`entry-${i}`).value
-                });
+            watchlist.push({
+                date: document.getElementById(`date-${i}`).value,
+                short: document.getElementById(`short-${i}`).value,
+                mid: document.getElementById(`mid-${i}`).value,
+                long: document.getElementById(`long-${i}`).value,
+                entry: document.getElementById(`entry-${i}`).value
+            });
             }
             socket.emit('update_watchlist', watchlist);
         }
@@ -431,15 +437,25 @@
                 if(i <= WATCHLIST_SIZE) {
                     document.getElementById(`date-${i}`).value = group.date || '';
                     document.getElementById(`short-${i}`).value = group.short || '';
+                    document.getElementById(`mid-${i}`).value = group.mid || '';
                     document.getElementById(`long-${i}`).value = group.long || '';
                     document.getElementById(`entry-${i}`).value = group.entry || '';
                     
                     // Clear spread card if inputs are emptied
                     if (!group.date || !group.short || !group.long) {
                         const card = document.getElementById(`sc-${i}`);
-                        if (card) {
-                            card.remove();
-                        }
+                        if (card) { card.remove(); }
+                        delete shortDeltas[i];
+                    }
+                    // Clear butterfly card if no mid strike
+                    if (!group.mid) {
+                        const bcard = document.getElementById(`bf-${i}`);
+                        if (bcard) { bcard.remove(); }
+                    }
+                    // Clear spread card if mid strike present (butterfly replaces it)
+                    if (group.mid) {
+                        const scard = document.getElementById(`sc-${i}`);
+                        if (scard) { scard.remove(); }
                         delete shortDeltas[i];
                     }
                 }
@@ -856,6 +872,124 @@
             shortDeltas[d.group_index] = d.short_delta;
             updateShortDeltaSum();
             updateTrafficLight();
+        });
+
+        socket.on('butterfly_update', d => {
+            const container = document.getElementById('butterflies-container');
+            const cardId = `bf-${d.group_index}`;
+            let card = document.getElementById(cardId);
+
+            if (!card) {
+                card = document.createElement('div');
+                card.id = cardId;
+                container.appendChild(card);
+            }
+            card.dataset.expiry = d.expiry;
+            card.className = `spread-card ${d.opt_type === 'P' ? 'put-spread' : 'call-spread'}`;
+
+            let pnlHtml = '--';
+            if (d.pnl !== null) {
+                const prefix = d.pnl >= 0 ? '+' : '';
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div class="pnl-value" style="color: ${d.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+                            ${prefix}$${(d.pnl * 100).toFixed(1)}
+                            <span class="pnl-percent" style="font-size: 12px; font-weight: bold;">(${prefix}${d.pnl_percent.toFixed(1)}%)</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div style="font-size: 13px; color:#8b949e">Enter Entry Credit to track</div>
+                    </div>
+                `;
+            }
+
+            let emHtml = '';
+            if (d.expected_move && d.index_price) {
+                const lowerEM = d.index_price - d.expected_move;
+                const upperEM = d.index_price + d.expected_move;
+                const minScale = d.index_price - 2 * d.expected_move;
+                const maxScale = d.index_price + 2 * d.expected_move;
+                let midPct = ((d.mid_strike - minScale) / (maxScale - minScale)) * 100;
+                midPct = Math.max(0, Math.min(100, midPct));
+
+                emHtml = `
+                    <div class="waterline-section" style="margin-bottom: 15px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span class="waterline-title" style="margin-bottom: 0;">Expected Move (期望波动)</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #8b949e; margin-bottom: 6px;">
+                            <span>-EM: <b>${lowerEM.toFixed(1)}</b></span>
+                            <span style="color: var(--blue);">Index: <b>${d.index_price.toFixed(1)}</b></span>
+                            <span>+EM: <b>${upperEM.toFixed(1)}</b></span>
+                        </div>
+                        <div style="position: relative; height: 6px; background: #21262d; border-radius: 3px; margin: 15px 0 22px 0; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="position: absolute; left: 25%; width: 50%; height: 100%; background: rgba(88, 166, 255, 0.15); border-radius: 3px;"></div>
+                            <div style="position: absolute; left: 50%; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); transform: translateX(-50%); box-shadow: 0 0 6px var(--blue);"></div>
+                            <div style="position: absolute; left: ${midPct}%; top: -6px; width: 3px; height: 16px; background: #c9d1d9; border-radius: 1px;" title="Body Strike: ${d.mid_strike}">
+                                <span style="position: absolute; top: 18px; left: 50%; transform: translateX(-50%); font-size: 9px; color: #c9d1d9; font-weight: bold; white-space: nowrap;">
+                                    ${d.mid_strike.toFixed(0)} (Body)
+                                </span>
+                            </div>
+                        </div>
+                        <div style="font-size: 10px; color: #8b949e; text-align: center; margin-top: 10px; border-top: 1px solid rgba(48, 54, 77, 0.3); padding-top: 6px;">
+                            Implied Daily Range: <b>±${d.expected_move.toFixed(1)}</b> pts
+                        </div>
+                    </div>
+                `;
+            }
+
+            card.innerHTML = `
+                <div class="spread-header">
+                    <h3>
+                        Group ${d.group_index}: 🦋 Butterfly ${d.lower.toFixed(1)} / ${d.mid_strike.toFixed(1)} / ${d.upper.toFixed(1)}
+                    </h3>
+                    <div style="display: flex; gap: 5px; align-items: center;">
+                        <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
+                            ${d.opt_type === 'P' ? 'Put' : 'Call'}
+                        </span>
+                    </div>
+                </div>
+
+                <div style="font-size: 11px; color:#8b949e; margin-top:-10px; margin-bottom:4px;">
+                    Expiry: <b>${d.expiry}</b> | Width: <b>$${d.width.toFixed(1)}</b> | DTE: <b>${d.dte !== null && d.dte !== undefined ? d.dte : '–'}</b>
+                </div>
+
+                <div class="spread-metrics">
+                    <div class="metric-item">
+                        <span class="m-lbl">Bid (Credit)</span>
+                        <span class="m-val" style="color:var(--green)">$${d.bid.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Ask (Debit)</span>
+                        <span class="m-val" style="color:var(--red)">$${d.ask.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Mid (Fair)</span>
+                        <span class="m-val" style="color:var(--blue)">$${d.mid.toFixed(2)}</span>
+                    </div>
+                </div>
+
+                <div class="spread-pnl-section ${d.pnl !== null ? (d.pnl >= 0 ? 'profit' : 'loss') : ''}">
+                    ${pnlHtml}
+                    ${d.entry !== null ? `<div style="text-align: right;"><span class="label" style="margin-bottom: 2px;">Entry</span><b style="font-size: 16px; color: white;">$${d.entry.toFixed(2)}</b></div>` : ''}
+                </div>
+
+                ${emHtml}
+
+                <div class="spread-greeks">
+                    <div class="greek-item">Delta: <b>${d.delta >= 0 ? '+' : ''}${d.delta.toFixed(3)}</b></div>
+                    <div class="greek-item">Gamma: <b>${d.gamma >= 0 ? '+' : ''}${d.gamma.toFixed(4)}</b></div>
+                    <div class="greek-item">Theta: <b style="color: var(--green)">${d.theta >= 0 ? '+' : ''}${d.theta.toFixed(3)}</b></div>
+                    <div class="greek-item">Vega: <b>${d.vega >= 0 ? '+' : ''}${d.vega.toFixed(3)}</b></div>
+                </div>
+            `;
+
+            sortElements(container, 'expiry', true);
         });
 
         function updateActiveSpreadCount() {
