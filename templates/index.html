@@ -500,7 +500,7 @@
             
             if (!row) {
                 row = document.createElement('tr');
-                row.id = rowId; row.dataset.strike = d.strike;
+                row.id = rowId; row.dataset.strike = d.strike; row.dataset.optType = d.opt_type;
                 body.appendChild(row);
             }
 
@@ -528,8 +528,19 @@
             
             row.classList.add('update-flash');
             setTimeout(() => row.classList.remove('update-flash'), 500);
-            sortElements(body, 'strike', false);
+            sortRows(body);
         });
+
+        function sortRows(tbody) {
+            const rows = Array.from(tbody.children);
+            rows.sort((a, b) => {
+                const typeA = a.dataset.optType === 'P' ? 0 : 1;
+                const typeB = b.dataset.optType === 'P' ? 0 : 1;
+                if (typeA !== typeB) return typeA - typeB;
+                return parseFloat(a.dataset.strike) - parseFloat(b.dataset.strike);
+            });
+            rows.forEach(r => tbody.appendChild(r));
+        }
 
         // 监听有效日期列表，清理过期的卡片
         socket.on('active_dates', (validDates) => {
