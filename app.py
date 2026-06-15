@@ -368,9 +368,9 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
         check_date += timedelta(days=1)
 
     # --- Robust Strike Logic ---
-    # Put Range: From Floor up to Current Price
+    # Put Range: From Floor up to Current Price + 2 ticks
     p_start = int((floor_price // 5) * 5) + 5
-    p_end = int((current_price // 5) * 5)
+    p_end = int((current_price // 5) * 5) + 10
     
     # Call Range: From Current Price up to Ceiling
     c_start = int((current_price // 5) * 5) + 5
