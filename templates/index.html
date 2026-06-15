@@ -475,11 +475,6 @@
         });
 
         socket.on('option_update', d => {
-            // 前台过滤：过滤掉 PUT delta ≤ -0.15 和 CALL delta ≥ 0.15 的实值期权
-            if (!d.is_watched) {
-                if (d.opt_type === 'P' && d.delta <= -0.15) return;
-                if (d.opt_type === 'C' && d.delta >= 0.15) return;
-            }
 
             const container = document.getElementById('container');
             const cardId = `c-${d.expiry}`;
