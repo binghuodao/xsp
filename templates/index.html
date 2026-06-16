@@ -379,14 +379,17 @@
                 <span class="label">14D ATR (Daily Wave)</span>
                 <span id="p-atr" class="val" style="color:#f1e05a">-- <span style="font-size:12px; color:#8b949e">pts</span></span>
             </div>
+            <div class="stat">
+                <span class="label">MES MAIN</span>
+                <span id="p-mes" class="val" style="color:var(--blue)">--</span>
+            </div>
         </div>
 
         <!-- SPREADS SECTION -->
         <h2 style="font-size: 18px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
                 <span>📊 Active Spreads (差价组合)</span>
-                <span id="traffic-light" style="display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #30364d; background: #8b949e;" title="综合信号: 绿=全安全, 黄=注意, 红=有风险"></span>
-                <span id="traffic-text" style="font-size: 16px; font-weight: bold; background: #21262d; border: 1px solid var(--border); padding: 2px 10px; border-radius: 6px; color: #8b949e;">加载中</span>
+                <span id="traffic-light" style="font-size: 20px; background: #21262d; border: 1px solid var(--border); padding: 2px 10px; border-radius: 6px; letter-spacing: 2px;" title="综合信号: 🟢=全安全, 💛=注意, 🔴=有风险">加载中</span>
                 <span id="spread-count" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: #8b949e; display: none;">0 Active</span>
                 <span id="short-delta-sum" style="font-size: 12px; background: #21262d; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: var(--green);">ΣΔ Short: --</span>
             </div>
@@ -486,6 +489,10 @@
                 const skewColor = d.skew > 15 ? 'var(--red)' : d.skew >= 12 ? '#f0883e' : 'var(--green)';
                 document.getElementById('p-skew').innerHTML = `${d.skew.toFixed(1)} <span style="font-size:12px; color:#8b949e">pts</span>`;
                 document.getElementById('p-skew').style.color = skewColor;
+            }
+            if (d.mes_price !== undefined) {
+                const changeColor = d.mes_change >= 0 ? 'var(--green)' : 'var(--red)';
+                document.getElementById('p-mes').innerHTML = `${d.mes_price.toFixed(2)} <span style="font-size:14px; color:${changeColor}">${d.mes_change >= 0 ? '+' : ''}${d.mes_change.toFixed(2)} (${d.mes_change_pct >= 0 ? '+' : ''}${d.mes_change_pct.toFixed(2)}%)</span>`;
             }
             updateTrafficLight();
         });
@@ -601,12 +608,7 @@
                 if (color.includes('255, 123, 114')) hasRed = true;
                 else if (color.includes('240, 136, 62')) hasYellow = true;
             }
-            const bg = hasRed ? 'var(--red)' : hasYellow ? '#f0883e' : 'var(--green)';
-            const txt = hasRed ? '禁止开仓' : hasYellow ? '减仓' : '可满仓';
-            light.style.background = bg;
-            const textEl = document.getElementById('traffic-text');
-            textEl.style.color = bg;
-            textEl.textContent = txt;
+            light.textContent = hasRed ? '\u{1F534}\u{1F534}\u{1F534} 大盘跌破20-EMA，禁止开仓' : hasYellow ? '\u{1F49B}\u{1F49B}\u{1F49B} 大盘刚收复20-EMA、处于局势整理期，减仓' : '\u{1F7E2}\u{1F7E2}\u{1F7E2} 大盘实体站稳均线，且VIX/SKEW均落入安全绿区，可满仓';
         }
 
         // 监听差价组合的实时推送并渲染

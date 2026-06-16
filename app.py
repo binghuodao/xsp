@@ -26,7 +26,8 @@ OPEND_ADDR = '127.0.0.1'
 OPEND_PORT = 11111
 FLOOR_PERCENT = args.floor
 CEILING_PERCENT = args.ceiling
-REF_SYMBOL = 'US.SPY'  
+REF_SYMBOL = 'US.SPY'
+MES_SYMBOL = 'US.MESmain'  
 REFRESH_INTERVAL = args.refresh
 WATCHLIST_SIZE = args.watchlist_size
 OPTION_DAYS = args.option_days
@@ -499,6 +500,9 @@ def start_moomoo():
                 
                 price = get_xsp_anchor_price()
                 if price > 0:
+                    mes_price = latest_data["index"].get("mes_price")
+                    mes_change = latest_data["index"].get("mes_change")
+                    mes_change_pct = latest_data["index"].get("mes_change_pct")
                     latest_data["index"] = {
                         "price": price, 
                         "floor": price * FLOOR_PERCENT,
@@ -510,7 +514,37 @@ def start_moomoo():
                         "ema_20": historical_stats["ema_20"],
                         "skew": historical_stats["skew"]
                     }
+                    if mes_price is not None:
+                        latest_data["index"]["mes_price"] = mes_price
+                        latest_data["index"]["mes_change"] = mes_change
+                        latest_data["index"]["mes_change_pct"] = mes_change_pct
                 socketio.emit('index_update', latest_data["index"])
+
+                # 通过 yfinance 获取 MES 期货当前行情（延迟约 15-20 分钟，免费版局限）
+                try:
+                    mes_ticker = yf.Ticker("MES=F")
+                    curr_price = None
+                    prev_close = None
+                    try:
+                        info = mes_ticker.info
+                        curr_price = info.get('regularMarketPrice')
+                        prev_close = info.get('regularMarketPreviousClose')
+                    except Exception:
+                        pass
+                    if not curr_price or curr_price <= 0 or not prev_close or prev_close <= 0:
+                        mes_hist = mes_ticker.history(period="1mo")
+                        if not mes_hist.empty and len(mes_hist) >= 2:
+                            curr_price = curr_price or float(mes_hist['Close'].iloc[-1])
+                            prev_close = prev_close or float(mes_hist['Close'].iloc[-2])
+                    if curr_price and prev_close and curr_price > 0 and prev_close > 0:
+                        mes_chg = curr_price - prev_close
+                        mes_chg_pct = (mes_chg / prev_close * 100) if prev_close > 0 else 0
+                        latest_data["index"]["mes_price"] = round(float(curr_price), 2)
+                        latest_data["index"]["mes_change"] = round(float(mes_chg), 2)
+                        latest_data["index"]["mes_change_pct"] = round(float(mes_chg_pct), 2)
+                        socketio.emit('index_update', latest_data["index"])
+                except Exception as e:
+                    print(f"⚠️ Failed to fetch MES from yfinance: {e}")
 
                 # 1. 动态确定本次需要拉取的代码列表
                 current_price = latest_data["index"].get("price", 0)
@@ -569,6 +603,9 @@ def start_moomoo():
                         # A. 处理指数/基准
                         if row['code'] == REF_SYMBOL:
                             p = row['last_price'] if row['last_price'] > 0 else row['prev_close_price']
+                            mes_price = latest_data["index"].get("mes_price")
+                            mes_change = latest_data["index"].get("mes_change")
+                            mes_change_pct = latest_data["index"].get("mes_change_pct")
                             latest_data["index"] = {
                                 "price": p, 
                                 "floor": p * FLOOR_PERCENT,
@@ -580,8 +617,12 @@ def start_moomoo():
                                 "ema_20": historical_stats["ema_20"],
                                 "skew": historical_stats["skew"]
                             }
+                            if mes_price is not None:
+                                latest_data["index"]["mes_price"] = mes_price
+                                latest_data["index"]["mes_change"] = mes_change
+                                latest_data["index"]["mes_change_pct"] = mes_change_pct
                             socketio.emit('index_update', latest_data["index"])
-                        
+
                         # B. 处理期权数据
                         else:
                             item = format_row(row)
