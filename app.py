@@ -189,6 +189,36 @@ def log_premium_snapshot():
                              round(so['bid'] - lo['ask'], 4),
                              round(so['ask'] - lo['bid'], 4),
                              round(so['mid'] - lo['mid'], 4)))
+
+            # --- MID LEG & BUTTERFLY SPREAD ---
+            m_strike = group.get('mid')
+            if m_strike and str(m_strike).strip():
+                try:
+                    m_val = float(m_strike)
+                    lower = min(s_val, l_val)
+                    upper = max(s_val, l_val)
+                    if lower < m_val < upper:
+                        m_sym = f"US.XSP{ds}{opt_type}{int(m_val * 1000)}"
+                        if m_sym in latest_data["options"]:
+                            mo = latest_data["options"][m_sym]
+                            rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                                         idx + 1, m_sym, m_val, expiry, opt_type, 'mid',
+                                         mo['bid'], mo['ask'], mo['mid']))
+
+                        low_sym = f"US.XSP{ds}{opt_type}{int(lower * 1000)}"
+                        up_sym  = f"US.XSP{ds}{opt_type}{int(upper * 1000)}"
+                        if low_sym in latest_data["options"] and m_sym in latest_data["options"] and up_sym in latest_data["options"]:
+                            lo = latest_data["options"][low_sym]
+                            mo = latest_data["options"][m_sym]
+                            uo = latest_data["options"][up_sym]
+                            rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                                         idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'bfly',
+                                         round(lo['bid'] + uo['bid'] - 2 * mo['ask'], 4),
+                                         round(lo['ask'] + uo['ask'] - 2 * mo['bid'], 4),
+                                         round(lo['mid'] + uo['mid'] - 2 * mo['mid'], 4)))
+                except Exception as bf_e:
+                    print(f"⚠️ log_premium_snapshot group {idx + 1} butterfly error: {bf_e}")
+
         except Exception as e:
             print(f"⚠️ log_premium_snapshot group {idx + 1} error: {e}")
 
@@ -942,14 +972,17 @@ def api_history_groups():
             SELECT group_idx, expiry, opt_type,
                    MAX(CASE WHEN role='short' THEN strike END) as short_strike,
                    MIN(CASE WHEN role='long'  THEN strike END) as long_strike,
-                   COUNT(DISTINCT trade_date) as day_count
+                   MAX(CASE WHEN role='mid'   THEN strike END) as mid_strike,
+                   COUNT(DISTINCT trade_date) as day_count,
+                   MAX(CASE WHEN role='bfly'  THEN 1 ELSE 0 END) as has_bfly
             FROM premium_log
             GROUP BY group_idx, expiry, opt_type
             ORDER BY group_idx
         """).fetchall()
         conn.close()
         result = [{'group_idx': r[0], 'expiry': r[1], 'opt_type': r[2],
-                   'short_strike': r[3], 'long_strike': r[4], 'day_count': r[5]}
+                   'short_strike': r[3], 'long_strike': r[4], 'mid_strike': r[5],
+                   'day_count': r[6], 'has_bfly': bool(r[7])}
                   for r in rows]
         return jsonify({'status': 'ok', 'data': result})
     except Exception as e:

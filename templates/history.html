@@ -676,6 +676,8 @@
           <option value="spread">价差 Spread</option>
           <option value="short">短腿 Short</option>
           <option value="long">长腿 Long</option>
+          <option value="mid">中腿 Mid</option>
+          <option value="bfly">蝴蝶 Butterfly</option>
         </select>
       </div>
 
@@ -945,9 +947,14 @@
           const sel = document.getElementById('groupSelect');
           const curGroup = isInitialLoad ? group : sel.value;
           sel.innerHTML = grpRes.data.map(g => {
-            const label = g.opt_type === 'P'
-              ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
-              : `G${g.group_idx} Call ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
+            let label;
+            if (g.has_bfly && g.mid_strike) {
+              label = `G${g.group_idx} 🦋 ${g.short_strike}/${g.mid_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
+            } else {
+              label = g.opt_type === 'P'
+                ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
+                : `G${g.group_idx} Call ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
+            }
             return `<option value="${g.group_idx}"${g.group_idx == curGroup ? ' selected' : ''}>${label}</option>`;
           }).join('');
         }
