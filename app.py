@@ -160,6 +160,8 @@ def log_premium_snapshot():
         ds       = group.get('date')
         s_strike = group.get('short')
         l_strike = group.get('long')
+        m_strike = group.get('mid')
+        strategy = group.get('strategy', 'xmas')
         if not (ds and s_strike and l_strike):
             continue
         try:
@@ -182,18 +184,18 @@ def log_premium_snapshot():
                              idx + 1, l_sym, l_val, expiry, opt_type, 'long',
                              o['bid'], o['ask'], o['mid']))
 
+            has_mid = m_strike and str(m_strike).strip()
             if s_sym in latest_data["options"] and l_sym in latest_data["options"]:
                 so = latest_data["options"][s_sym]
                 lo = latest_data["options"][l_sym]
-                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                             idx + 1, f"{s_sym}|{l_sym}", None, expiry, opt_type, 'spread',
-                             round(so['bid'] - lo['ask'], 4),
-                             round(so['ask'] - lo['bid'], 4),
-                             round(so['mid'] - lo['mid'], 4)))
+                if not has_mid:
+                    rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                                 idx + 1, f"{s_sym}|{l_sym}", None, expiry, opt_type, 'spread',
+                                 round(so['bid'] - lo['ask'], 4),
+                                 round(so['ask'] - lo['bid'], 4),
+                                 round(so['mid'] - lo['mid'], 4)))
 
-            # --- MID LEG & BUTTERFLY SPREAD ---
-            m_strike = group.get('mid')
-            if m_strike and str(m_strike).strip():
+            if has_mid:
                 try:
                     m_val = float(m_strike)
                     lower = min(s_val, l_val)
@@ -212,13 +214,22 @@ def log_premium_snapshot():
                             lo = latest_data["options"][low_sym]
                             mo = latest_data["options"][m_sym]
                             uo = latest_data["options"][up_sym]
-                            rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                                         idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'bfly',
-                                         round(lo['bid'] + uo['bid'] - 2 * mo['ask'], 4),
-                                         round(lo['ask'] + uo['ask'] - 2 * mo['bid'], 4),
-                                         round(lo['mid'] + uo['mid'] - 2 * mo['mid'], 4)))
+                            if strategy == 'bfly':
+                                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                                             idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'bfly',
+                                             round(lo['bid'] + uo['bid'] - 2 * mo['ask'], 4),
+                                             round(lo['ask'] + uo['ask'] - 2 * mo['bid'], 4),
+                                             round(lo['mid'] + uo['mid'] - 2 * mo['mid'], 4)))
+                            else:
+                                short_x = latest_data["options"][s_sym]
+                                long_x = latest_data["options"][l_sym]
+                                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
+                                             idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'xmas',
+                                             round(short_x['bid'] + 2*long_x['bid'] - 3*mo['ask'], 4),
+                                             round(short_x['ask'] + 2*long_x['ask'] - 3*mo['bid'], 4),
+                                             round(short_x['mid'] + 2*long_x['mid'] - 3*mo['mid'], 4)))
                 except Exception as bf_e:
-                    print(f"⚠️ log_premium_snapshot group {idx + 1} butterfly error: {bf_e}")
+                    print(f"⚠️ log_premium_snapshot group {idx + 1} three-leg error: {bf_e}")
 
         except Exception as e:
             print(f"⚠️ log_premium_snapshot group {idx + 1} error: {e}")
@@ -404,10 +415,10 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
     # --- Robust Strike Logic ---
     # Put Range: From Floor up to Current Price + 2 ticks
     p_start = int((floor_price // 5) * 5) + 5
-    p_end = int((current_price // 5) * 5) + 10
+    p_end = int((current_price // 5) * 5) + 25
     
-    # Call Range: From Current Price up to Ceiling
-    c_start = int((current_price // 5) * 5) + 5
+    # Call Range: From Current -25 up to Ceiling (mirrors Put's +25 ITM coverage)
+    c_start = int((current_price // 5) * 5) - 25
     c_end = int((ceiling_price // 5) * 5)
 
     ticker = yf.Ticker("^XSP")
@@ -564,7 +575,7 @@ def start_moomoo():
                     ])))
                     all_symbols = opt_symbols
 
-                # 注入 Watchlist 中的两腿，确保一定能请求到快照数据
+                # 注入 Watchlist 中的三腿，确保一定能请求到快照数据
                 for group in user_watchlist:
                     ds = group.get('date')
                     s_strike = group.get('short')
@@ -582,6 +593,16 @@ def start_moomoo():
                                 all_symbols.append(s_sym)
                             if l_sym not in all_symbols:
                                 all_symbols.append(l_sym)
+                                
+                            m_strike = group.get('mid')
+                            if m_strike and str(m_strike).strip():
+                                try:
+                                    m_val = float(m_strike)
+                                    m_sym = f"US.XSP{ds}{opt_type}{int(m_val * 1000)}"
+                                    if m_sym not in all_symbols:
+                                        all_symbols.append(m_sym)
+                                except:
+                                    pass
                                 
                             # 同时也把对应的到期日加入 valid_dates，防止被前端过滤掉卡片
                             expiry_date = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
@@ -668,13 +689,14 @@ def start_moomoo():
                         if opt['opt_type'] == 'P' and oi > 0 and gamma > 0:
                             if exp not in put_walls or gex > put_walls[exp]['gex']:
                                 put_walls[exp] = {'strike': opt['strike'], 'oi': oi, 'gex': gex}
-                    # 3. 计算和广播 Watchlist 中的差价组合 (Spreads) 数据
+                    # 3. 计算和广播 Watchlist 中的组合数据 (Spreads / Butterflies / Christmas Trees)
                     for idx, group in enumerate(user_watchlist):
                         ds = group.get('date')
                         s_strike = group.get('short')
                         l_strike = group.get('long')
                         entry_val = group.get('entry')
                         m_strike = group.get('mid')
+                        strategy = group.get('strategy', 'xmas')
                         
                         if ds and s_strike and l_strike:
                             try:
@@ -689,18 +711,7 @@ def start_moomoo():
                                     short_opt = latest_data["options"][s_sym]
                                     long_opt = latest_data["options"][l_sym]
                                     
-                                    # Spread pricing (Bid / Ask / Mid)
-                                    spread_bid = short_opt['bid'] - long_opt['ask']
-                                    spread_ask = short_opt['ask'] - long_opt['bid']
-                                    spread_mid = short_opt['mid'] - long_opt['mid']
-                                    
-                                    # Aggregated Greeks
-                                    spread_delta = short_opt['delta'] - long_opt['delta']
-                                    spread_gamma = short_opt.get('gamma', 0.0) - long_opt.get('gamma', 0.0)
-                                    spread_theta = short_opt.get('theta', 0.0) - long_opt.get('theta', 0.0)
-                                    spread_vega = short_opt.get('vega', 0.0) - long_opt.get('vega', 0.0)
-                                    
-                                    # Expected Move (EM) dynamically computed using ATM options
+                                    # --- Common: Expected Move & DTE ---
                                     expected_move = None
                                     expiry_date_str = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
                                     expiry_options = [opt for opt in latest_data["options"].values() if opt['expiry'] == expiry_date_str]
@@ -711,8 +722,6 @@ def start_moomoo():
                                         atm_put = next((opt for opt in expiry_options if opt['strike'] == atm_strike and opt['opt_type'] == 'P'), None)
                                         if atm_call and atm_put:
                                             expected_move = 0.85 * (atm_call['mid'] + atm_put['mid'])
-                                            
-                                    # Fallback Expected Move using VIX
                                     if expected_move is None and current_price > 0 and historical_stats["vix"] > 0:
                                         try:
                                             expiry_dt = datetime.strptime(ds, "%y%m%d")
@@ -720,175 +729,217 @@ def start_moomoo():
                                             days_to_expiry = max((expiry_dt.date() - today_date).days, 0.5)
                                             expected_move = current_price * (historical_stats["vix"] / 100.0) * ((days_to_expiry / 365.0) ** 0.5)
                                         except Exception as e:
-                                            print(f"⚠️ Fallback Expected Move computation error: {e}")
+                                            print(f"⚠️ Fallback Expected Move error: {e}")
                                     
-                                    # P&L tracking
-                                    pnl = None
-                                    pnl_percent = None
-                                    entry_credit = None
-                                    if entry_val and str(entry_val).strip() != '':
-                                        entry_credit = float(entry_val)
-                                        # Realized P&L = Entry Credit - current cost to close (spread_ask)
-                                        pnl = entry_credit - spread_ask
-                                        pnl_percent = (pnl / entry_credit) * 100 if entry_credit > 0 else 0.0
-                                    
-                                    # Safety metrics (distance in % to short leg / breakeven)
-                                    dist_to_short = 0.0
-                                    dist_to_be = 0.0
-                                    
-                                    if current_price > 0:
-                                        if opt_type == 'P':
-                                            dist_to_short = (current_price - s_val) / current_price * 100
-                                            if entry_credit is not None:
-                                                be_price = s_val - entry_credit
-                                                dist_to_be = (current_price - be_price) / current_price * 100
-                                        else:
-                                            dist_to_short = (s_val - current_price) / current_price * 100
-                                            if entry_credit is not None:
-                                                be_price = s_val + entry_credit
-                                                dist_to_be = (be_price - current_price) / current_price * 100
-                                    
-                                    # Calculate Entry Quality Score (EQS)
-                                    entry_score = None
-                                    score_pe = None
-                                    score_atr = None
-                                    score_vix = None
                                     dte_val = None
-                                    pe_ratio = None
-                                    atr_buffers = None
                                     try:
-                                        if current_price > 0 and abs(short_opt['delta']) > 0 and abs(s_val - l_val) > 0 and spread_bid > 0:
-                                            # --- Component 1: Premium Efficiency (50% weight) ---
-                                            # How much credit you collect relative to the risk you take.
-                                            # Formula: Credit / (|Delta| * Width). Higher = more premium per unit of risk.
-                                            # A ratio of 0.67 (e.g., $0.35 on a 5-wide with delta 0.10) would score 100.
-                                            pe_ratio = spread_bid / (abs(short_opt['delta']) * abs(s_val - l_val))
-                                            score_pe = min(max(pe_ratio * 150.0, 0.0), 100.0)
-
-                                            # --- Component 2: ATR Safety Buffer (30% weight) ---
-                                            # How many ATR multiples away is your short leg?
-                                            # This scales by sqrt(DTE) to account for time: a strike 10pts away
-                                            # is safer for a 4-day expiry than a 1-day expiry.
-                                            expiry_dt = datetime.strptime(ds, "%y%m%d")
-                                            today_date = datetime.now().date()
-                                            dte_val = max((expiry_dt.date() - today_date).days, 0.5)
-                                            atr_val = historical_stats.get("atr_14", 5.0)
-                                            atr_move = atr_val * (dte_val ** 0.5)
-                                            dist_pts = abs(current_price - s_val)
-                                            atr_buffers = dist_pts / atr_move if atr_move > 0 else 1.0
-                                            # 2+ ATR buffers = 100, 1 ATR = 50, 0 ATR = 0
-                                            score_atr = min(atr_buffers * 50.0, 100.0)
-
-                                            # --- Component 3: VIX Environment (20% weight) ---
-                                            # High VIX Rank = elevated implied volatility = fatter premiums = better time to sell.
-                                            score_vix = historical_stats.get("vix_rank", 0.0)
-
-                                            entry_score = (score_vix * 0.20) + (score_pe * 0.50) + (score_atr * 0.30)
-                                    except Exception as es_err:
-                                        print(f"⚠️ 计算 Entry Score 异常: {es_err}")
-
-                                    spread_info = {
-                                        "group_index": idx + 1,
-                                        "date": ds,
-                                        "expiry": expiry_date_str,
-                                        "opt_type": opt_type,
-                                        "short": s_val,
-                                        "long": l_val,
-                                        "width": abs(s_val - l_val),
-                                        "entry": entry_credit,
-                                        "bid": spread_bid,
-                                        "ask": spread_ask,
-                                        "mid": spread_mid,
-                                        "delta": spread_delta,
-                                        "gamma": spread_gamma,
-                                        "theta": spread_theta,
-                                        "vega": spread_vega,
-                                        "short_delta": short_opt['delta'],
-                                        "short_gamma": short_opt.get('gamma', 0.0),
-                                        "short_theta": short_opt.get('theta', 0.0),
-                                        "short_vega": short_opt.get('vega', 0.0),
-                                        "pnl": pnl,
-                                        "pnl_percent": pnl_percent,
-                                        "dist_to_short": dist_to_short,
-                                        "dist_to_be": dist_to_be,
-                                        "expected_move": expected_move,
-                                        "index_price": current_price,
-                                        "entry_score": entry_score,
-                                        "score_pe": score_pe,
-                                        "score_atr": score_atr,
-                                        "score_vix": score_vix,
-                                        "pe_ratio": pe_ratio,
-                                        "atr_buffers": atr_buffers,
-                                        "dte": dte_val,
-                                        "put_wall": put_walls.get(expiry_date_str, {}).get('strike')
-                                    }
-                                    if not (m_strike and str(m_strike).strip()):
-                                        socketio.emit('spread_update', spread_info)
-
-                                    # --- Symmetric Butterfly (对称蝴蝶) ---
-                                    if m_strike and str(m_strike).strip():
+                                        expiry_dt = datetime.strptime(ds, "%y%m%d")
+                                        today_date = datetime.now().date()
+                                        dte_val = max((expiry_dt.date() - today_date).days, 0.5)
+                                    except:
+                                        pass
+                                    
+                                    has_mid = m_strike and str(m_strike).strip()
+                                    
+                                    if has_mid:
+                                        # --- Three-Leg Strategy (Butterfly or Christmas Tree) ---
                                         try:
                                             m_val = float(m_strike)
                                             lower = min(s_val, l_val)
                                             upper = max(s_val, l_val)
                                             if lower < m_val < upper:
-                                                bfly_type = opt_type
-                                                lower_sym = f"US.XSP{ds}{bfly_type}{int(lower * 1000)}"
-                                                mid_sym = f"US.XSP{ds}{bfly_type}{int(m_val * 1000)}"
-                                                upper_sym = f"US.XSP{ds}{bfly_type}{int(upper * 1000)}"
-
+                                                sym_type = opt_type
+                                                lower_sym = f"US.XSP{ds}{sym_type}{int(lower * 1000)}"
+                                                mid_sym = f"US.XSP{ds}{sym_type}{int(m_val * 1000)}"
+                                                upper_sym = f"US.XSP{ds}{sym_type}{int(upper * 1000)}"
+                                                
                                                 if (lower_sym in latest_data["options"] and
                                                     mid_sym in latest_data["options"] and
                                                     upper_sym in latest_data["options"]):
-
+                                                    
                                                     low_opt = latest_data["options"][lower_sym]
                                                     mid_opt = latest_data["options"][mid_sym]
                                                     up_opt = latest_data["options"][upper_sym]
-
-                                                    bfly_bid = low_opt['bid'] + up_opt['bid'] - 2 * mid_opt['ask']
-                                                    bfly_ask = low_opt['ask'] + up_opt['ask'] - 2 * mid_opt['bid']
-                                                    bfly_mid = low_opt['mid'] + up_opt['mid'] - 2 * mid_opt['mid']
-
-                                                    bfly_delta = low_opt['delta'] + up_opt['delta'] - 2 * mid_opt['delta']
-                                                    bfly_gamma = low_opt.get('gamma',0.0) + up_opt.get('gamma',0.0) - 2 * mid_opt.get('gamma',0.0)
-                                                    bfly_theta = low_opt.get('theta',0.0) + up_opt.get('theta',0.0) - 2 * mid_opt.get('theta',0.0)
-                                                    bfly_vega = low_opt.get('vega',0.0) + up_opt.get('vega',0.0) - 2 * mid_opt.get('vega',0.0)
-
-                                                    bfly_pnl = None
-                                                    bfly_pnl_percent = None
-                                                    bfly_entry = None
+                                                    
+                                                    pnl_val = None
+                                                    pnl_pct = None
+                                                    entry_premium = None
                                                     if entry_val and str(entry_val).strip() != '':
-                                                        bfly_entry = float(entry_val)
-                                                        bfly_pnl = bfly_bid - bfly_entry
-                                                        bfly_pnl_percent = (bfly_pnl / bfly_entry) * 100 if bfly_entry > 0 else 0.0
-
-                                                    bfly_info = {
-                                                        "group_index": idx + 1,
-                                                        "date": ds,
-                                                        "expiry": expiry_date_str,
-                                                        "opt_type": bfly_type,
-                                                        "lower": lower,
-                                                        "mid_strike": m_val,
-                                                        "upper": upper,
-                                                        "width": upper - lower,
-                                                        "entry": bfly_entry,
-                                                        "bid": round(bfly_bid, 2),
-                                                        "ask": round(bfly_ask, 2),
-                                                        "mid": round(bfly_mid, 2),
-                                                        "delta": round(bfly_delta, 3),
-                                                        "gamma": round(bfly_gamma, 4),
-                                                        "theta": round(bfly_theta, 3),
-                                                        "vega": round(bfly_vega, 3),
-                                                        "pnl": bfly_pnl,
-                                                        "pnl_percent": bfly_pnl_percent,
-                                                        "expected_move": expected_move,
-                                                        "index_price": current_price,
-                                                        "dte": dte_val,
-                                                    }
-                                                    socketio.emit('butterfly_update', bfly_info)
+                                                        entry_premium = float(entry_val)
+                                                    
+                                                    if strategy == 'bfly':
+                                                        bfly_bid = low_opt['bid'] + up_opt['bid'] - 2 * mid_opt['ask']
+                                                        bfly_ask = low_opt['ask'] + up_opt['ask'] - 2 * mid_opt['bid']
+                                                        bfly_mid = low_opt['mid'] + up_opt['mid'] - 2 * mid_opt['mid']
+                                                        bfly_delta = low_opt['delta'] + up_opt['delta'] - 2 * mid_opt['delta']
+                                                        bfly_gamma = low_opt.get('gamma',0.0) + up_opt.get('gamma',0.0) - 2 * mid_opt.get('gamma',0.0)
+                                                        bfly_theta = low_opt.get('theta',0.0) + up_opt.get('theta',0.0) - 2 * mid_opt.get('theta',0.0)
+                                                        bfly_vega = low_opt.get('vega',0.0) + up_opt.get('vega',0.0) - 2 * mid_opt.get('vega',0.0)
+                                                        
+                                                        if entry_premium is not None:
+                                                            pnl_val = bfly_bid - entry_premium
+                                                            pnl_pct = (pnl_val / entry_premium) * 100 if entry_premium > 0 else 0.0
+                                                        
+                                                        bfly_info = {
+                                                            "group_index": idx + 1,
+                                                            "date": ds,
+                                                            "expiry": expiry_date_str,
+                                                            "opt_type": sym_type,
+                                                            "lower": lower,
+                                                            "mid_strike": m_val,
+                                                            "upper": upper,
+                                                            "width": upper - lower,
+                                                            "entry": entry_premium,
+                                                            "bid": round(bfly_bid, 2),
+                                                            "ask": round(bfly_ask, 2),
+                                                            "mid": round(bfly_mid, 2),
+                                                            "delta": round(bfly_delta, 3),
+                                                            "gamma": round(bfly_gamma, 4),
+                                                            "theta": round(bfly_theta, 3),
+                                                            "vega": round(bfly_vega, 3),
+                                                            "pnl": pnl_val,
+                                                            "pnl_percent": pnl_pct,
+                                                            "expected_move": expected_move,
+                                                            "index_price": current_price,
+                                                            "dte": dte_val,
+                                                        }
+                                                        socketio.emit('butterfly_update', bfly_info)
+                                                    
+                                                    else:
+                                                        # Christmas Tree +1S/-3M/+2L (field order: short, mid, long)
+                                                        mo = latest_data["options"][mid_sym]
+                                                        xmas_bid = short_opt['bid'] + 2*long_opt['bid'] - 3*mo['ask']
+                                                        xmas_ask = short_opt['ask'] + 2*long_opt['ask'] - 3*mo['bid']
+                                                        xmas_mid = short_opt['mid'] + 2*long_opt['mid'] - 3*mo['mid']
+                                                        xmas_delta = short_opt['delta'] + 2*long_opt['delta'] - 3*mo['delta']
+                                                        xmas_gamma = short_opt.get('gamma',0.0) + 2*long_opt.get('gamma',0.0) - 3*mo.get('gamma',0.0)
+                                                        xmas_theta = short_opt.get('theta',0.0) + 2*long_opt.get('theta',0.0) - 3*mo.get('theta',0.0)
+                                                        xmas_vega = short_opt.get('vega',0.0) + 2*long_opt.get('vega',0.0) - 3*mo.get('vega',0.0)
+                                                        
+                                                        if entry_premium is not None:
+                                                            pnl_val = xmas_bid - entry_premium
+                                                            pnl_pct = (pnl_val / entry_premium) * 100 if entry_premium > 0 else 0.0
+                                                        
+                                                        xmas_info = {
+                                                            "group_index": idx + 1,
+                                                            "date": ds,
+                                                            "expiry": expiry_date_str,
+                                                            "opt_type": sym_type,
+                                                            "lower": lower,
+                                                            "mid_strike": m_val,
+                                                            "upper": upper,
+                                                            "width": upper - lower,
+                                                            "entry": entry_premium,
+                                                            "bid": round(xmas_bid, 2),
+                                                            "ask": round(xmas_ask, 2),
+                                                            "mid": round(xmas_mid, 2),
+                                                            "delta": round(xmas_delta, 3),
+                                                            "gamma": round(xmas_gamma, 4),
+                                                            "theta": round(xmas_theta, 3),
+                                                            "vega": round(xmas_vega, 3),
+                                                            "pnl": pnl_val,
+                                                            "pnl_percent": pnl_pct,
+                                                            "expected_move": expected_move,
+                                                            "index_price": current_price,
+                                                            "dte": dte_val,
+                                                        }
+                                                        socketio.emit('xmas_update', xmas_info)
+                                                        
                                         except Exception as bf_ex:
-                                            print(f"⚠️ 计算 Group {idx+1} 蝴蝶异常: {bf_ex}")
-
+                                            print(f"⚠️ 计算 Group {idx+1} 三腿策略异常: {bf_ex}")
+                                    
+                                    else:
+                                        # --- Vertical Spread ---
+                                        spread_bid = short_opt['bid'] - long_opt['ask']
+                                        spread_ask = short_opt['ask'] - long_opt['bid']
+                                        spread_mid = short_opt['mid'] - long_opt['mid']
+                                        
+                                        spread_delta = short_opt['delta'] - long_opt['delta']
+                                        spread_gamma = short_opt.get('gamma', 0.0) - long_opt.get('gamma', 0.0)
+                                        spread_theta = short_opt.get('theta', 0.0) - long_opt.get('theta', 0.0)
+                                        spread_vega = short_opt.get('vega', 0.0) - long_opt.get('vega', 0.0)
+                                        
+                                        pnl = None
+                                        pnl_percent = None
+                                        entry_credit = None
+                                        if entry_val and str(entry_val).strip() != '':
+                                            entry_credit = float(entry_val)
+                                            pnl = entry_credit - spread_ask
+                                            pnl_percent = (pnl / entry_credit) * 100 if entry_credit > 0 else 0.0
+                                        
+                                        dist_to_short = 0.0
+                                        dist_to_be = 0.0
+                                        if current_price > 0:
+                                            if opt_type == 'P':
+                                                dist_to_short = (current_price - s_val) / current_price * 100
+                                                if entry_credit is not None:
+                                                    be_price = s_val - entry_credit
+                                                    dist_to_be = (current_price - be_price) / current_price * 100
+                                            else:
+                                                dist_to_short = (s_val - current_price) / current_price * 100
+                                                if entry_credit is not None:
+                                                    be_price = s_val + entry_credit
+                                                    dist_to_be = (be_price - current_price) / current_price * 100
+                                        
+                                        entry_score = None
+                                        score_pe = None
+                                        score_atr = None
+                                        score_vix = None
+                                        pe_ratio = None
+                                        atr_buffers = None
+                                        try:
+                                            if current_price > 0 and abs(short_opt['delta']) > 0 and abs(s_val - l_val) > 0 and spread_bid > 0:
+                                                pe_ratio = spread_bid / (abs(short_opt['delta']) * abs(s_val - l_val))
+                                                score_pe = min(max(pe_ratio * 150.0, 0.0), 100.0)
+                                                
+                                                atr_val = historical_stats.get("atr_14", 5.0)
+                                                atr_move = atr_val * (dte_val ** 0.5) if dte_val else atr_val
+                                                dist_pts = abs(current_price - s_val)
+                                                atr_buffers = dist_pts / atr_move if atr_move > 0 else 1.0
+                                                score_atr = min(atr_buffers * 50.0, 100.0)
+                                                
+                                                score_vix = historical_stats.get("vix_rank", 0.0)
+                                                entry_score = (score_vix * 0.20) + (score_pe * 0.50) + (score_atr * 0.30)
+                                        except Exception as es_err:
+                                            print(f"⚠️ 计算 Entry Score 异常: {es_err}")
+                                        
+                                        spread_info = {
+                                            "group_index": idx + 1,
+                                            "date": ds,
+                                            "expiry": expiry_date_str,
+                                            "opt_type": opt_type,
+                                            "short": s_val,
+                                            "long": l_val,
+                                            "width": abs(s_val - l_val),
+                                            "entry": entry_credit,
+                                            "bid": spread_bid,
+                                            "ask": spread_ask,
+                                            "mid": spread_mid,
+                                            "delta": spread_delta,
+                                            "gamma": spread_gamma,
+                                            "theta": spread_theta,
+                                            "vega": spread_vega,
+                                            "short_delta": short_opt['delta'],
+                                            "short_gamma": short_opt.get('gamma', 0.0),
+                                            "short_theta": short_opt.get('theta', 0.0),
+                                            "short_vega": short_opt.get('vega', 0.0),
+                                            "pnl": pnl,
+                                            "pnl_percent": pnl_percent,
+                                            "dist_to_short": dist_to_short,
+                                            "dist_to_be": dist_to_be,
+                                            "expected_move": expected_move,
+                                            "index_price": current_price,
+                                            "entry_score": entry_score,
+                                            "score_pe": score_pe,
+                                            "score_atr": score_atr,
+                                            "score_vix": score_vix,
+                                            "pe_ratio": pe_ratio,
+                                            "atr_buffers": atr_buffers,
+                                            "dte": dte_val,
+                                            "put_wall": put_walls.get(expiry_date_str, {}).get('strike')
+                                        }
+                                        socketio.emit('spread_update', spread_info)
+                                        
                             except Exception as ex:
                                 print(f"⚠️ 计算 Group {idx+1} 差价异常: {ex}")
                         
@@ -1015,7 +1066,8 @@ def api_history_groups():
                    MIN(CASE WHEN role='long'  THEN strike END) as long_strike,
                    MAX(CASE WHEN role='mid'   THEN strike END) as mid_strike,
                    COUNT(DISTINCT trade_date) as day_count,
-                   MAX(CASE WHEN role='bfly'  THEN 1 ELSE 0 END) as has_bfly
+                   MAX(CASE WHEN role='bfly'  THEN 1 ELSE 0 END) as has_bfly,
+                   MAX(CASE WHEN role='xmas'  THEN 1 ELSE 0 END) as has_xmas
             FROM premium_log
             GROUP BY group_idx, expiry, opt_type
             ORDER BY group_idx
@@ -1023,7 +1075,7 @@ def api_history_groups():
         conn.close()
         result = [{'group_idx': r[0], 'expiry': r[1], 'opt_type': r[2],
                    'short_strike': r[3], 'long_strike': r[4], 'mid_strike': r[5],
-                   'day_count': r[6], 'has_bfly': bool(r[7])}
+                   'day_count': r[6], 'has_bfly': bool(r[7]), 'has_xmas': bool(r[8])}
                   for r in rows]
         return jsonify({'status': 'ok', 'data': result})
     except Exception as e:

@@ -678,6 +678,7 @@
           <option value="long">长腿 Long</option>
           <option value="mid">中腿 Mid</option>
           <option value="bfly">蝴蝶 Butterfly</option>
+          <option value="xmas">圣诞树 Xmas</option>
         </select>
       </div>
 
@@ -950,6 +951,8 @@
             let label;
             if (g.has_bfly && g.mid_strike) {
               label = `G${g.group_idx} 🦋 ${g.short_strike}/${g.mid_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
+            } else if (g.has_xmas && g.mid_strike) {
+              label = `G${g.group_idx} 🎄 ${g.short_strike}/${g.mid_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
             } else {
               label = g.opt_type === 'P'
                 ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
