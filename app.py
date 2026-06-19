@@ -15,11 +15,11 @@ from collections import defaultdict
 
 # --- COMMAND LINE ARGS & CONFIGURATION ---
 parser = argparse.ArgumentParser(description="XSP Options Monitor")
-parser.add_argument("--floor", type=float, default=0.9, help="Floor percentage (default: 0.9)")
+parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage (default: 0.95)")
 parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
-parser.add_argument("--watchlist-size", type=int, default=5, help="Watchlist size (default: 5)")
-parser.add_argument("--option-days", type=int, default=7, help="Option days (default: 7)")
+parser.add_argument("--watchlist-size", type=int, default=10, help="Watchlist size (default: 10)")
+parser.add_argument("--option-days", type=int, default=14, help="Option days (default: 14)")
 args, unknown = parser.parse_known_args()
 
 OPEND_ADDR = '127.0.0.1'
