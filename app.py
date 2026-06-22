@@ -12,6 +12,7 @@ import os
 import json
 import sqlite3
 from collections import defaultdict
+import pricing
 
 # --- COMMAND LINE ARGS & CONFIGURATION ---
 parser = argparse.ArgumentParser(description="XSP Options Monitor")
@@ -822,6 +823,81 @@ def start_moomoo():
                                                             pnl_val = xmas_bid - entry_premium
                                                             pnl_pct = (pnl_val / entry_premium) * 100 if entry_premium > 0 else 0.0
                                                         
+                                                        # --- Christmas Tree Risk / Score / Theory / Scenarios ---
+                                                        xmas_risk = None
+                                                        xmas_score = None
+                                                        xmas_theory = None
+                                                        xmas_edge = None
+                                                        xmas_scenarios = None
+                                                        leg_details = []
+                                                        entry_used = entry_premium if entry_premium is not None else xmas_mid
+                                                        try:
+                                                            atr_val = historical_stats.get("atr_14", 5.0)
+                                                            xmas_risk = pricing.xmas_payoff_extrema(
+                                                                entry_used, (s_val, m_val, l_val), sym_type,
+                                                                upper - lower, atr_val
+                                                            )
+                                                        except Exception as e:
+                                                            print(f"⚠️ xmas risk error: {e}")
+                                                        try:
+                                                            abs_delta = abs(xmas_delta)
+                                                            if current_price > 0 and abs_delta > 0 and (upper - lower) > 0 and abs(entry_used) > 0:
+                                                                credit = max(entry_used, 0.0)
+                                                                pe = credit / (abs_delta * (upper - lower))
+                                                                score_pe = min(max(pe * 150.0, 0.0), 100.0)
+                                                                atr_v = historical_stats.get("atr_14", 5.0)
+                                                                atr_m = atr_v * (dte_val ** 0.5) if dte_val else atr_v
+                                                                dist_short = abs(current_price - s_val)
+                                                                dist_long = abs(current_price - l_val)
+                                                                dist_mid = abs(current_price - m_val)
+                                                                min_dist = min(dist_short, dist_long, dist_mid)
+                                                                atr_buf = min_dist / atr_m if atr_m > 0 else 1.0
+                                                                score_atr = min(atr_buf * 50.0, 100.0)
+                                                                score_vix = historical_stats.get("vix_rank", 0.0)
+                                                                xmas_score = round((score_vix * 0.20) + (score_pe * 0.50) + (score_atr * 0.30), 1)
+                                                        except Exception as e:
+                                                            print(f"⚠️ xmas score error: {e}")
+                                                        try:
+                                                            tte = dte_val / 365.0 if dte_val and dte_val > 0 else 0.001
+                                                            iv_s = short_opt.get('iv', 0.0)
+                                                            iv_m = mo.get('iv', 0.0)
+                                                            iv_l = long_opt.get('iv', 0.0)
+                                                            atm_iv = iv_m if iv_m > 0 else iv_s if iv_s > 0 else 0.18
+                                                            iv_s_f = iv_s if iv_s > 0 else atm_iv
+                                                            iv_m_f = iv_m if iv_m > 0 else atm_iv
+                                                            iv_l_f = iv_l if iv_l > 0 else atm_iv
+                                                            xmas_theory = pricing.xmas_theory_price(
+                                                                current_price, s_val, m_val, l_val,
+                                                                tte, pricing.RISK_FREE_RATE,
+                                                                iv_s_f, iv_m_f, iv_l_f, sym_type
+                                                            )
+                                                            xmas_theory = round(xmas_theory, 2)
+                                                            xmas_edge = round(xmas_mid - xmas_theory, 2)
+                                                            xmas_scenarios = pricing.xmas_scenarios(
+                                                                current_price, s_val, m_val, l_val,
+                                                                tte, pricing.RISK_FREE_RATE,
+                                                                iv_s_f, iv_m_f, iv_l_f, sym_type, xmas_mid
+                                                            )
+                                                        except Exception as e:
+                                                            print(f"⚠️ xmas theory/scenarios error: {e}")
+                                                        try:
+                                                            leg_details = [
+                                                                {'leg': 'S', 'strike': s_val, 'type': sym_type,
+                                                                 'bid': short_opt['bid'], 'ask': short_opt['ask'],
+                                                                 'mid': short_opt['mid'], 'delta': short_opt.get('delta',0),
+                                                                 'iv': short_opt.get('iv',0)},
+                                                                {'leg': 'M×3', 'strike': m_val, 'type': sym_type,
+                                                                 'bid': mo['bid'], 'ask': mo['ask'],
+                                                                 'mid': mo['mid'], 'delta': mo.get('delta',0),
+                                                                 'iv': mo.get('iv',0)},
+                                                                {'leg': 'L×2', 'strike': l_val, 'type': sym_type,
+                                                                 'bid': long_opt['bid'], 'ask': long_opt['ask'],
+                                                                 'mid': long_opt['mid'], 'delta': long_opt.get('delta',0),
+                                                                 'iv': long_opt.get('iv',0)},
+                                                            ]
+                                                        except Exception as e:
+                                                            print(f"⚠️ leg details error: {e}")
+                                                        
                                                         xmas_info = {
                                                             "group_index": idx + 1,
                                                             "date": ds,
@@ -846,6 +922,16 @@ def start_moomoo():
                                                             "expected_move": expected_move,
                                                             "index_price": current_price,
                                                             "dte": dte_val,
+                                                            "max_profit": xmas_risk['max_profit'] if xmas_risk else None,
+                                                            "max_loss": xmas_risk['max_loss'] if xmas_risk else None,
+                                                            "be_lower": xmas_risk['be_lower'] if xmas_risk else None,
+                                                            "be_upper": xmas_risk['be_upper'] if xmas_risk else None,
+                                                            "risk_reward": xmas_risk['risk_reward'] if xmas_risk else None,
+                                                            "entry_score": xmas_score,
+                                                            "theory": xmas_theory,
+                                                            "edge": xmas_edge,
+                                                            "scenarios": xmas_scenarios,
+                                                            "legs": leg_details,
                                                         }
                                                         socketio.emit('xmas_update', xmas_info)
                                                         
