@@ -225,9 +225,9 @@ def log_premium_snapshot():
                                 long_x = latest_data["options"][l_sym]
                                 rows.append((int(now_ts), trade_date, session, xsp_price, vix,
                                              idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'xmas',
-                                             round(short_x['bid'] + 2*long_x['bid'] - 3*mo['ask'], 4),
-                                             round(short_x['ask'] + 2*long_x['ask'] - 3*mo['bid'], 4),
-                                             round(short_x['mid'] + 2*long_x['mid'] - 3*mo['mid'], 4)))
+                                                 round(short_x['bid'] + 2*long_x['bid'] - 3*mo['ask'], 4),
+                                                 round(short_x['ask'] + 2*long_x['ask'] - 3*mo['bid'], 4),
+                                                 round(short_x['mid'] + 2*long_x['mid'] - 3*mo['mid'], 4)))
                 except Exception as bf_e:
                     print(f"⚠️ log_premium_snapshot group {idx + 1} three-leg error: {bf_e}")
 
@@ -788,6 +788,8 @@ def start_moomoo():
                                                             "lower": lower,
                                                             "mid_strike": m_val,
                                                             "upper": upper,
+                                                            "short_strike": s_val,
+                                                            "long_strike": l_val,
                                                             "width": upper - lower,
                                                             "entry": entry_premium,
                                                             "bid": round(bfly_bid, 2),
@@ -828,6 +830,8 @@ def start_moomoo():
                                                             "lower": lower,
                                                             "mid_strike": m_val,
                                                             "upper": upper,
+                                                            "short_strike": s_val,
+                                                            "long_strike": l_val,
                                                             "width": upper - lower,
                                                             "entry": entry_premium,
                                                             "bid": round(xmas_bid, 2),
@@ -1078,6 +1082,23 @@ def api_history_groups():
                    'day_count': r[6], 'has_bfly': bool(r[7]), 'has_xmas': bool(r[8])}
                   for r in rows]
         return jsonify({'status': 'ok', 'data': result})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/api/history/percentile_data')
+def api_percentile_data():
+    """Return sorted list of historical mid prices for a given group+role."""
+    group_idx = request.args.get('group', 1, type=int)
+    role = request.args.get('role', 'xmas')
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        mids = [r[0] for r in conn.execute(
+            "SELECT mid FROM premium_log WHERE group_idx=? AND role=? AND mid IS NOT NULL AND mid >= 0",
+            (group_idx, role)
+        ).fetchall()]
+        conn.close()
+        mids.sort()
+        return jsonify({'status': 'ok', 'mids': mids, 'count': len(mids)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
