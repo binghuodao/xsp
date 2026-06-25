@@ -805,6 +805,7 @@ def start_moomoo():
                                                             "expected_move": expected_move,
                                                             "index_price": current_price,
                                                             "dte": dte_val,
+                                                            "combo_symbol": f"{lower_sym}|{mid_sym}|{upper_sym}"
                                                         }
                                                         socketio.emit('butterfly_update', bfly_info)
                                                     
@@ -932,6 +933,7 @@ def start_moomoo():
                                                             "edge": xmas_edge,
                                                             "scenarios": xmas_scenarios,
                                                             "legs": leg_details,
+                                                            "combo_symbol": f"{lower_sym}|{mid_sym}|{upper_sym}"
                                                         }
                                                         socketio.emit('xmas_update', xmas_info)
                                                         
@@ -1026,7 +1028,8 @@ def start_moomoo():
                                             "pe_ratio": pe_ratio,
                                             "atr_buffers": atr_buffers,
                                             "dte": dte_val,
-                                            "put_wall": put_walls.get(expiry_date_str, {}).get('strike')
+                                            "put_wall": put_walls.get(expiry_date_str, {}).get('strike'),
+                                            "combo_symbol": f"{s_sym}|{l_sym}"
                                         }
                                         socketio.emit('spread_update', spread_info)
                                         
@@ -1067,15 +1070,21 @@ def api_history_snapshots():
     """
     group_idx = request.args.get('group', 1, type=int)
     role      = request.args.get('role', 'spread')
+    combo_sym = request.args.get('combo_symbol', None)
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
+        params = [group_idx, role]
+        sql_extra = ""
+        if combo_sym:
+            sql_extra = " AND opt_symbol = ?"
+            params.append(combo_sym)
+        rows = conn.execute(f"""
             SELECT trade_date, ts, session, xsp_price, vix, bid, ask, mid
             FROM premium_log
-            WHERE group_idx = ? AND role = ?
+            WHERE group_idx = ? AND role = ?{sql_extra}
             ORDER BY ts ASC
-        """, (group_idx, role)).fetchall()
+        """, params).fetchall()
         conn.close()
 
         days = defaultdict(list)
@@ -1147,27 +1156,74 @@ def api_history_daily_returns():
 
 @app.route('/api/history/groups')
 def api_history_groups():
-    """Return all watchlist groups that have logged data, with metadata."""
+    """Return watchlist groups from logged data, one entry per unique combo config."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("""
-            SELECT group_idx, expiry, opt_type,
-                   MAX(CASE WHEN role='short' THEN strike END) as short_strike,
-                   MIN(CASE WHEN role='long'  THEN strike END) as long_strike,
-                   MAX(CASE WHEN role='mid'   THEN strike END) as mid_strike,
-                   COUNT(DISTINCT trade_date) as day_count,
-                   MAX(CASE WHEN role='bfly'  THEN 1 ELSE 0 END) as has_bfly,
-                   MAX(CASE WHEN role='xmas'  THEN 1 ELSE 0 END) as has_xmas
+        combos = conn.execute("""
+            SELECT DISTINCT group_idx, expiry, opt_type, opt_symbol, role
             FROM premium_log
-            GROUP BY group_idx, expiry, opt_type
-            ORDER BY group_idx
+            WHERE role IN ('bfly', 'xmas') AND expiry >= date('now')
+            ORDER BY expiry, group_idx
         """).fetchall()
         conn.close()
-        result = [{'group_idx': r[0], 'expiry': r[1], 'opt_type': r[2],
-                   'short_strike': r[3], 'long_strike': r[4], 'mid_strike': r[5],
-                   'day_count': r[6], 'has_bfly': bool(r[7]), 'has_xmas': bool(r[8])}
-                  for r in rows]
-        return jsonify({'status': 'ok', 'data': result})
+        result = []
+        for (group_idx, expiry, opt_type, opt_symbol, role) in combos:
+            syms = opt_symbol.split('|')
+            if len(syms) < 3:
+                continue
+            strikes = []
+            for s in syms:
+                try:
+                    strike = float(s[13:]) / 1000
+                    strikes.append(strike)
+                except:
+                    continue
+            if len(strikes) < 3:
+                continue
+            strikes.sort()
+            if opt_type == 'P':
+                short_strike, mid_strike, long_strike = strikes[2], strikes[1], strikes[0]
+            else:
+                short_strike, mid_strike, long_strike = strikes[0], strikes[1], strikes[2]
+            result.append({
+                'group_idx': group_idx,
+                'expiry': expiry,
+                'opt_type': opt_type,
+                'short_strike': short_strike,
+                'long_strike': long_strike,
+                'mid_strike': mid_strike,
+                'has_bfly': role == 'bfly',
+                'has_xmas': role == 'xmas',
+                'combo_symbol': opt_symbol,
+            })
+        # Deduplicate: same (group, expiry, type, strikes) could have both bfly and xmas rows
+        seen = set()
+        unique = []
+        for r in result:
+            key = (r['group_idx'], r['expiry'], r['opt_type'],
+                   r['short_strike'], r['mid_strike'], r['long_strike'])
+            if key in seen:
+                # Merge: existing entry gets both flags
+                for u in unique:
+                    ukey = (u['group_idx'], u['expiry'], u['opt_type'],
+                            u['short_strike'], u['mid_strike'], u['long_strike'])
+                    if ukey == key:
+                        if r['has_bfly']: u['has_bfly'] = True
+                        if r['has_xmas']: u['has_xmas'] = True
+                        break
+            else:
+                seen.add(key)
+                unique.append(r)
+        # Add day_count per combo config
+        conn = sqlite3.connect(DB_PATH)
+        for r in unique:
+            cnt = conn.execute(
+                "SELECT COUNT(DISTINCT trade_date) FROM premium_log WHERE group_idx=? AND expiry=? AND opt_type=? AND opt_symbol=?",
+                (r['group_idx'], r['expiry'], r['opt_type'], r['combo_symbol'])
+            ).fetchone()[0]
+            r['day_count'] = cnt
+        conn.close()
+        return jsonify({'status': 'ok', 'data': unique})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -1176,11 +1232,17 @@ def api_percentile_data():
     """Return sorted list of historical mid prices for a given group+role."""
     group_idx = request.args.get('group', 1, type=int)
     role = request.args.get('role', 'xmas')
+    combo_sym = request.args.get('combo_symbol', None)
     try:
         conn = sqlite3.connect(DB_PATH)
+        params = [group_idx, role]
+        sql_extra = ""
+        if combo_sym:
+            sql_extra = " AND opt_symbol = ?"
+            params.append(combo_sym)
         mids = [r[0] for r in conn.execute(
-            "SELECT mid FROM premium_log WHERE group_idx=? AND role=? AND mid IS NOT NULL AND mid >= 0",
-            (group_idx, role)
+            f"SELECT mid FROM premium_log WHERE group_idx=? AND role=? AND mid IS NOT NULL AND mid >= 0{sql_extra}",
+            params
         ).fetchall()]
         conn.close()
         mids.sort()

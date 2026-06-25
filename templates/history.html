@@ -918,7 +918,6 @@
       pill.textContent = '载入中…';
 
       try {
-        let group = document.getElementById('groupSelect').value || 1;
         let role = document.getElementById('roleSelect').value || 'spread';
 
         // On initial load, read URL parameters to pre-select group/role
@@ -926,7 +925,6 @@
           const urlParams = new URLSearchParams(window.location.search);
           const urlGroup = urlParams.get('group');
           const urlRole = urlParams.get('role');
-          if (urlGroup) group = urlGroup;
           if (urlRole) {
             role = urlRole;
             document.getElementById('roleSelect').value = urlRole;
@@ -934,7 +932,7 @@
         }
 
         const [snapRes, retRes, grpRes] = await Promise.all([
-          fetch(`/api/history/snapshots?group=${group}&role=${role}`).then(r => r.json()),
+          fetch(`/api/history/snapshots?group=0&role=${role}`).then(r => r.json()),
           fetch('/api/history/daily_returns').then(r => r.json()),
           fetch('/api/history/groups').then(r => r.json()),
         ]);
@@ -946,7 +944,28 @@
         // Populate group selector
         if (grpRes.status === 'ok' && grpRes.data.length > 0) {
           const sel = document.getElementById('groupSelect');
-          const curGroup = isInitialLoad ? group : sel.value;
+
+          grpRes.data.sort((a, b) => {
+            if (a.expiry !== b.expiry) return a.expiry.localeCompare(b.expiry);
+            if (a.opt_type !== b.opt_type) return a.opt_type === 'P' ? -1 : 1;
+            return (a.mid_strike || 0) - (b.mid_strike || 0);
+          });
+
+          // Determine initial selection
+          let selectedCs = null;
+          if (isInitialLoad) {
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlGroup = urlParams.get('group');
+            if (urlGroup) {
+              selectedCs = grpRes.data.find(g => g.group_idx == urlGroup)?.combo_symbol;
+            }
+          } else {
+            selectedCs = sel.value || null;
+          }
+          if (!selectedCs && grpRes.data.length > 0) {
+            selectedCs = grpRes.data[0].combo_symbol;
+          }
+
           sel.innerHTML = grpRes.data.map(g => {
             let label;
             if (g.has_bfly && g.mid_strike) {
@@ -958,8 +977,18 @@
                 ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
                 : `G${g.group_idx} Call ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
             }
-            return `<option value="${g.group_idx}"${g.group_idx == curGroup ? ' selected' : ''}>${label}</option>`;
+            return `<option value="${g.combo_symbol}" data-group="${g.group_idx}"${g.combo_symbol === selectedCs ? ' selected' : ''}>${label}</option>`;
           }).join('');
+
+          // Fetch data for the selected combo
+          const selOption = sel.options[sel.selectedIndex];
+          const comboVal = selOption?.value || '';
+          const groupVal = selOption?.dataset?.group || '';
+          const snapUrl = `/api/history/snapshots?group=${groupVal}&role=${role}` + (comboVal ? `&combo_symbol=${encodeURIComponent(comboVal)}` : '');
+          const snapRes2 = await fetch(snapUrl).then(r => r.json());
+          if (snapRes2.status === 'ok') {
+            pathData = snapRes2.data || {};
+          }
         }
 
         isInitialLoad = false;
@@ -1041,8 +1070,8 @@
       const p90 = percentileBand(0.90);
       const p50 = percentileBand(0.50);
 
-      // Line datasets: one per day
-      const lineDatasets = dates.map((d, i) => {
+      // Line datasets: one mid line + one XSP line per day
+      const lineDatasets = dates.flatMap((d, i) => {
         const ret = dailyRet[d];
         const isDown = ret?.is_down;
         const alpha = Math.max(0.12, 0.7 - dates.length * 0.02);
@@ -1052,14 +1081,27 @@
 
         const pts = (pathData[d] || [])
           .sort((a, b) => a.offset_min - b.offset_min)
-          .map(p => ({ x: p.offset_min, y: p.mid }));
+          .map(p => ({ x: p.offset_min, y: p.mid, xsp: p.xsp }));
 
-        return {
-          label: d, data: pts, borderColor: color,
-          backgroundColor: 'transparent',
-          borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 4,
-          tension: 0.35, fill: false,
-        };
+        const xspPts = (pathData[d] || [])
+          .sort((a, b) => a.offset_min - b.offset_min)
+          .map(p => ({ x: p.offset_min, y: p.xsp }));
+
+        return [
+          {
+            label: d, data: pts, borderColor: color,
+            backgroundColor: 'transparent',
+            borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 4,
+            tension: 0.35, fill: false,
+          },
+          {
+            label: `XSP ${d}`, data: xspPts, borderColor: color.replace('0.12', '0.08').replace('0.7', '0.5'),
+            backgroundColor: 'transparent',
+            borderWidth: 0.6, pointRadius: 0, pointHoverRadius: 2,
+            tension: 0.3, fill: false,
+            yAxisID: 'yXsp',
+          },
+        ];
       });
 
       // Band datasets (P10 fill to P90)
@@ -1094,7 +1136,7 @@
           responsive: true, maintainAspectRatio: false,
           animation: { duration: 400 },
           parsing: false,
-          interaction: { mode: 'index', intersect: false },
+          interaction: { mode: 'x', intersect: false },
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -1113,10 +1155,15 @@
                 },
                 label: item => {
                   if (!['P90', 'P10', 'P50 中位'].includes(item.dataset.label) && item.parsed.y != null) {
+                    const raw = item.raw;
                     const d = item.dataset.label;
                     const ret = dailyRet[d];
                     const chg = ret ? ` (${ret.change_pct > 0 ? '+' : ''}${ret.change_pct.toFixed(2)}%)` : '';
-                    return ` ${d}${chg}: $${fmt(item.parsed.y, 4)}`;
+                    const lines = [` ${d}${chg}: $${fmt(item.parsed.y, 4)}`];
+                    if (raw && raw.xsp != null) {
+                      lines.push(` XSP: ${raw.xsp.toFixed(1)}`);
+                    }
+                    return lines;
                   }
                   return null;
                 }
@@ -1138,6 +1185,12 @@
             y: {
               ticks: { color: '#64748b', font: { size: 10 }, callback: v => `$${v.toFixed(2)}` },
               grid: { color: 'rgba(255,255,255,0.05)' },
+            },
+            yXsp: {
+              position: 'right',
+              ticks: { color: 'rgba(148,163,184,0.5)', font: { size: 9 }, callback: v => v.toFixed(1) },
+              grid: { drawOnChartArea: false },
+              title: { display: true, text: 'XSP', color: 'rgba(148,163,184,0.5)', font: { size: 10 } },
             }
           }
         }
@@ -1255,11 +1308,15 @@
       const badge = document.getElementById('pctBadge');
       const TOTAL = 238.76; // full arc dasharray
 
-      if (!historicalMids.length || curMid == null) {
+      if (!historicalMids.length || curMid == null || downDates.length < 3) {
         arc.style.strokeDashoffset = TOTAL;
         pctEl.textContent = '--';
         pctEl.style.color = 'var(--text3)';
-        descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>没有足够的历史数据（需要下跌日的同时段快照）`;
+        if (downDates.length < 3 && downDates.length > 0) {
+          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>仅 ${downDates.length} 个下跌日，至少需要 3 个下跌日才有参考价值`;
+        } else {
+          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>没有足够的历史数据（需要下跌日的同时段快照）`;
+        }
         badge.innerHTML = '';
         return;
       }

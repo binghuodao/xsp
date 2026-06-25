@@ -649,10 +649,12 @@
         // ── 历史百分位缓存 ──
         const histPctCache = {};
 
-        function fetchPercentileData(group, role) {
-            const key = `${group}-${role}`;
+        function fetchPercentileData(group, role, combo) {
+            const key = combo ? `${group}-${role}-${combo}` : `${group}-${role}`;
             if (histPctCache[key]) return Promise.resolve(histPctCache[key]);
-            return fetch(`/api/history/percentile_data?group=${group}&role=${role}`)
+            let url = `/api/history/percentile_data?group=${group}&role=${role}`;
+            if (combo) url += `&combo_symbol=${encodeURIComponent(combo)}`;
+            return fetch(url)
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'ok' && data.mids) histPctCache[key] = data.mids;
@@ -1064,7 +1066,7 @@
             `;
 
             // 百分位异步加载
-            fetchPercentileData(d.group_index, 'spread').then(mids => {
+            fetchPercentileData(d.group_index, 'spread', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
@@ -1218,7 +1220,7 @@
                 </div>
             `;
 
-            fetchPercentileData(d.group_index, 'bfly').then(mids => {
+            fetchPercentileData(d.group_index, 'bfly', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
@@ -1442,7 +1444,7 @@
                 </div>
             `;
 
-            fetchPercentileData(d.group_index, 'xmas').then(mids => {
+            fetchPercentileData(d.group_index, 'xmas', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
