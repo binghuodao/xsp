@@ -591,6 +591,13 @@
       text-align: right;
     }
 
+    .day-row .low-sess {
+      font-size: 11px;
+      color: var(--text3);
+      flex: 1;
+      text-align: right;
+    }
+
     /* empty / loading states */
     .empty-state {
       text-align: center;
@@ -782,16 +789,16 @@
               <div class="val accent" id="statTotal">--</div>
             </div>
             <div class="stat-box">
-              <div class="lbl">下跌日</div>
-              <div class="val down" id="statDown">--</div>
-            </div>
-            <div class="stat-box">
               <div class="lbl">当前 Mid</div>
               <div class="val" id="statCurrentMid">--</div>
             </div>
             <div class="stat-box">
-              <div class="lbl">下跌日中位数</div>
-              <div class="val" id="statMedian">--</div>
+              <div class="lbl">🔺 历史最高</div>
+              <div class="val up" id="statHigh">--</div>
+            </div>
+            <div class="stat-box">
+              <div class="lbl">🔻 历史最低</div>
+              <div class="val down" id="statLow">--</div>
             </div>
           </div>
         </div>
@@ -1204,21 +1211,22 @@
         return ret && ret.is_down;
       });
 
-      const counts = { asia_pm: 0, pre_market: 0, open_30: 0, regular: 0 };
+      const highCounts = { asia_pm: 0, pre_market: 0, open_30: 0, regular: 0 };
+      const lowCounts = { asia_pm: 0, pre_market: 0, open_30: 0, regular: 0 };
 
       for (const d of dates) {
         const pts = pathData[d] || [];
         if (!pts.length) continue;
-        const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
-        if (best && counts[best.session] !== undefined) counts[best.session]++;
+        const high = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
+        const low = pts.reduce((b, p) => (p.mid < (b?.mid ?? Infinity) ? p : b), null);
+        if (high && highCounts[high.session] !== undefined) highCounts[high.session]++;
+        if (low && lowCounts[low.session] !== undefined) lowCounts[low.session]++;
       }
 
-      const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
-      const labels = ['亚洲下午盘\n(22-04 ET)', '美前市\n(04-09:30 ET)', '开盘30分\n(09:30-10 ET)', '正式交易\n(10-16 ET)'];
       const keys = ['asia_pm', 'pre_market', 'open_30', 'regular'];
-      const values = keys.map(k => Math.round(counts[k] / total * 100));
-      const colors = keys.map(k => sessionColor(k, 0.85));
-      const borders = keys.map(k => sessionColor(k, 1));
+      const labels = ['亚洲下午盘\n(22-04 ET)', '美前市\n(04-09:30 ET)', '开盘30分\n(09:30-10 ET)', '正式交易\n(10-16 ET)'];
+      const highTotal = Object.values(highCounts).reduce((a, b) => a + b, 0) || 1;
+      const lowTotal = Object.values(lowCounts).reduce((a, b) => a + b, 0) || 1;
 
       if (sessionChart) sessionChart.destroy();
       const ctx2 = document.getElementById('sessionChart').getContext('2d');
@@ -1226,25 +1234,52 @@
         type: 'bar',
         data: {
           labels,
-          datasets: [{
-            data: values, backgroundColor: colors, borderColor: borders,
-            borderWidth: 1.5, borderRadius: 6,
-          }]
+          datasets: [
+            {
+              label: '高点',
+              data: keys.map(k => Math.round(highCounts[k] / highTotal * 100)),
+              backgroundColor: keys.map(k => sessionColor(k, 0.75)),
+              borderColor: keys.map(k => sessionColor(k, 1)),
+              borderWidth: 1.2, borderRadius: 0,
+              order: 2,
+            },
+            {
+              label: '低点',
+              data: keys.map(k => Math.round(lowCounts[k] / lowTotal * 100)),
+              backgroundColor: keys.map(k => {
+                const c = sessionColor(k, 0.75);
+                return c.replace('rgb', 'rgba').replace(')', ',0.5)');
+              }),
+              borderColor: keys.map(k => sessionColor(k, 1)),
+              borderWidth: 1.2, borderRadius: 0,
+              order: 1,
+            },
+          ]
         },
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
             tooltip: {
+              mode: 'index',
               callbacks: {
-                label: item => ` ${item.parsed.y}%（${keys.map(k => counts[k])[item.dataIndex]}天）`
+                title: items => items[0]?.label?.replace('\n', ' ') || '',
+                label: item => {
+                  const idx = item.dataIndex;
+                  const hDays = keys.map(k => highCounts[k])[idx];
+                  const lDays = keys.map(k => lowCounts[k])[idx];
+                  const hPct = Math.round(hDays / highTotal * 100);
+                  const lPct = Math.round(lDays / lowTotal * 100);
+                  if (item.dataset.label === '高点') return ` 高点: ${hDays}天 (${hPct}%)`;
+                  return ` 低点: ${lDays}天 (${lPct}%)`;
+                }
               }
             }
           },
           scales: {
-            x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { display: false } },
+            x: { stacked: true, ticks: { color: '#64748b', font: { size: 10 } }, grid: { display: false } },
             y: {
-              min: 0, max: 100,
+              stacked: true, min: 0, max: 100,
               ticks: { color: '#64748b', font: { size: 10 }, callback: v => v + '%' },
               grid: { color: 'rgba(255,255,255,0.04)' }
             }
@@ -1265,20 +1300,25 @@
 
       list.innerHTML = dates.map(d => {
         const ret = dailyRet[d];
-        const chgTxt = ret ? `${ret.change_pct > 0 ? '+' : ''}${ret.change_pct.toFixed(2)}%` : '?';
+        const chgTxt = ret ? `${ret.change_pct > 0 ? '+' : ''}${ret.change_pct.toFixed(2)}%` : '--';
         const chgCls = ret?.is_down ? 'down' : 'up';
 
-        // Find peak session for this day
         const pts = pathData[d] || [];
-        const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
         const sessLabels = { asia_pm: '亚洲下午', pre_market: '美前市', open_30: '开盘30分', regular: '正式交易' };
-        const peakSess = best ? (sessLabels[best.session] || best.session) : '--';
+
+        const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
+        const worst = pts.reduce((b, p) => (p.mid < (b?.mid ?? Infinity) ? p : b), null);
+
         const peakMid = best ? `$${fmt(best.mid, 4)}` : '--';
+        const peakSess = best ? (sessLabels[best.session] || best.session) : '--';
+        const lowMid = worst ? `$${fmt(worst.mid, 4)}` : '--';
+        const lowSess = worst ? (sessLabels[worst.session] || worst.session) : '--';
 
         return `<div class="day-row" onclick="highlightDay('${d}')">
       <span class="date">${d}</span>
       <span class="chg ${chgCls}">${chgTxt}</span>
-      <span class="peak-sess">高点 ${peakMid} @ ${peakSess}</span>
+      <span class="peak-sess">🔺${peakMid} @ ${peakSess}</span>
+      <span class="low-sess">🔻${lowMid} @ ${lowSess}</span>
     </div>`;
       }).join('');
     }
@@ -1288,10 +1328,10 @@
       const curOffset = currentOffsetMin();
       const WINDOW = 20; // ±20 min window
 
-      // Only use down days for percentile
-      const downDates = Object.keys(pathData).filter(d => dailyRet[d]?.is_down);
+      // Use all dates for historical reference (not just down days)
+      const allDates = Object.keys(pathData);
 
-      const historicalMids = downDates.flatMap(d =>
+      const historicalMids = allDates.flatMap(d =>
         (pathData[d] || [])
           .filter(p => Math.abs(p.offset_min - curOffset) <= WINDOW && p.mid != null && p.mid >= 0)
           .map(p => p.mid)
@@ -1308,14 +1348,14 @@
       const badge = document.getElementById('pctBadge');
       const TOTAL = 238.76; // full arc dasharray
 
-      if (!historicalMids.length || curMid == null || downDates.length < 3) {
+      if (!historicalMids.length || curMid == null || allDates.length < 3) {
         arc.style.strokeDashoffset = TOTAL;
         pctEl.textContent = '--';
         pctEl.style.color = 'var(--text3)';
-        if (downDates.length < 3 && downDates.length > 0) {
-          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>仅 ${downDates.length} 个下跌日，至少需要 3 个下跌日才有参考价值`;
+        if (allDates.length < 3 && allDates.length > 0) {
+          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>仅 ${allDates.length} 个交易日，至少需要 3 个交易日才有参考价值`;
         } else {
-          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>没有足够的历史数据（需要下跌日的同时段快照）`;
+          descEl.innerHTML = `<strong>当前时段 ET ${offsetToETLabel(curOffset)}</strong><br>没有足够的历史数据（需要同时段快照）`;
         }
         badge.innerHTML = '';
         return;
@@ -1332,16 +1372,18 @@
       const curSess = getSessionForOffset(curOffset);
       descEl.innerHTML = `
     当前 <strong>$${fmt(curMid, 4)}</strong>（${sessLabel[curSess] || curSess}）<br>
-    高于 <strong>${historicalMids.length}</strong> 个下跌日同时段样本的 <strong>${pct}%</strong>。
+    高于 <strong>${historicalMids.length}</strong> 个历史同时段样本的 <strong>${pct}%</strong>。
   `;
 
       let badgeCls, badgeTxt;
       if (pct >= 80) {
-        badgeCls = 'high'; badgeTxt = '🔥 接近历史高位，可考虑入场';
+        badgeCls = 'high'; badgeTxt = '🔥 接近历史高位，适合离场';
       } else if (pct >= 50) {
-        badgeCls = 'medium'; badgeTxt = '⚡ 中等偏高，具备参考性';
+        badgeCls = 'medium'; badgeTxt = '⚡ 中等偏高，可继续持有';
+      } else if (pct >= 20) {
+        badgeCls = 'low'; badgeTxt = '✅ 处于低位，可考虑入场';
       } else {
-        badgeCls = 'low'; badgeTxt = '✅ 偏低，历史上仍有上升空间';
+        badgeCls = 'low'; badgeTxt = '💎 历史低位，极佳入场时机';
       }
       badge.innerHTML = `<span class="pct-badge ${badgeCls}">${badgeTxt}</span>`;
     }
@@ -1349,10 +1391,8 @@
     // ── STATS ────────────────────────────────────────────
     function renderStats() {
       const allDates = Object.keys(pathData);
-      const downDates = allDates.filter(d => dailyRet[d]?.is_down);
 
       document.getElementById('statTotal').textContent = allDates.length || '--';
-      document.getElementById('statDown').textContent = downDates.length || '--';
 
       // Current mid
       const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -1360,13 +1400,19 @@
       document.getElementById('statCurrentMid').textContent =
         todayPts.length ? `$${fmt(todayPts[0].mid, 4)}` : '--';
 
-      // Median peak across down days
-      const peaks = downDates
-        .map(d => { const pts = pathData[d] || []; return pts.length ? Math.max(...pts.map(p => p.mid)) : null; })
-        .filter(v => v != null).sort((a, b) => a - b);
-
-      document.getElementById('statMedian').textContent =
-        peaks.length ? `$${fmt(peaks[Math.floor(peaks.length / 2)], 4)}` : '--';
+      // Historical high & low across all data
+      let globalMax = -Infinity, globalMin = Infinity;
+      for (const d of allDates) {
+        const pts = pathData[d] || [];
+        for (const p of pts) {
+          if (p.mid != null && p.mid > globalMax) globalMax = p.mid;
+          if (p.mid != null && p.mid >= 0 && p.mid < globalMin) globalMin = p.mid;
+        }
+      }
+      document.getElementById('statHigh').textContent =
+        globalMax > -Infinity ? `$${fmt(globalMax, 4)}` : '--';
+      document.getElementById('statLow').textContent =
+        globalMin < Infinity ? `$${fmt(globalMin, 4)}` : '--';
     }
 
     // ── HIGHLIGHT DAY ─────────────────────────────────────
