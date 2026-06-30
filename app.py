@@ -3,7 +3,7 @@ import threading
 import pytz
 import pandas as pd
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect, url_for
 from flask_socketio import SocketIO
 from moomoo import *
 import yfinance as yf
@@ -11,10 +11,25 @@ import argparse
 import os
 import json
 import sqlite3
+import secrets
 from collections import defaultdict
+from functools import wraps
+from authlib.integrations.flask_client import OAuth
+from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user, current_user
 import pricing
 
-# --- COMMAND LINE ARGS & CONFIGURATION ---
+# --- CONFIGURATION ---
+config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+CONFIG = {}
+if os.path.exists(config_path):
+    with open(config_path) as f:
+        CONFIG = json.load(f)
+
+ENV = CONFIG.get('env', 'test')
+FLASK_PORT = 3000 if ENV == 'prod' else 3001
+OPEND_ADDR = CONFIG.get('opend_addr', 'opend.garylu.com')
+OPEND_PORT = CONFIG.get('opend_port', 11111)
+
 parser = argparse.ArgumentParser(description="XSP Options Monitor")
 parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage (default: 0.95)")
 parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
@@ -23,8 +38,6 @@ parser.add_argument("--watchlist-size", type=int, default=10, help="Watchlist si
 parser.add_argument("--option-days", type=int, default=14, help="Option days (default: 14)")
 args, unknown = parser.parse_known_args()
 
-OPEND_ADDR = '127.0.0.1'
-OPEND_PORT = 11111
 FLOOR_PERCENT = args.floor
 CEILING_PERCENT = args.ceiling
 REF_SYMBOL = 'US.SPY'
@@ -41,7 +54,48 @@ ET_TZ        = pytz.timezone('America/New_York')
 last_log_ts  = 0.0
 
 app = Flask(__name__)
+app.secret_key = CONFIG.get('secret_key') or secrets.token_hex(32)
+
+# Proxy fix so url_for(_external=True) generates correct https:// behind nginx
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# --- AUTHENTICATION ---
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+class User(UserMixin):
+    def __init__(self, email, name):
+        self.id = email
+        self.email = email
+        self.name = name
+
+_users = {}
+
+@login_manager.user_loader
+def load_user(user_id):
+    return _users.get(user_id)
+
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=CONFIG.get('google_client_id', ''),
+    client_secret=CONFIG.get('google_client_secret', ''),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'},
+)
+
+# API routes that should return 401 JSON instead of redirect
+def api_login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 # 全局数据缓存
 latest_data = {
@@ -1052,16 +1106,25 @@ def start_moomoo():
                 time.sleep(5)
 
 @app.route('/')
+@login_required
 def index():
     return render_template('index.html', watchlist_size=WATCHLIST_SIZE)
 
 
+@app.route('/api/xsp/ta')
+@api_login_required
+def api_xsp_ta():
+    return jsonify(compute_xsp_ta() or {})
+
+
 @app.route('/history')
+@login_required
 def history_page():
     return render_template('history.html')
 
 
 @app.route('/api/history/snapshots')
+@api_login_required
 def api_history_snapshots():
     """
     Return all recorded premium snapshots for a given watchlist group and role.
@@ -1112,6 +1175,7 @@ def api_history_snapshots():
 
 
 @app.route('/api/history/daily_returns')
+@api_login_required
 def api_history_daily_returns():
     """
     For each trade date in the DB, fetch XSP OHLC from yfinance and return
@@ -1155,6 +1219,7 @@ def api_history_daily_returns():
 
 
 @app.route('/api/history/groups')
+@api_login_required
 def api_history_groups():
     """Return watchlist groups from logged data, one entry per unique combo config."""
     try:
@@ -1228,6 +1293,7 @@ def api_history_groups():
         return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/api/history/percentile_data')
+@api_login_required
 def api_percentile_data():
     """Return sorted list of historical mid prices for a given group+role."""
     group_idx = request.args.get('group', 1, type=int)
@@ -1271,9 +1337,47 @@ def handle_connect():
     for sym in latest_data["options"]:
         socketio.emit('option_update', latest_data["options"][sym])
 
+# --- AUTH ROUTES ---
+@app.route('/login')
+def login():
+    error = request.args.get('error')
+    return render_template('login.html', error=error)
+
+@app.route('/auth')
+def auth_redirect():
+    if not CONFIG.get('google_client_id') or not CONFIG.get('google_client_secret'):
+        return redirect(url_for('login', error='Google OAuth not configured'))
+    redirect_uri = url_for('auth_callback', _external=True)
+    return google.authorize_redirect(redirect_uri)
+
+@app.route('/auth/callback')
+def auth_callback():
+    try:
+        token = google.authorize_access_token()
+        userinfo = token.get('userinfo')
+        if not userinfo:
+            userinfo = google.parse_id_token(token)
+        email = userinfo.get('email', '')
+        name = userinfo.get('name', email)
+        allowed = CONFIG.get('allowed_emails', [])
+        if not allowed or email not in allowed:
+            return redirect(url_for('login', error='Unauthorized email'))
+        user = User(email, name)
+        _users[email] = user
+        login_user(user)
+        return redirect(url_for('index'))
+    except Exception as e:
+        print(f"⚠️ Auth error: {e}")
+        return redirect(url_for('login', error='Authentication failed'))
+
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
 if __name__ == '__main__':
     init_db()
     t = threading.Thread(target=start_moomoo, daemon=True)
     t.start()
-    print(f"🌍 Dashboard: http://127.0.0.1:3000")
-    socketio.run(app, host='0.0.0.0', port=3000, debug=False, allow_unsafe_werkzeug=True)
+    print(f"🌍 Dashboard: http://127.0.0.1:{FLASK_PORT}")
+    socketio.run(app, host='0.0.0.0', port=FLASK_PORT, debug=False, allow_unsafe_werkzeug=True)
