@@ -34,7 +34,7 @@ parser = argparse.ArgumentParser(description="XSP Options Monitor")
 parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage (default: 0.95)")
 parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
-parser.add_argument("--watchlist-size", type=int, default=10, help="Watchlist size (default: 10)")
+parser.add_argument("--watchlist-size", type=int, default=20, help="Watchlist size (default: 20)")
 parser.add_argument("--option-days", type=int, default=14, help="Option days (default: 14)")
 args, unknown = parser.parse_known_args()
 
