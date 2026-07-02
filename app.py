@@ -17,6 +17,7 @@ from functools import wraps
 from authlib.integrations.flask_client import OAuth
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user, current_user
 import pricing
+import pandas_ta as ta
 
 # --- CONFIGURATION ---
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -120,6 +121,11 @@ historical_stats = {
     "atr_14": 5.0,  # 默认值
     "ema_20": 0.0,  # 默认值
     "skew": 0.0,    # 默认值
+    "adx": 20.0,    # 趋势指标默认
+    "er": 0.5,
+    "bbw": 25.0,
+    "dev": 0.0,
+    "vr": 1.0,
     "last_updated": 0
 }
 
@@ -353,8 +359,47 @@ def update_historical_data():
             ema_20 = xsp_hist['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
             historical_stats["ema_20"] = float(ema_20)
 
+        # SPY 日线趋势指标 (ADX, ER, BBW, Deviation, Vol Ratio)
+        try:
+            spy_ticker = yf.Ticker("SPY")
+            spy_daily = spy_ticker.history(period="2mo")
+            if len(spy_daily) >= 25:
+                close = spy_daily['Close']
+                high  = spy_daily['High']
+                low   = spy_daily['Low']
+                vol   = spy_daily['Volume']
+
+                # 1. ADX(14)
+                adx_df = ta.adx(high, low, close, length=14)
+                historical_stats["adx"] = float(adx_df['ADX_14'].iloc[-1])
+
+                # 2. Efficiency Ratio(10)
+                changes = close.diff().abs()
+                er_val = abs(close.iloc[-1] - close.iloc[-11]) / changes.tail(10).sum()
+                historical_stats["er"] = float(er_val) if er_val > 0 else 0.0
+
+                # 3. Bollinger Bands Width%(20,2)
+                bb_df = ta.bbands(close, length=20, std=2)
+                upper = bb_df['BBU_20_2.0']
+                lower = bb_df['BBL_20_2.0']
+                mid   = bb_df['BBM_20_2.0']
+                bbw_val = (upper - lower) / mid * 100
+                historical_stats["bbw"] = float(bbw_val.iloc[-1])
+
+                # 4. Price Deviation from SMA20(%)
+                sma20 = close.rolling(20).mean()
+                dev_val = (close.iloc[-1] - sma20.iloc[-1]) / sma20.iloc[-1] * 100
+                historical_stats["dev"] = float(dev_val)
+
+                # 5. Volume Ratio (当前量 / 20日均量)
+                avg_vol = vol.rolling(20).mean()
+                vr_val = vol.iloc[-1] / avg_vol.iloc[-1]
+                historical_stats["vr"] = float(vr_val)
+        except Exception as spy_err:
+            print(f"⚠️ Failed to fetch SPY trend data: {spy_err}")
+
         historical_stats["last_updated"] = now_ts
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}")
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x")
     except Exception as e:
         print(f"⚠️ Failed to update historical data: {e}")
 
@@ -578,7 +623,12 @@ def start_moomoo():
                         "vix_percentile": historical_stats["vix_percentile"],
                         "atr_14": historical_stats["atr_14"],
                         "ema_20": historical_stats["ema_20"],
-                        "skew": historical_stats["skew"]
+                        "skew": historical_stats["skew"],
+                        "adx": historical_stats["adx"],
+                        "er": historical_stats["er"],
+                        "bbw": historical_stats["bbw"],
+                        "dev": historical_stats["dev"],
+                        "vr": historical_stats["vr"]
                     }
                     if mes_price is not None:
                         latest_data["index"]["mes_price"] = mes_price
