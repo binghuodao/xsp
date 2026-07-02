@@ -104,6 +104,17 @@ latest_data = {
     "options": {}
 }
 
+_toast_throttle = {"msg": "", "ts": 0}
+
+def emit_toast(sio, msg):
+    global _toast_throttle
+    now = time.time()
+    if msg != _toast_throttle["msg"] or now - _toast_throttle["ts"] > 60:
+        _toast_throttle["msg"] = msg
+        _toast_throttle["ts"] = now
+        print(msg)
+        sio.emit('toast_error', msg)
+
 user_watchlist = []
 if os.path.exists(WATCHLIST_FILE):
     try:
@@ -396,12 +407,12 @@ def update_historical_data():
                 vr_val = vol.iloc[-1] / avg_vol.iloc[-1]
                 historical_stats["vr"] = float(vr_val)
         except Exception as spy_err:
-            print(f"⚠️ Failed to fetch SPY trend data: {spy_err}")
+            emit_toast(socketio, f"⚠️ SPY 趋势数据获取失败: {spy_err}")
 
         historical_stats["last_updated"] = now_ts
         print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x")
     except Exception as e:
-        print(f"⚠️ Failed to update historical data: {e}")
+        emit_toast(socketio, f"⚠️ 历史数据更新失败: {e}")
 
 
 def get_xsp_anchor_price():
@@ -417,7 +428,7 @@ def get_xsp_anchor_price():
             
         return float(current_price)
     except Exception as e:
-        print(f"⚠️ YFinance Error: {e}")
+        emit_toast(socketio, f"⚠️ 行情数据获取失败: {e}")
         return 0
         
 def format_row(row):
@@ -1152,7 +1163,7 @@ def start_moomoo():
                 time.sleep(REFRESH_INTERVAL)
                 
             except Exception as e:
-                print(f"❌ 循环异常: {e}")
+                emit_toast(socketio, f"❌ 循环异常: {e}")
                 time.sleep(5)
 
 @app.route('/')
@@ -1374,7 +1385,7 @@ def handle_watchlist(data):
         with open(WATCHLIST_FILE, 'w') as f:
             json.dump(user_watchlist, f)
     except Exception as e:
-        print(f"⚠️ Failed to save watchlist: {e}")
+        emit_toast(socketio, f"⚠️ Watchlist 保存失败: {e}")
     # 核心：广播给所有连接的客户端，触发它们的回写逻辑
     socketio.emit('sync_watchlist', user_watchlist)
 

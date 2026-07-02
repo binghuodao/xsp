@@ -89,6 +89,32 @@
         .label { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-bottom: 5px; }
         .val { font-size: 24px; font-weight: bold; color: var(--blue); }
 
+        .trend-stat { flex: 1; min-width: 110px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; }
+        .trend-stat .val { font-size: 20px; }
+        .trend-stat .sub { font-size: 11px; margin-top: 2px; }
+
+        /* TOAST */
+        #toast-container {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 9999; display: flex; flex-direction: column; gap: 8px;
+            max-width: 600px; width: 90%; pointer-events: none;
+        }
+        #toast-container .toast {
+            pointer-events: auto;
+            background: #1c1010; border: 1px solid #f85149;
+            border-radius: 8px; padding: 12px 16px;
+            color: #f85149; font-size: 14px;
+            display: flex; align-items: flex-start; gap: 10px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+            animation: toastIn .3s ease;
+        }
+        @keyframes toastIn { from { opacity:0; transform:translateY(-20px); } to { opacity:1; transform:translateY(0); } }
+        #toast-container .toast .close-btn {
+            margin-left: auto; cursor: pointer; font-size: 18px; line-height: 1;
+            background: none; border: none; color: #f85149; opacity: 0.6; padding: 0; flex-shrink: 0;
+        }
+        #toast-container .toast .close-btn:hover { opacity: 1; }
+
         /* GRID AND CARDS */
         .grid { 
             display: grid; 
@@ -370,6 +396,7 @@
 
     <button id="toggle-btn" onclick="toggleSidebar()">⬅️ Hide Sidebar</button>
 
+    <div id="toast-container"></div>
     <div id="sidebar">
         <h2 style="font-size: 18px; margin-top: 0;">⭐ Watchlist</h2>
         <div id="watchlist-inputs">
@@ -417,6 +444,40 @@
             <div class="stat">
                 <span class="label">MES MAIN</span>
                 <span id="p-mes" class="val" style="color:var(--blue)">--</span>
+            </div>
+        </div>
+
+        <!-- TREND PANEL -->
+        <div id="trend-panel" style="display:flex; gap:8px; margin:0 0 15px 0; align-items:stretch; flex-wrap:wrap;">
+            <div class="trend-stat">
+                <span class="label">ADX(14) 30%</span>
+                <span id="p-adx" class="val">--</span>
+                <span class="sub" id="p-adx-sub" style="color:#8b949e">--</span>
+            </div>
+            <div class="trend-stat">
+                <span class="label">Efficiency Ratio 20%</span>
+                <span id="p-er" class="val">--</span>
+                <span class="sub" id="p-er-sub" style="color:#8b949e">--</span>
+            </div>
+            <div class="trend-stat">
+                <span class="label">BB Width% 15%</span>
+                <span id="p-bbw" class="val">--</span>
+                <span class="sub" id="p-bbw-sub" style="color:#8b949e">--</span>
+            </div>
+            <div class="trend-stat">
+                <span class="label">Deviation% 15%</span>
+                <span id="p-dev" class="val">--</span>
+                <span class="sub" id="p-dev-sub" style="color:#8b949e">--</span>
+            </div>
+            <div class="trend-stat">
+                <span class="label">Vol Ratio 10%</span>
+                <span id="p-vr" class="val">--</span>
+                <span class="sub" id="p-vr-sub" style="color:#8b949e">--</span>
+            </div>
+            <div class="trend-stat" style="border-left:3px solid #30363d; flex: 1.5; min-width: 140px;">
+                <span class="label">Composite Signal</span>
+                <span id="p-composite" class="val" style="font-size:22px; display:flex; align-items:center; gap:6px;">--</span>
+                <span class="sub" id="p-composite-sub" style="color:#8b949e">--</span>
             </div>
         </div>
 
@@ -562,7 +623,80 @@
                 const changeColor = d.mes_change >= 0 ? 'var(--green)' : 'var(--red)';
                 document.getElementById('p-mes').innerHTML = `${d.mes_price.toFixed(2)} <span style="font-size:14px; color:${changeColor}">${d.mes_change >= 0 ? '+' : ''}${d.mes_change.toFixed(2)} (${d.mes_change_pct >= 0 ? '+' : ''}${d.mes_change_pct.toFixed(2)}%)</span>`;
             }
+            // --- Trend Indicators ---
+            if (d.adx !== undefined) {
+                const adxColor = d.adx >= 30 ? 'var(--green)' : d.adx >= 20 ? '#f0883e' : 'var(--red)';
+                document.getElementById('p-adx').innerText = d.adx.toFixed(1);
+                document.getElementById('p-adx').style.color = adxColor;
+                const adxLabel = d.adx >= 30 ? '⬆️ Strong Trend' : d.adx >= 25 ? '↑ Weak Trend' : d.adx >= 20 ? '→ Transition' : d.adx >= 15 ? '↓ Weak Range' : '⬇️ Ranging';
+                document.getElementById('p-adx-sub').innerHTML = `<span style="color:${adxColor}">${adxLabel}</span>`;
+            }
+            if (d.er !== undefined) {
+                const erColor = d.er >= 0.6 ? 'var(--green)' : d.er >= 0.35 ? '#f0883e' : 'var(--red)';
+                document.getElementById('p-er').innerText = d.er.toFixed(2);
+                document.getElementById('p-er').style.color = erColor;
+                const erLabel = d.er >= 0.6 ? '⬆️ Trend' : d.er >= 0.35 ? '~ Mixed' : '⬇️ Choppy';
+                document.getElementById('p-er-sub').innerHTML = `<span style="color:${erColor}">${erLabel}</span>`;
+            }
+            if (d.bbw !== undefined) {
+                const bbwColor = d.bbw >= 30 ? 'var(--green)' : d.bbw >= 15 ? '#f0883e' : 'var(--red)';
+                document.getElementById('p-bbw').innerText = d.bbw.toFixed(1) + '%';
+                document.getElementById('p-bbw').style.color = bbwColor;
+                const bbwLabel = d.bbw >= 30 ? '⬆️ Expanding' : d.bbw >= 15 ? '~ Normal' : '⬇️ Squeeze';
+                document.getElementById('p-bbw-sub').innerHTML = `<span style="color:${bbwColor}">${bbwLabel}</span>`;
+            }
+            if (d.dev !== undefined) {
+                const devColor = Math.abs(d.dev) >= 1.5 ? 'var(--green)' : Math.abs(d.dev) >= 0.5 ? 'var(--blue)' : '#8b949e';
+                document.getElementById('p-dev').innerText = (d.dev >= 0 ? '+' : '') + d.dev.toFixed(2) + '%';
+                document.getElementById('p-dev').style.color = devColor;
+                const devLabel = d.dev > 0.5 ? 'Above SMA' : d.dev < -0.5 ? 'Below SMA' : 'Near SMA';
+                document.getElementById('p-dev-sub').innerHTML = `<span style="color:${devColor}">${devLabel}</span>`;
+            }
+            if (d.vr !== undefined) {
+                const vrColor = d.vr >= 1.3 ? 'var(--green)' : d.vr >= 0.7 ? '#8b949e' : 'var(--red)';
+                document.getElementById('p-vr').innerText = d.vr.toFixed(2) + 'x';
+                document.getElementById('p-vr').style.color = vrColor;
+                const vrLabel = d.vr >= 1.3 ? 'High Vol' : d.vr >= 0.7 ? 'Normal' : 'Low Vol';
+                document.getElementById('p-vr-sub').innerHTML = `<span style="color:${vrColor}">${vrLabel}</span>`;
+            }
+            // --- Composite Score ---
+            if (d.adx !== undefined || d.er !== undefined) {
+                const w = { adx: 0.30, er: 0.20, bbw: 0.15, dev: 0.15, vr: 0.10, base: 0.10 };
+                let total = 50 * w.base;
+
+                function scoreADX(v) { return v >= 30 ? 100 : v >= 25 ? 75 : v >= 20 ? 50 : v >= 15 ? 25 : 0; }
+                function scoreER(v)   { return v >= 0.7 ? 100 : v >= 0.55 ? 75 : v >= 0.35 ? 50 : v >= 0.2 ? 25 : 0; }
+                function scoreBBW(v)  { return v >= 45 ? 100 : v >= 30 ? 75 : v >= 18 ? 50 : v >= 10 ? 25 : 0; }
+                function scoreDev(v)  { const a = Math.abs(v); return a >= 3 ? 100 : a >= 1.5 ? 75 : a >= 0.8 ? 50 : a >= 0.3 ? 25 : 0; }
+                function scoreVR(v)   { return v >= 2.0 ? 100 : v >= 1.3 ? 75 : v >= 0.8 ? 50 : v >= 0.5 ? 25 : 0; }
+
+                total += (d.adx !== undefined ? scoreADX(d.adx) : 50) * w.adx;
+                total += (d.er  !== undefined ? scoreER(d.er)   : 50) * w.er;
+                total += (d.bbw !== undefined ? scoreBBW(d.bbw) : 50) * w.bbw;
+                total += (d.dev !== undefined ? scoreDev(d.dev) : 50) * w.dev;
+                total += (d.vr  !== undefined ? scoreVR(d.vr)   : 50) * w.vr;
+
+                total = Math.round(total);
+                const label = total >= 65 ? 'Trending' : total >= 35 ? 'Mixed' : 'Ranging';
+                const color = total >= 65 ? 'var(--green)' : total >= 35 ? '#f0883e' : 'var(--red)';
+                const icon  = total >= 65 ? '🟢' : total >= 35 ? '🟡' : '🔴';
+                document.getElementById('p-composite').innerHTML = `${total} <span style="font-size:14px;color:${color}">${icon}</span>`;
+                document.getElementById('p-composite').style.color = color;
+                document.getElementById('p-composite-sub').innerHTML = `<span style="color:${color};font-weight:bold">${label}</span>`;
+            }
             updateTrafficLight();
+        });
+
+        const toastShown = new Set();
+
+        socket.on('toast_error', msg => {
+            if (toastShown.has(msg)) return;
+            toastShown.add(msg);
+            const container = document.getElementById('toast-container');
+            const div = document.createElement('div');
+            div.className = 'toast';
+            div.innerHTML = `<span style="flex:1">⚠️ ${msg}</span><button class="close-btn" onclick="this.parentElement.remove()">✕</button>`;
+            container.appendChild(div);
         });
 
         socket.on('option_update', d => {
