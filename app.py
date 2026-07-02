@@ -391,9 +391,9 @@ def update_historical_data():
 
                 # 3. Bollinger Bands Width%(20,2)
                 bb_df = ta.bbands(close, length=20, std=2)
-                upper = bb_df['BBU_20_2.0']
-                lower = bb_df['BBL_20_2.0']
-                mid   = bb_df['BBM_20_2.0']
+                upper = bb_df.iloc[:, 2]  # BBU column
+                lower = bb_df.iloc[:, 0]  # BBL column
+                mid   = bb_df.iloc[:, 1]  # BBM column
                 bbw_val = (upper - lower) / mid * 100
                 historical_stats["bbw"] = float(bbw_val.iloc[-1])
 
