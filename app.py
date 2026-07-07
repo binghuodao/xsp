@@ -457,9 +457,14 @@ def log_premium_snapshot():
     for sym, opt in latest_data["options"].items():
         try:
             if low_strike <= opt['strike'] <= high_strike and opt['expiry'] <= cutoff_dt:
+                bid = float(opt.get('bid') or 0)
+                ask = float(opt.get('ask') or 0)
+                if not (bid > 0 and ask > 0 and ask > bid):
+                    continue
+                mid = round((bid + ask) / 2, 4)
                 rows.append((int(now_ts), trade_date, session, xsp_price, vix,
                              None, sym, opt['strike'], opt['expiry'], opt['opt_type'],
-                             'option', opt['bid'], opt['ask'], opt['mid']))
+                             'option', bid, ask, mid))
         except:
             continue
 
@@ -1443,6 +1448,9 @@ def api_history_snapshots():
         # Merge: old format first, then new format overlays
         merged = {}  # ts -> dict
         for r in old_rows:
+            if not (r['bid'] > 0 and r['ask'] > 0 and r['ask'] > r['bid']):
+                continue
+            mid = round((r['bid'] + r['ask']) / 2, 4)
             merged[r['ts']] = {
                 'trade_date': r['trade_date'],
                 'session':    r['session'],
@@ -1450,7 +1458,7 @@ def api_history_snapshots():
                 'vix':        r['vix'],
                 'bid':        r['bid'],
                 'ask':        r['ask'],
-                'mid':        r['mid'],
+                'mid':        mid,
             }
 
         # Group new rows by ts
@@ -1489,6 +1497,19 @@ def api_history_snapshots():
                     continue
                 bid, ask, mid = legs[target]['bid'], legs[target]['ask'], legs[target]['mid']
             else:
+                continue
+
+            # Validate bid/ask on all legs used in the computation
+            if role in ('bfly', 'xmas'):
+                check_syms = syms
+            elif role == 'spread':
+                check_syms = syms[:2]
+            else:
+                check_syms = [target]
+            if not all(
+                legs[s]['bid'] > 0 and legs[s]['ask'] > 0 and legs[s]['ask'] > legs[s]['bid']
+                for s in check_syms
+            ):
                 continue
 
             r0 = legs[syms[0]]
@@ -1653,15 +1674,25 @@ def api_percentile_data():
     try:
         conn = sqlite3.connect(DB_PATH)
 
+        # Extract strikes for bound checking
+        strike_vals = [int(s[13:]) / 1000 for s in syms]
+        width = max(strike_vals) - min(strike_vals)
+
         placeholders = ','.join('?' * len(syms))
         # New format: individual legs role='option'
         new_rows = conn.execute(f"""
-            SELECT ts, opt_symbol, mid
+            SELECT ts, opt_symbol, bid, ask, mid
             FROM premium_log
             WHERE role='option' AND mid IS NOT NULL AND mid >= 0
               AND opt_symbol IN ({placeholders})
             ORDER BY ts ASC
         """, syms).fetchall()
+
+        # Filter out rows with invalid quotes at row level
+        new_rows = [
+            (ts, sym, mid) for ts, sym, bid, ask, mid in new_rows
+            if bid > 0 and ask > 0 and ask > bid
+        ]
 
         # Old format: pre-computed rows
         old_rows = []
@@ -1692,7 +1723,8 @@ def api_percentile_data():
         # Merge: old mids first (ts -> mid), then new computed mids overlay
         merged_mids = {}  # ts -> mid
         for r in old_rows:
-            merged_mids[r[0]] = r[2]
+            if width > 0 and abs(r[2]) <= width * 2:
+                merged_mids[r[0]] = r[2]
 
         # Group new rows by ts
         new_by_ts = {}
@@ -1728,6 +1760,8 @@ def api_percentile_data():
                     continue
                 combo_mid = legs[target]
             else:
+                continue
+            if width > 0 and abs(combo_mid) > width * 2:
                 continue
             merged_mids[ts] = round(combo_mid, 4)
 
