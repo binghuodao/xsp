@@ -229,11 +229,11 @@ def generate_morning_report():
                 p += f" | 历均 ${hist:.2f}"
             lines.append(f"{label} {strike}  mid {p}")
 
-        sorted_strikes = sorted([s, m, l])
-        sorted_mids = [_opt_mid(sym_str(st, ot)) for st in sorted_strikes]
-        if all(v is not None for v in sorted_mids):
-            lo, mi, hi = sorted_mids
-            combo_val = lo + 2 * hi - 3 * mi
+        s_mid = _opt_mid(sym_s)
+        m_mid = _opt_mid(sym_m)
+        l_mid = _opt_mid(sym_l)
+        if all(v is not None for v in (s_mid, m_mid, l_mid)):
+            combo_val = s_mid + 2 * l_mid - 3 * m_mid
             tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
             lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
         lines.append("")
@@ -638,7 +638,7 @@ def format_row(row):
     gamma = float(row.get('option_gamma') or 0.0)
     theta = float(row.get('option_theta') or 0.0)
     vega = float(row.get('option_vega') or 0.0)
-    iv = float(row.get('option_implied_volatility') or 0.0)
+    iv = float(row.get('option_implied_volatility') or 0.0) / 100.0
     open_interest = int(row.get('option_open_interest') or 0)
 
     # 过滤逻辑 (Put 看负 Delta, Call 看正 Delta)
