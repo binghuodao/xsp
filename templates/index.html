@@ -430,6 +430,14 @@
                 <span class="label">MES MAIN</span>
                 <span id="p-mes" class="val" style="color:var(--blue)">--</span>
             </div>
+            <div class="stat">
+                <span class="label">SUPPORT (BBL)</span>
+                <span id="p-support" class="val" style="color:var(--green)">--</span>
+            </div>
+            <div class="stat">
+                <span class="label">RESISTANCE (BBU)</span>
+                <span id="p-resistance" class="val" style="color:var(--red)">--</span>
+            </div>
         </div>
 
         <!-- TREND PANEL -->
@@ -635,6 +643,12 @@
             if (d.mes_price !== undefined) {
                 const changeColor = d.mes_change >= 0 ? 'var(--green)' : 'var(--red)';
                 document.getElementById('p-mes').innerHTML = `${d.mes_price.toFixed(2)} <span style="font-size:14px; color:${changeColor}">${d.mes_change >= 0 ? '+' : ''}${d.mes_change.toFixed(2)} (${d.mes_change_pct >= 0 ? '+' : ''}${d.mes_change_pct.toFixed(2)}%)</span>`;
+            }
+            if (d.support !== undefined && d.support > 0) {
+                document.getElementById('p-support').innerText = d.support.toFixed(2);
+            }
+            if (d.resistance !== undefined && d.resistance > 0) {
+                document.getElementById('p-resistance').innerText = d.resistance.toFixed(2);
             }
             // --- Trend Indicators ---
             if (d.adx !== undefined) {

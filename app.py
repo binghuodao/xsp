@@ -136,6 +136,8 @@ historical_stats = {
     "bbw": 25.0,
     "dev": 0.0,
     "vr": 1.0,
+    "support": 0.0,
+    "resistance": 0.0,
     "last_updated": 0
 }
 
@@ -353,6 +355,8 @@ def update_historical_data():
                 mid   = bb_df.iloc[:, 1]  # BBM column
                 bbw_val = (upper - lower) / mid * 100
                 historical_stats["bbw"] = float(bbw_val.iloc[-1])
+                historical_stats["support"] = float(lower.iloc[-1])
+                historical_stats["resistance"] = float(upper.iloc[-1])
 
                 # 4. Price Deviation from SMA20(%)
                 sma20 = close.rolling(20).mean()
@@ -596,7 +600,9 @@ def start_moomoo():
                         "er": historical_stats["er"],
                         "bbw": historical_stats["bbw"],
                         "dev": historical_stats["dev"],
-                        "vr": historical_stats["vr"]
+                        "vr": historical_stats["vr"],
+                        "support": historical_stats["support"],
+                        "resistance": historical_stats["resistance"]
                     }
                     if mes_price is not None:
                         latest_data["index"]["mes_price"] = mes_price
@@ -709,7 +715,9 @@ def start_moomoo():
                                 "vix_percentile": historical_stats["vix_percentile"],
                                 "atr_14": historical_stats["atr_14"],
                                 "ema_20": historical_stats["ema_20"],
-                                "skew": historical_stats["skew"]
+                                "skew": historical_stats["skew"],
+                                "support": historical_stats["support"],
+                                "resistance": historical_stats["resistance"]
                             }
                             if mes_price is not None:
                                 latest_data["index"]["mes_price"] = mes_price
