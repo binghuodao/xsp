@@ -33,8 +33,8 @@ OPEND_ADDR = CONFIG.get('opend_addr', 'opend.garylu.com')
 OPEND_PORT = CONFIG.get('opend_port', 11111)
 
 parser = argparse.ArgumentParser(description="XSP Options Monitor")
-parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage (default: 0.95)")
-parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
+parser.add_argument("--floor", type=float, default=0.93, help="Floor percentage (default: 0.93)")
+parser.add_argument("--ceiling", type=float, default=1.03, help="Ceiling percentage (default: 1.03)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
 parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
 args, unknown = parser.parse_known_args()
@@ -444,19 +444,16 @@ def log_premium_snapshot():
     trade_date, session = get_trade_date_and_session(now_ts)
     xsp_price = latest_data["index"].get("price", 0)
     vix       = latest_data["index"].get("vix", 0)
-    ema20     = historical_stats.get("ema_20", 0)
 
-    if xsp_price <= 0 or ema20 <= 0:
+    if xsp_price <= 0:
         return
 
-    low_strike  = int(ema20 - 25)
-    high_strike = int(ema20 + 25)
-    cutoff_dt   = (datetime.now() + timedelta(days=21)).strftime('%Y-%m-%d')
+    cutoff_dt = (datetime.now() + timedelta(days=21)).strftime('%Y-%m-%d')
 
     rows = []
     for sym, opt in latest_data["options"].items():
         try:
-            if low_strike <= opt['strike'] <= high_strike and opt['expiry'] <= cutoff_dt:
+            if opt['expiry'] <= cutoff_dt:
                 bid = float(opt.get('bid') or 0)
                 ask = float(opt.get('ask') or 0)
                 if not (bid > 0 and ask > 0 and ask > bid):
@@ -480,11 +477,11 @@ def log_premium_snapshot():
                  bid, ask, mid)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
-        cutoff = int(now_ts - 90 * 86400)
+        cutoff = int(now_ts - 30 * 86400)
         conn.execute("DELETE FROM premium_log WHERE ts < ?", (cutoff,))
         conn.commit()
         conn.close()
-        print(f"📝 Logged {len(rows)} option rows | {trade_date} | {session} | XSP={xsp_price:.2f}, Range={low_strike}-{high_strike}, expiry<={cutoff_dt}")
+        print(f"📝 Logged {len(rows)} option rows | {trade_date} | {session} | XSP={xsp_price:.2f}, expiry<={cutoff_dt}")
     except Exception as e:
         print(f"⚠️ DB write error: {e}")
 
