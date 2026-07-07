@@ -121,6 +121,7 @@ if os.path.exists(WATCHLIST_FILE):
     except Exception as e:
         print(f"⚠️ Failed to load watchlist: {e}")
 
+_last_watchlist_clean_date = None
 
 # 历史统计缓存 (用于 VIX 和 ATR 计算)
 historical_stats = {
@@ -261,6 +262,26 @@ def log_premium_snapshot():
         print(f"📝 Logged {len(rows)} option rows | {trade_date} | {session} | XSP={xsp_price:.2f}, Range={low_strike}-{high_strike}, expiry<={cutoff_dt}")
     except Exception as e:
         print(f"⚠️ DB write error: {e}")
+
+
+def clean_expired_watchlist(sio):
+    global user_watchlist, _last_watchlist_clean_date
+    now_et = datetime.now(ET_TZ)
+    today = now_et.strftime('%y%m%d')
+    if now_et.hour < 17:
+        return
+    if _last_watchlist_clean_date == today:
+        return
+    before = len(user_watchlist)
+    user_watchlist = [g for g in user_watchlist if g.get('date', '') > today]
+    if len(user_watchlist) < before:
+        try:
+            with open(WATCHLIST_FILE, 'w') as f:
+                json.dump(user_watchlist, f)
+        except Exception as e:
+            print(f"⚠️ Watchlist save failed: {e}")
+        sio.emit('sync_watchlist', user_watchlist)
+    _last_watchlist_clean_date = today
 
 
 def update_historical_data():
@@ -1096,6 +1117,7 @@ def start_moomoo():
 
                 # 5. 控制频率
                 log_premium_snapshot()
+                clean_expired_watchlist(socketio)
                 time.sleep(REFRESH_INTERVAL)
                 
             except Exception as e:
