@@ -18,6 +18,7 @@ from authlib.integrations.flask_client import OAuth
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user, current_user
 import pricing
 import pandas_ta as ta
+import requests
 
 # --- CONFIGURATION ---
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -51,6 +52,28 @@ DB_PATH      = 'premium_log.db'
 LOG_INTERVAL = 600          # seconds between DB snapshots (10 min)
 ET_TZ        = pytz.timezone('America/New_York')
 last_log_ts  = 0.0
+
+# --- TELEGRAM NOTIFICATION ---
+TELEGRAM_TOKEN   = CONFIG.get('telegram_token', '')
+TELEGRAM_CHAT_ID = CONFIG.get('telegram_chat_id', '')
+_telegram_throttle = {"msg": "", "ts": 0}
+
+def send_telegram(msg):
+    global _telegram_throttle
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    now = time.time()
+    if msg != _telegram_throttle["msg"] or now - _telegram_throttle["ts"] > 120:
+        _telegram_throttle["msg"] = msg
+        _telegram_throttle["ts"] = now
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg[:4000]},
+                timeout=10
+            )
+        except:
+            pass
 
 app = Flask(__name__)
 app.secret_key = CONFIG.get('secret_key') or secrets.token_hex(32)
@@ -111,7 +134,7 @@ def emit_toast(sio, msg):
         _toast_throttle["msg"] = msg
         _toast_throttle["ts"] = now
         print(msg)
-        sio.emit('toast_error', msg)
+        send_telegram(msg)
 
 user_watchlist = []
 if os.path.exists(WATCHLIST_FILE):

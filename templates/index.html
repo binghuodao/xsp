@@ -93,28 +93,6 @@
         .trend-stat .val { font-size: 20px; }
         .trend-stat .sub { font-size: 11px; margin-top: 2px; }
 
-        /* TOAST */
-        #toast-container {
-            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
-            z-index: 9999; display: flex; flex-direction: column; gap: 8px;
-            max-width: 600px; width: 90%; pointer-events: none;
-        }
-        #toast-container .toast {
-            pointer-events: auto;
-            background: #1c1010; border: 1px solid #f85149;
-            border-radius: 8px; padding: 12px 16px;
-            color: #f85149; font-size: 14px;
-            display: flex; align-items: flex-start; gap: 10px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-            animation: toastIn .3s ease;
-        }
-        @keyframes toastIn { from { opacity:0; transform:translateY(-20px); } to { opacity:1; transform:translateY(0); } }
-        #toast-container .toast .close-btn {
-            margin-left: auto; cursor: pointer; font-size: 18px; line-height: 1;
-            background: none; border: none; color: #f85149; opacity: 0.6; padding: 0; flex-shrink: 0;
-        }
-        #toast-container .toast .close-btn:hover { opacity: 1; }
-
         /* GRID AND CARDS */
         .grid { 
             display: grid; 
@@ -396,7 +374,6 @@
 
     <button id="toggle-btn" onclick="toggleSidebar()">⬅️ Hide Sidebar</button>
 
-    <div id="toast-container"></div>
     <div id="sidebar">
         <h2 style="font-size: 18px; margin-top: 0;">⭐ Watchlist</h2>
         <div id="watchlist-inputs">
@@ -712,18 +689,6 @@
                 document.getElementById('p-composite-sub').innerHTML = `<span style="color:${color};font-weight:bold">${label}</span>`;
             }
             updateTrafficLight();
-        });
-
-        const toastShown = new Set();
-
-        socket.on('toast_error', msg => {
-            if (toastShown.has(msg)) return;
-            toastShown.add(msg);
-            const container = document.getElementById('toast-container');
-            const div = document.createElement('div');
-            div.className = 'toast';
-            div.innerHTML = `<span style="flex:1">⚠️ ${msg}</span><button class="close-btn" onclick="this.parentElement.remove()">✕</button>`;
-            container.appendChild(div);
         });
 
         socket.on('option_update', d => {
