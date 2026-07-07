@@ -36,7 +36,7 @@ parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage 
 parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
 parser.add_argument("--watchlist-size", type=int, default=20, help="Watchlist size (default: 20)")
-parser.add_argument("--option-days", type=int, default=14, help="Option days (default: 14)")
+parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
 args, unknown = parser.parse_known_args()
 
 FLOOR_PERCENT = args.floor
@@ -163,6 +163,8 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pl_date ON premium_log(trade_date, group_idx, role)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pl_sym ON premium_log(opt_symbol, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pl_exp ON premium_log(expiry, strike, ts)")
     conn.commit()
     conn.close()
     print(f"✅ Premium Logger DB ready: {DB_PATH}")
@@ -208,12 +210,12 @@ def get_trade_date_and_session(ts_unix):
 
 def log_premium_snapshot():
     """
-    Self-throttled logger: persists a premium snapshot to SQLite at most once
-    every LOG_INTERVAL seconds.  Records short leg, long leg, and spread
-    (bid / ask / mid) for every watchlist group, plus XSP price and VIX.
+    Self-throttled logger: persists option premium data to SQLite at most once
+    every LOG_INTERVAL seconds.  Records ALL individual option ticks within
+    EMA20 ± 25 points and expiry within 21 calendar days.
     Older-than-90-day rows are pruned on every write.
     """
-    global last_log_ts, latest_data, user_watchlist
+    global last_log_ts, latest_data
 
     now_ts = time.time()
     if now_ts - last_log_ts < LOG_INTERVAL:
@@ -223,88 +225,24 @@ def log_premium_snapshot():
     trade_date, session = get_trade_date_and_session(now_ts)
     xsp_price = latest_data["index"].get("price", 0)
     vix       = latest_data["index"].get("vix", 0)
+    ema20     = historical_stats.get("ema_20", 0)
 
-    if xsp_price <= 0:
-        return  # anchor price not yet available
+    if xsp_price <= 0 or ema20 <= 0:
+        return
+
+    low_strike  = int(ema20 - 25)
+    high_strike = int(ema20 + 25)
+    cutoff_dt   = (datetime.now() + timedelta(days=21)).strftime('%Y-%m-%d')
 
     rows = []
-    for idx, group in enumerate(user_watchlist):
-        ds       = group.get('date')
-        s_strike = group.get('short')
-        l_strike = group.get('long')
-        m_strike = group.get('mid')
-        strategy = group.get('strategy', 'xmas')
-        if not (ds and s_strike and l_strike):
-            continue
+    for sym, opt in latest_data["options"].items():
         try:
-            s_val    = float(s_strike)
-            l_val    = float(l_strike)
-            opt_type = 'P' if s_val > l_val else 'C'
-            s_sym    = f"US.XSP{ds}{opt_type}{int(s_val * 1000)}"
-            l_sym    = f"US.XSP{ds}{opt_type}{int(l_val * 1000)}"
-            expiry   = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
-
-            if s_sym in latest_data["options"]:
-                o = latest_data["options"][s_sym]
+            if low_strike <= opt['strike'] <= high_strike and opt['expiry'] <= cutoff_dt:
                 rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                             idx + 1, s_sym, s_val, expiry, opt_type, 'short',
-                             o['bid'], o['ask'], o['mid']))
-
-            if l_sym in latest_data["options"]:
-                o = latest_data["options"][l_sym]
-                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                             idx + 1, l_sym, l_val, expiry, opt_type, 'long',
-                             o['bid'], o['ask'], o['mid']))
-
-            has_mid = m_strike and str(m_strike).strip()
-            if s_sym in latest_data["options"] and l_sym in latest_data["options"]:
-                so = latest_data["options"][s_sym]
-                lo = latest_data["options"][l_sym]
-                if not has_mid:
-                    rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                                 idx + 1, f"{s_sym}|{l_sym}", None, expiry, opt_type, 'spread',
-                                 round(so['bid'] - lo['ask'], 4),
-                                 round(so['ask'] - lo['bid'], 4),
-                                 round(so['mid'] - lo['mid'], 4)))
-
-            if has_mid:
-                try:
-                    m_val = float(m_strike)
-                    lower = min(s_val, l_val)
-                    upper = max(s_val, l_val)
-                    if lower < m_val < upper:
-                        m_sym = f"US.XSP{ds}{opt_type}{int(m_val * 1000)}"
-                        if m_sym in latest_data["options"]:
-                            mo = latest_data["options"][m_sym]
-                            rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                                         idx + 1, m_sym, m_val, expiry, opt_type, 'mid',
-                                         mo['bid'], mo['ask'], mo['mid']))
-
-                        low_sym = f"US.XSP{ds}{opt_type}{int(lower * 1000)}"
-                        up_sym  = f"US.XSP{ds}{opt_type}{int(upper * 1000)}"
-                        if low_sym in latest_data["options"] and m_sym in latest_data["options"] and up_sym in latest_data["options"]:
-                            lo = latest_data["options"][low_sym]
-                            mo = latest_data["options"][m_sym]
-                            uo = latest_data["options"][up_sym]
-                            if strategy == 'bfly':
-                                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                                             idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'bfly',
-                                             round(lo['bid'] + uo['bid'] - 2 * mo['ask'], 4),
-                                             round(lo['ask'] + uo['ask'] - 2 * mo['bid'], 4),
-                                             round(lo['mid'] + uo['mid'] - 2 * mo['mid'], 4)))
-                            else:
-                                short_x = latest_data["options"][s_sym]
-                                long_x = latest_data["options"][l_sym]
-                                rows.append((int(now_ts), trade_date, session, xsp_price, vix,
-                                             idx + 1, f"{low_sym}|{m_sym}|{up_sym}", None, expiry, opt_type, 'xmas',
-                                                 round(short_x['bid'] + 2*long_x['bid'] - 3*mo['ask'], 4),
-                                                 round(short_x['ask'] + 2*long_x['ask'] - 3*mo['bid'], 4),
-                                                 round(short_x['mid'] + 2*long_x['mid'] - 3*mo['mid'], 4)))
-                except Exception as bf_e:
-                    print(f"⚠️ log_premium_snapshot group {idx + 1} three-leg error: {bf_e}")
-
-        except Exception as e:
-            print(f"⚠️ log_premium_snapshot group {idx + 1} error: {e}")
+                             None, sym, opt['strike'], opt['expiry'], opt['opt_type'],
+                             'option', opt['bid'], opt['ask'], opt['mid']))
+        except:
+            continue
 
     if not rows:
         return
@@ -322,7 +260,7 @@ def log_premium_snapshot():
         conn.execute("DELETE FROM premium_log WHERE ts < ?", (cutoff,))
         conn.commit()
         conn.close()
-        print(f"📝 Logged {len(rows)} premium rows | {trade_date} | {session} | XSP={xsp_price:.2f}")
+        print(f"📝 Logged {len(rows)} option rows | {trade_date} | {session} | XSP={xsp_price:.2f}, Range={low_strike}-{high_strike}, expiry<={cutoff_dt}")
     except Exception as e:
         print(f"⚠️ DB write error: {e}")
 
@@ -1169,7 +1107,7 @@ def start_moomoo():
 @app.route('/')
 @login_required
 def index():
-    return render_template('index.html', watchlist_size=WATCHLIST_SIZE)
+    return render_template('index.html', watchlist_size=WATCHLIST_SIZE, floor_pct=FLOOR_PERCENT, ceiling_pct=CEILING_PERCENT)
 
 
 @app.route('/api/xsp/ta')
@@ -1184,51 +1122,107 @@ def history_page():
     return render_template('history.html')
 
 
+def compute_combo_price(legs, syms_ordered, strategy):
+    """Compute combo bid/ask/mid from individual leg data at a single timestamp."""
+    lo = legs[syms_ordered[0]]
+    mi = legs[syms_ordered[1]]
+    hi = legs[syms_ordered[2]]
+    if strategy == 'bfly':
+        bid = round(lo['bid'] + hi['bid'] - 2 * mi['ask'], 4)
+        ask = round(lo['ask'] + hi['ask'] - 2 * mi['bid'], 4)
+        mid = round(lo['mid'] + hi['mid'] - 2 * mi['mid'], 4)
+    else:  # xmas: +1S / -3M / +2L
+        bid = round(lo['bid'] + 2 * hi['bid'] - 3 * mi['ask'], 4)
+        ask = round(lo['ask'] + 2 * hi['ask'] - 3 * mi['bid'], 4)
+        mid = round(lo['mid'] + 2 * hi['mid'] - 3 * mi['mid'], 4)
+    return bid, ask, mid
+
+
 @app.route('/api/history/snapshots')
 @api_login_required
 def api_history_snapshots():
     """
-    Return all recorded premium snapshots for a given watchlist group and role.
-    Each data point includes offset_min = minutes from ET midnight of trade_date,
-    so the frontend can align multiple calendar dates on the same X axis.
+    Return premium snapshots for a combo_symbol + role.
+    - combo_role (bfly/xmas): compute combo price from 3 legs
+    - spread: compute short - long from short/long legs
+    - short/mid/long: return single leg data
     """
-    group_idx = request.args.get('group', 1, type=int)
-    role      = request.args.get('role', 'spread')
-    combo_sym = request.args.get('combo_symbol', None)
+    combo_sym = request.args.get('combo_symbol', '')
+    role      = request.args.get('role', 'xmas')
+    strategy  = request.args.get('strategy', 'xmas')
+    syms = sorted(combo_sym.split('|'))
+    if len(syms) < 2:
+        return jsonify({'status': 'error', 'message': 'need at least 2 syms in combo_symbol'})
+
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        params = [group_idx, role]
-        sql_extra = ""
-        if combo_sym:
-            sql_extra = " AND opt_symbol = ?"
-            params.append(combo_sym)
+        placeholders = ','.join('?' * len(syms))
         rows = conn.execute(f"""
-            SELECT trade_date, ts, session, xsp_price, vix, bid, ask, mid
+            SELECT ts, trade_date, session, xsp_price, vix, opt_symbol, bid, ask, mid
             FROM premium_log
-            WHERE group_idx = ? AND role = ?{sql_extra}
+            WHERE role='option' AND opt_symbol IN ({placeholders})
             ORDER BY ts ASC
-        """, params).fetchall()
+        """, syms).fetchall()
         conn.close()
 
-        days = defaultdict(list)
+        # Group by ts
+        snaps = {}
         for r in rows:
-            dt_et = datetime.fromtimestamp(r['ts'], tz=pytz.utc).astimezone(ET_TZ)
+            ts = r['ts']
+            if ts not in snaps:
+                snaps[ts] = {}
+            snaps[ts][r['opt_symbol']] = r
+
+        # Determine mapping: syms sorted ascending [low, ..., high]
+        opt_type = syms[0][12]
+        days = defaultdict(list)
+        for ts, legs in sorted(snaps.items()):
+            if role in ('bfly', 'xmas'):
+                if len(syms) < 3 or any(s not in legs for s in syms):
+                    continue
+                bid, ask, mid = compute_combo_price(legs, syms, strategy)
+            elif role == 'spread':
+                if len(syms) < 2 or any(s not in legs for s in syms):
+                    continue
+                if opt_type == 'P':
+                    short_sym, long_sym = syms[1], syms[0]
+                else:
+                    short_sym, long_sym = syms[0], syms[1]
+                bid = round(legs[short_sym]['bid'] - legs[long_sym]['ask'], 4)
+                ask = round(legs[short_sym]['ask'] - legs[long_sym]['bid'], 4)
+                mid = round(legs[short_sym]['mid'] - legs[long_sym]['mid'], 4)
+            elif role in ('short', 'mid', 'long'):
+                if len(syms) < 3:
+                    continue
+                if opt_type == 'P':
+                    sym_short, sym_mid, sym_long = syms[2], syms[1], syms[0]
+                else:
+                    sym_short, sym_mid, sym_long = syms[0], syms[1], syms[2]
+                target = {'short': sym_short, 'mid': sym_mid, 'long': sym_long}.get(role)
+                if not target or target not in legs:
+                    continue
+                bid, ask, mid = legs[target]['bid'], legs[target]['ask'], legs[target]['mid']
+            else:
+                continue
+
+            r0 = legs[syms[0]]
+            dt_et = datetime.fromtimestamp(ts, tz=pytz.utc).astimezone(ET_TZ)
             midnight_et = ET_TZ.localize(
-                datetime(int(r['trade_date'][:4]),
-                         int(r['trade_date'][5:7]),
-                         int(r['trade_date'][8:10]), 0, 0, 0)
+                datetime(int(r0['trade_date'][:4]),
+                         int(r0['trade_date'][5:7]),
+                         int(r0['trade_date'][8:10]), 0, 0, 0)
             )
             offset_min = round((dt_et.timestamp() - midnight_et.timestamp()) / 60)
-            days[r['trade_date']].append({
-                'ts':         r['ts'],
+            days[r0['trade_date']].append({
+                'ts':         ts,
                 'offset_min': offset_min,
-                'session':    r['session'],
-                'xsp':        r['xsp_price'],
-                'vix':        r['vix'],
-                'bid':        r['bid'],
-                'ask':        r['ask'],
-                'mid':        r['mid'],
+                'session':    r0['session'],
+                'xsp':        r0['xsp_price'],
+                'vix':        r0['vix'],
+                'bid':        bid,
+                'ask':        ask,
+                'mid':        mid,
             })
         return jsonify({'status': 'ok', 'data': dict(days)})
     except Exception as e:
@@ -1282,96 +1276,131 @@ def api_history_daily_returns():
 @app.route('/api/history/groups')
 @api_login_required
 def api_history_groups():
-    """Return watchlist groups from logged data, one entry per unique combo config."""
+    """Return combo groups from current watchlist, with day_count from DB."""
+    result = []
+    for idx, group in enumerate(user_watchlist):
+        ds = group.get('date')
+        s  = group.get('short')
+        m  = group.get('mid')
+        l  = group.get('long')
+        strategy = group.get('strategy', 'xmas')
+        if not (ds and s and l and m):
+            continue
+        try:
+            s_val = float(s)
+            l_val = float(l)
+            m_val = float(m)
+        except:
+            continue
+        opt_type = 'P' if s_val > l_val else 'C'
+        # Sort strikes: low, mid, high
+        ordered = sorted([s_val, m_val, l_val])
+        syms = [f"US.XSP{ds}{opt_type}{int(x * 1000)}" for x in ordered]
+        combo_sym = '|'.join(syms)
+        expiry = f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}"
+
+        if opt_type == 'P':
+            short_strike, mid_strike, long_strike = ordered[2], ordered[1], ordered[0]
+        else:
+            short_strike, mid_strike, long_strike = ordered[0], ordered[1], ordered[2]
+
+        result.append({
+            'group_idx': idx + 1,
+            'expiry': expiry,
+            'opt_type': opt_type,
+            'short_strike': short_strike,
+            'mid_strike': mid_strike,
+            'long_strike': long_strike,
+            'has_bfly': strategy == 'bfly',
+            'has_xmas': strategy == 'xmas',
+            'strategy': strategy,
+            'combo_symbol': combo_sym,
+            'day_count': 0,
+        })
+
+    # Fill day_count from DB
     try:
         conn = sqlite3.connect(DB_PATH)
-        combos = conn.execute("""
-            SELECT DISTINCT group_idx, expiry, opt_type, opt_symbol, role
-            FROM premium_log
-            WHERE role IN ('bfly', 'xmas') AND expiry >= date('now')
-            ORDER BY expiry, group_idx
-        """).fetchall()
-        conn.close()
-        result = []
-        for (group_idx, expiry, opt_type, opt_symbol, role) in combos:
-            syms = opt_symbol.split('|')
-            if len(syms) < 3:
-                continue
-            strikes = []
-            for s in syms:
-                try:
-                    strike = float(s[13:]) / 1000
-                    strikes.append(strike)
-                except:
-                    continue
-            if len(strikes) < 3:
-                continue
-            strikes.sort()
-            if opt_type == 'P':
-                short_strike, mid_strike, long_strike = strikes[2], strikes[1], strikes[0]
-            else:
-                short_strike, mid_strike, long_strike = strikes[0], strikes[1], strikes[2]
-            result.append({
-                'group_idx': group_idx,
-                'expiry': expiry,
-                'opt_type': opt_type,
-                'short_strike': short_strike,
-                'long_strike': long_strike,
-                'mid_strike': mid_strike,
-                'has_bfly': role == 'bfly',
-                'has_xmas': role == 'xmas',
-                'combo_symbol': opt_symbol,
-            })
-        # Deduplicate: same (group, expiry, type, strikes) could have both bfly and xmas rows
-        seen = set()
-        unique = []
         for r in result:
-            key = (r['group_idx'], r['expiry'], r['opt_type'],
-                   r['short_strike'], r['mid_strike'], r['long_strike'])
-            if key in seen:
-                # Merge: existing entry gets both flags
-                for u in unique:
-                    ukey = (u['group_idx'], u['expiry'], u['opt_type'],
-                            u['short_strike'], u['mid_strike'], u['long_strike'])
-                    if ukey == key:
-                        if r['has_bfly']: u['has_bfly'] = True
-                        if r['has_xmas']: u['has_xmas'] = True
-                        break
-            else:
-                seen.add(key)
-                unique.append(r)
-        # Add day_count per combo config
-        conn = sqlite3.connect(DB_PATH)
-        for r in unique:
+            syms = r['combo_symbol'].split('|')
+            placeholders = ','.join('?' * len(syms))
             cnt = conn.execute(
-                "SELECT COUNT(DISTINCT trade_date) FROM premium_log WHERE group_idx=? AND expiry=? AND opt_type=? AND opt_symbol=?",
-                (r['group_idx'], r['expiry'], r['opt_type'], r['combo_symbol'])
+                f"SELECT COUNT(DISTINCT trade_date) FROM premium_log WHERE role='option' AND opt_symbol IN ({placeholders})",
+                syms
             ).fetchone()[0]
             r['day_count'] = cnt
         conn.close()
-        return jsonify({'status': 'ok', 'data': unique})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+    except Exception:
+        pass
+    return jsonify({'status': 'ok', 'data': result})
 
 @app.route('/api/history/percentile_data')
 @api_login_required
 def api_percentile_data():
-    """Return sorted list of historical mid prices for a given group+role."""
-    group_idx = request.args.get('group', 1, type=int)
-    role = request.args.get('role', 'xmas')
-    combo_sym = request.args.get('combo_symbol', None)
+    """Return sorted list of historical mid prices for a given combo_symbol+role+strategy."""
+    combo_sym = request.args.get('combo_symbol', '')
+    role      = request.args.get('role', 'xmas')
+    strategy  = request.args.get('strategy', 'xmas')
+    syms = sorted(combo_sym.split('|'))
+    if len(syms) < 2:
+        return jsonify({'status': 'ok', 'mids': [], 'count': 0})
+
     try:
         conn = sqlite3.connect(DB_PATH)
-        params = [group_idx, role]
-        sql_extra = ""
-        if combo_sym:
-            sql_extra = " AND opt_symbol = ?"
-            params.append(combo_sym)
-        mids = [r[0] for r in conn.execute(
-            f"SELECT mid FROM premium_log WHERE group_idx=? AND role=? AND mid IS NOT NULL AND mid >= 0{sql_extra}",
-            params
-        ).fetchall()]
+        placeholders = ','.join('?' * len(syms))
+        rows = conn.execute(f"""
+            SELECT ts, opt_symbol, mid
+            FROM premium_log
+            WHERE role='option' AND mid IS NOT NULL AND mid >= 0
+              AND opt_symbol IN ({placeholders})
+            ORDER BY ts ASC
+        """, syms).fetchall()
         conn.close()
+
+        # Determine role-specific symbol mapping
+        # syms sorted ascending: [low_strike, high_strike] for spread, [low, mid, high] for bfly/xmas
+        opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+
+        # Group by ts
+        snaps = {}
+        for ts, sym, mid in rows:
+            if ts not in snaps:
+                snaps[ts] = {}
+            snaps[ts][sym] = mid
+
+        mids = []
+        for ts, legs in snaps.items():
+            if role in ('bfly', 'xmas'):
+                if len(syms) < 3 or any(s not in legs for s in syms):
+                    continue
+                lo, mi, hi = legs[syms[0]], legs[syms[1]], legs[syms[2]]
+                if strategy == 'bfly':
+                    combo_mid = lo + hi - 2 * mi
+                else:
+                    combo_mid = lo + 2 * hi - 3 * mi
+            elif role == 'spread':
+                if len(syms) < 2 or any(s not in legs for s in syms):
+                    continue
+                # Spread: short - long. syms sorted ascending.
+                # For P: short=high(syms[1]), long=low(syms[0])
+                # For C: short=low(syms[0]), long=high(syms[1])
+                if opt_type == 'P':
+                    combo_mid = legs[syms[1]] - legs[syms[0]]
+                else:
+                    combo_mid = legs[syms[0]] - legs[syms[1]]
+            elif role in ('short', 'long', 'mid'):
+                if opt_type == 'P':
+                    sym_short, sym_mid, sym_long = syms[2], syms[1], syms[0]
+                else:
+                    sym_short, sym_mid, sym_long = syms[0], syms[1], syms[2]
+                target = {'short': sym_short, 'mid': sym_mid, 'long': sym_long}.get(role)
+                if not target or target not in legs:
+                    continue
+                combo_mid = legs[target]
+            else:
+                continue
+            mids.append(round(combo_mid, 4))
+
         mids.sort()
         return jsonify({'status': 'ok', 'mids': mids, 'count': len(mids)})
     except Exception as e:

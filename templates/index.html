@@ -423,8 +423,8 @@
     <div id="main-content">
         <div id="header">
             <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
-            <div class="stat"><span class="label">90% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
-            <div class="stat"><span class="label">105% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
+            <div class="stat"><span class="label">{{ (floor_pct*100)|int }}% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
+            <div class="stat"><span class="label">{{ (ceiling_pct*100)|int }}% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
             <div class="stat">
                 <span class="label">VIX INDEX (Rank / Pct)</span>
                 <span id="p-vix" class="val" style="color:#c9d1d9">-- <span style="font-size:12px; color:#8b949e">(Rank: --% | Pct: --%)</span></span>
@@ -797,11 +797,11 @@
         // ── 历史百分位缓存 ──
         const histPctCache = {};
 
-        function fetchPercentileData(group, role, combo) {
-            const key = combo ? `${group}-${role}-${combo}` : `${group}-${role}`;
+        function fetchPercentileData(role, combo) {
+            const key = `${role}-${combo}`;
             if (histPctCache[key]) return Promise.resolve(histPctCache[key]);
-            let url = `/api/history/percentile_data?group=${group}&role=${role}`;
-            if (combo) url += `&combo_symbol=${encodeURIComponent(combo)}`;
+            const strategy = role === 'spread' ? 'xmas' : role;
+            let url = `/api/history/percentile_data?combo_symbol=${encodeURIComponent(combo)}&strategy=${strategy}&role=${role}`;
             return fetch(url)
                 .then(r => r.json())
                 .then(data => {
@@ -1149,7 +1149,7 @@
                         <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
                             ${d.opt_type === 'P' ? 'Put' : 'Call'}
                         </span>
-                        <a href="/history?group=${d.group_index}&role=spread" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该组合的历史路径">
+                        <a href="/history?combo=${encodeURIComponent(d.combo_symbol)}&role=spread" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该组合的历史路径">
                             📈 历史
                         </a>
                     </div>
@@ -1214,7 +1214,7 @@
             `;
 
             // 百分位异步加载
-            fetchPercentileData(d.group_index, 'spread', d.combo_symbol).then(mids => {
+            fetchPercentileData('spread', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
@@ -1320,7 +1320,7 @@
                         <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
                             ${d.opt_type === 'P' ? 'Put' : 'Call'}
                         </span>
-                        <a href="/history?group=${d.group_index}&role=bfly" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该蝴蝶的历史路径">
+                        <a href="/history?combo=${encodeURIComponent(d.combo_symbol)}&role=bfly" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该蝴蝶的历史路径">
                             📈 历史
                         </a>
                     </div>
@@ -1368,7 +1368,7 @@
                 </div>
             `;
 
-            fetchPercentileData(d.group_index, 'bfly', d.combo_symbol).then(mids => {
+            fetchPercentileData('bfly', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
@@ -1467,7 +1467,7 @@
                         <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
                             ${d.opt_type === 'P' ? 'Put' : 'Call'}
                         </span>
-                        <a href="/history?group=${d.group_index}&role=xmas" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该圣诞树的历史路径">
+                        <a href="/history?combo=${encodeURIComponent(d.combo_symbol)}&role=xmas" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该圣诞树的历史路径">
                             📈 历史
                         </a>
                     </div>
@@ -1592,7 +1592,7 @@
                 </div>
             `;
 
-            fetchPercentileData(d.group_index, 'xmas', d.combo_symbol).then(mids => {
+            fetchPercentileData('xmas', d.combo_symbol).then(mids => {
                 const pct = calcPercentile(d.mid, mids);
                 const el = document.getElementById(`pct-${cardId}`);
                 if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }

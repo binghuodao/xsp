@@ -925,12 +925,13 @@
       pill.textContent = '载入中…';
 
       try {
-        let role = document.getElementById('roleSelect').value || 'spread';
+        let role = document.getElementById('roleSelect').value || 'xmas';
 
         // On initial load, read URL parameters to pre-select group/role
+        let urlCombo = null;
         if (isInitialLoad) {
           const urlParams = new URLSearchParams(window.location.search);
-          const urlGroup = urlParams.get('group');
+          urlCombo = urlParams.get('combo');
           const urlRole = urlParams.get('role');
           if (urlRole) {
             role = urlRole;
@@ -938,15 +939,13 @@
           }
         }
 
-        const [snapRes, retRes, grpRes] = await Promise.all([
-          fetch(`/api/history/snapshots?group=0&role=${role}`).then(r => r.json()),
+        const [retRes, grpRes] = await Promise.all([
           fetch('/api/history/daily_returns').then(r => r.json()),
           fetch('/api/history/groups').then(r => r.json()),
         ]);
 
-        if (snapRes.status !== 'ok') throw new Error(snapRes.message);
-        pathData = snapRes.data || {};
         dailyRet = retRes.status === 'ok' ? (retRes.data || {}) : {};
+        pathData = {};
 
         // Populate group selector
         if (grpRes.status === 'ok' && grpRes.data.length > 0) {
@@ -961,10 +960,8 @@
           // Determine initial selection
           let selectedCs = null;
           if (isInitialLoad) {
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlGroup = urlParams.get('group');
-            if (urlGroup) {
-              selectedCs = grpRes.data.find(g => g.group_idx == urlGroup)?.combo_symbol;
+            if (urlCombo) {
+              selectedCs = grpRes.data.find(g => g.combo_symbol === decodeURIComponent(urlCombo))?.combo_symbol;
             }
           } else {
             selectedCs = sel.value || null;
@@ -984,17 +981,17 @@
                 ? `G${g.group_idx} Put ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`
                 : `G${g.group_idx} Call ${g.short_strike}/${g.long_strike} exp ${g.expiry} (${g.day_count}天)`;
             }
-            return `<option value="${g.combo_symbol}" data-group="${g.group_idx}"${g.combo_symbol === selectedCs ? ' selected' : ''}>${label}</option>`;
+            return `<option value="${g.combo_symbol}" data-strategy="${g.strategy || 'xmas'}"${g.combo_symbol === selectedCs ? ' selected' : ''}>${label}</option>`;
           }).join('');
 
-          // Fetch data for the selected combo
+          // Fetch snapshots for the selected combo
           const selOption = sel.options[sel.selectedIndex];
           const comboVal = selOption?.value || '';
-          const groupVal = selOption?.dataset?.group || '';
-          const snapUrl = `/api/history/snapshots?group=${groupVal}&role=${role}` + (comboVal ? `&combo_symbol=${encodeURIComponent(comboVal)}` : '');
-          const snapRes2 = await fetch(snapUrl).then(r => r.json());
-          if (snapRes2.status === 'ok') {
-            pathData = snapRes2.data || {};
+          const strategy = selOption?.dataset?.strategy || 'xmas';
+          const snapUrl = `/api/history/snapshots?combo_symbol=${encodeURIComponent(comboVal)}&role=${encodeURIComponent(role)}&strategy=${encodeURIComponent(strategy)}`;
+          const snapRes = await fetch(snapUrl).then(r => r.json());
+          if (snapRes.status === 'ok') {
+            pathData = snapRes.data || {};
           }
         }
 
