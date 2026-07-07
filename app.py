@@ -75,6 +75,201 @@ def send_telegram(msg):
         except:
             pass
 
+# --- MORNING REPORT ---
+_morning_report_date = ""
+S_TZ = pytz.timezone('Australia/Sydney')
+
+def _s5(v):
+    return round(v / 5) * 5
+
+def _score_ts(v, th):
+    for t, s in zip(th, [100, 75, 50, 25, 0]):
+        if v >= t:
+            return s
+    return 0
+
+def _opt_mid(sym):
+    o = latest_data["options"].get(sym)
+    return o['mid'] if o else None
+
+def _opt_delta(sym):
+    o = latest_data["options"].get(sym)
+    d = o.get('delta') if o else None
+    return d if d is not None else 0
+
+def _get_hist_mid(sym):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            "SELECT mid FROM premium_log WHERE opt_symbol=? AND role='option' AND mid>=0 ORDER BY trade_date DESC LIMIT 5",
+            (sym,)
+        ).fetchall()
+        conn.close()
+        if rows:
+            return round(sum(r[0] for r in rows) / len(rows), 2)
+    except:
+        pass
+    return None
+
+def _find_14dte_expiry():
+    now_et = datetime.now(ET_TZ)
+    target = now_et + timedelta(days=14)
+    exps = set()
+    for o in latest_data["options"].values():
+        exps.add(o['expiry'])
+    best, best_diff = None, 999
+    for e in exps:
+        try:
+            d = abs((datetime.strptime(e, '%Y-%m-%d') - target).days)
+            if d < best_diff:
+                best_diff, best = d, e
+        except:
+            continue
+    return best
+
+def _find_delta_strike(expiry, target_delta):
+    best_s, best_d, best_diff = None, 0, 999
+    for o in latest_data["options"].values():
+        if o['expiry'] != expiry or o['opt_type'] != 'P':
+            continue
+        d = o.get('delta', 0)
+        if d >= 0:
+            continue
+        diff = abs(d - target_delta)
+        if diff < best_diff:
+            best_diff, best_s, best_d = diff, o['strike'], d
+    return best_s, best_d
+
+def generate_morning_report():
+    global _morning_report_date
+    now_syd = datetime.now(S_TZ)
+    today = now_syd.strftime('%y%m%d')
+    if now_syd.weekday() >= 5 or now_syd.hour != 21 or now_syd.minute < 25 or now_syd.minute > 35:
+        return
+    if _morning_report_date == today:
+        return
+
+    idx = latest_data.get("index", {})
+    price = idx.get("price", 0)
+    if price <= 0:
+        return
+
+    hs = historical_stats
+    ema20 = hs.get("ema_20", 0)
+    bbl = hs.get("support", 0)
+    bbu = hs.get("resistance", 0)
+    bw = bbu - bbl if (bbl and bbu and bbu > bbl) else 1
+
+    # Trend composite
+    W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
+    T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
+         'bbw': [45, 30, 18, 10, 0], 'vr': [2.0, 1.3, .8, .5, 0]}
+    total = 5  # 50*0.1 base
+    for k, w in W.items():
+        v = hs.get(k)
+        if v is None:
+            total += 5
+            continue
+        val = abs(v) if k == 'dev' else v
+        total += _score_ts(val, T.get(k, [0])) * w
+    score = round(total)
+    icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
+    slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
+    is_trend = score >= 65
+
+    # Direction
+    dup = (bbu - price) / bw * 100
+    dlow = (price - bbl) / bw * 100
+    skew = hs.get('skew', 0)
+
+    if dup < 5:
+        direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
+    elif dlow < 5:
+        direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
+    else:
+        direction, reason = ('PUT', f'Skew {skew:.1f}') if skew < 0 else ('CALL', f'Skew {skew:.1f}')
+
+    # Mid leg
+    off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
+    m = _s5(ema20 + off)
+
+    # Tree strikes
+    s = m + 10 if direction == 'PUT' else m - 10
+    l = m - 5 if direction == 'PUT' else m + 5
+
+    expiry14 = _find_14dte_expiry()
+    ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
+
+    def sym_str(strike, ot):
+        return f"US.XSP{ds14}{ot}{int(strike * 1000)}" if ds14 else None
+
+    lines = [f"📊 XSP 早报 — {datetime.now(S_TZ).strftime('%a %Y-%m-%d %H:%M SGT')}",
+             "━━━━━━━━━━━━━━━━━━━━━",
+             f"{icon} 综合 {score} / {slbl}",
+             f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
+             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | Skew {hs.get('skew',0):.1f}",
+             f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
+             f"BBL ${bbl:.2f} | BBU ${bbu:.2f}",
+             "", f"→ 方向: {direction} ({reason})", ""]
+
+    if expiry14:
+        ot = 'P' if direction == 'PUT' else 'C'
+        sym_s = sym_str(s, ot)
+        sym_m = sym_str(m, ot)
+        sym_l = sym_str(l, ot)
+
+        lines.append(f"═══ 14DTE {direction}树 ═══")
+        lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20, Ranging'})")
+
+        for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
+            mid = _opt_mid(sym)
+            hist = _get_hist_mid(sym)
+            p = f"${mid:.2f}" if mid is not None else "--"
+            if hist is not None:
+                p += f" | 历均 ${hist:.2f}"
+            lines.append(f"{label} {strike}  mid {p}")
+
+        sorted_strikes = sorted([s, m, l])
+        sorted_mids = [_opt_mid(sym_str(st, ot)) for st in sorted_strikes]
+        if all(v is not None for v in sorted_mids):
+            lo, mi, hi = sorted_mids
+            combo_val = lo + 2 * hi - 3 * mi
+            tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
+            lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
+        lines.append("")
+
+        # PUT Spread
+        lines.append("═══ 14DTE PUT价差 ═══")
+        ps, pd = _find_delta_strike(expiry14, -0.075)
+        if ps:
+            pl = int(ps) - 5
+            sym_ss = sym_str(int(ps), 'P')
+            sym_sl = sym_str(pl, 'P')
+            ss_mid = _opt_mid(sym_ss)
+            sl_mid = _opt_mid(sym_sl)
+            ss_hist = _get_hist_mid(sym_ss)
+            sl_hist = _get_hist_mid(sym_sl)
+
+            def fmt(m, h):
+                p = f"${m:.2f}" if m is not None else "--"
+                if h is not None:
+                    p += f" | 历均 ${h:.2f}"
+                return p
+
+            lines.append(f"Short {int(ps)}P (Δ {pd:.3f})  mid {fmt(ss_mid, ss_hist)}")
+            lines.append(f"Long  {pl}P                     mid {fmt(sl_mid, sl_hist)}")
+
+            if ss_mid is not None and sl_mid is not None:
+                credit = ss_mid - sl_mid
+                max_loss = (5 - credit) * 100
+                lines.append(f"Credit: ${credit:.2f} | 宽 5pt → 一手 ≈ ${max_loss:.0f} max loss")
+    else:
+        lines.append("⚠️ 无可用14DTE期权数据")
+
+    msg = "\n".join(lines)
+    send_telegram(msg)
+    _morning_report_date = today
+
 app = Flask(__name__)
 app.secret_key = CONFIG.get('secret_key') or secrets.token_hex(32)
 
@@ -1149,6 +1344,7 @@ def start_moomoo():
                 # 5. 控制频率
                 log_premium_snapshot()
                 clean_expired_watchlist(socketio)
+                generate_morning_report()
                 time.sleep(REFRESH_INTERVAL)
                 
             except Exception as e:
