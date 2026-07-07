@@ -35,7 +35,6 @@ parser = argparse.ArgumentParser(description="XSP Options Monitor")
 parser.add_argument("--floor", type=float, default=0.95, help="Floor percentage (default: 0.95)")
 parser.add_argument("--ceiling", type=float, default=1.05, help="Ceiling percentage (default: 1.05)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
-parser.add_argument("--watchlist-size", type=int, default=20, help="Watchlist size (default: 20)")
 parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
 args, unknown = parser.parse_known_args()
 
@@ -44,7 +43,6 @@ CEILING_PERCENT = args.ceiling
 REF_SYMBOL = 'US.SPY'
 MES_SYMBOL = 'US.MESmain'  
 REFRESH_INTERVAL = args.refresh
-WATCHLIST_SIZE = args.watchlist_size
 OPTION_DAYS = args.option_days
 WATCHLIST_FILE = 'watchlist.json'
 
@@ -119,7 +117,7 @@ user_watchlist = []
 if os.path.exists(WATCHLIST_FILE):
     try:
         with open(WATCHLIST_FILE, 'r') as f:
-            user_watchlist = json.load(f)
+            user_watchlist = [g for g in json.load(f) if g.get('date')]
     except Exception as e:
         print(f"⚠️ Failed to load watchlist: {e}")
 
@@ -1107,7 +1105,7 @@ def start_moomoo():
 @app.route('/')
 @login_required
 def index():
-    return render_template('index.html', watchlist_size=WATCHLIST_SIZE, floor_pct=FLOOR_PERCENT, ceiling_pct=CEILING_PERCENT)
+    return render_template('index.html', floor_pct=FLOOR_PERCENT, ceiling_pct=CEILING_PERCENT)
 
 
 @app.route('/api/xsp/ta')
@@ -1143,9 +1141,8 @@ def compute_combo_price(legs, syms_ordered, strategy):
 def api_history_snapshots():
     """
     Return premium snapshots for a combo_symbol + role.
-    - combo_role (bfly/xmas): compute combo price from 3 legs
-    - spread: compute short - long from short/long legs
-    - short/mid/long: return single leg data
+    Query BOTH new (role='option') and old (pre-computed) formats,
+    merge by ts (new overlays old for same ts).
     """
     combo_sym = request.args.get('combo_symbol', '')
     role      = request.args.get('role', 'xmas')
@@ -1157,27 +1154,66 @@ def api_history_snapshots():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+
         placeholders = ','.join('?' * len(syms))
-        rows = conn.execute(f"""
+        # New format: individual legs role='option'
+        new_rows = conn.execute(f"""
             SELECT ts, trade_date, session, xsp_price, vix, opt_symbol, bid, ask, mid
             FROM premium_log
             WHERE role='option' AND opt_symbol IN ({placeholders})
             ORDER BY ts ASC
         """, syms).fetchall()
+
+        # Old format: pre-computed combo or individual legs
+        old_rows = []
+        if role in ('bfly', 'xmas', 'spread'):
+            old_roles = {'bfly': 'bfly', 'xmas': 'xmas', 'spread': 'spread'}
+            old_rows = conn.execute(f"""
+                SELECT ts, trade_date, session, xsp_price, vix, opt_symbol, bid, ask, mid
+                FROM premium_log
+                WHERE role = ? AND opt_symbol = ?
+                ORDER BY ts ASC
+            """, (old_roles.get(role, 'xmas'), combo_sym)).fetchall()
+        elif role in ('short', 'mid', 'long'):
+            opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+            if opt_type == 'P':
+                sym_short, sym_mid, sym_long = syms[2], syms[1], syms[0]
+            else:
+                sym_short, sym_mid, sym_long = syms[0], syms[1], syms[2]
+            target = {'short': sym_short, 'mid': sym_mid, 'long': sym_long}.get(role)
+            if target:
+                old_rows = conn.execute(f"""
+                    SELECT ts, trade_date, session, xsp_price, vix, opt_symbol, bid, ask, mid
+                    FROM premium_log
+                    WHERE role = ? AND opt_symbol = ?
+                    ORDER BY ts ASC
+                """, (role, target)).fetchall()
+
         conn.close()
 
-        # Group by ts
-        snaps = {}
-        for r in rows:
-            ts = r['ts']
-            if ts not in snaps:
-                snaps[ts] = {}
-            snaps[ts][r['opt_symbol']] = r
+        # Merge: old format first, then new format overlays
+        merged = {}  # ts -> dict
+        for r in old_rows:
+            merged[r['ts']] = {
+                'trade_date': r['trade_date'],
+                'session':    r['session'],
+                'xsp':        r['xsp_price'],
+                'vix':        r['vix'],
+                'bid':        r['bid'],
+                'ask':        r['ask'],
+                'mid':        r['mid'],
+            }
 
-        # Determine mapping: syms sorted ascending [low, ..., high]
-        opt_type = syms[0][12]
-        days = defaultdict(list)
-        for ts, legs in sorted(snaps.items()):
+        # Group new rows by ts
+        new_by_ts = {}
+        for r in new_rows:
+            ts = r['ts']
+            if ts not in new_by_ts:
+                new_by_ts[ts] = {}
+            new_by_ts[ts][r['opt_symbol']] = r
+
+        opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+        for ts, legs in sorted(new_by_ts.items()):
             if role in ('bfly', 'xmas'):
                 if len(syms) < 3 or any(s not in legs for s in syms):
                     continue
@@ -1207,22 +1243,34 @@ def api_history_snapshots():
                 continue
 
             r0 = legs[syms[0]]
-            dt_et = datetime.fromtimestamp(ts, tz=pytz.utc).astimezone(ET_TZ)
-            midnight_et = ET_TZ.localize(
-                datetime(int(r0['trade_date'][:4]),
-                         int(r0['trade_date'][5:7]),
-                         int(r0['trade_date'][8:10]), 0, 0, 0)
-            )
-            offset_min = round((dt_et.timestamp() - midnight_et.timestamp()) / 60)
-            days[r0['trade_date']].append({
-                'ts':         ts,
-                'offset_min': offset_min,
+            merged[ts] = {
+                'trade_date': r0['trade_date'],
                 'session':    r0['session'],
                 'xsp':        r0['xsp_price'],
                 'vix':        r0['vix'],
                 'bid':        bid,
                 'ask':        ask,
                 'mid':        mid,
+            }
+
+        days = defaultdict(list)
+        for ts, snap in sorted(merged.items()):
+            dt_et = datetime.fromtimestamp(ts, tz=pytz.utc).astimezone(ET_TZ)
+            midnight_et = ET_TZ.localize(
+                datetime(int(snap['trade_date'][:4]),
+                         int(snap['trade_date'][5:7]),
+                         int(snap['trade_date'][8:10]), 0, 0, 0)
+            )
+            offset_min = round((dt_et.timestamp() - midnight_et.timestamp()) / 60)
+            days[snap['trade_date']].append({
+                'ts':         ts,
+                'offset_min': offset_min,
+                'session':    snap['session'],
+                'xsp':        snap['xsp'],
+                'vix':        snap['vix'],
+                'bid':        snap['bid'],
+                'ask':        snap['ask'],
+                'mid':        snap['mid'],
             })
         return jsonify({'status': 'ok', 'data': dict(days)})
     except Exception as e:
@@ -1318,17 +1366,24 @@ def api_history_groups():
             'day_count': 0,
         })
 
-    # Fill day_count from DB
+    # Fill day_count from DB (new + old format)
     try:
         conn = sqlite3.connect(DB_PATH)
         for r in result:
-            syms = r['combo_symbol'].split('|')
+            combo_sym = r['combo_symbol']
+            syms = combo_sym.split('|')
             placeholders = ','.join('?' * len(syms))
-            cnt = conn.execute(
+            # New format: individual legs role='option'
+            cnt_new = conn.execute(
                 f"SELECT COUNT(DISTINCT trade_date) FROM premium_log WHERE role='option' AND opt_symbol IN ({placeholders})",
                 syms
             ).fetchone()[0]
-            r['day_count'] = cnt
+            # Old format: combined symbol role IN ('bfly','xmas')
+            cnt_old = conn.execute(
+                "SELECT COUNT(DISTINCT trade_date) FROM premium_log WHERE role IN ('bfly','xmas') AND opt_symbol = ?",
+                (combo_sym,)
+            ).fetchone()[0]
+            r['day_count'] = max(cnt_new, cnt_old)
         conn.close()
     except Exception:
         pass
@@ -1337,7 +1392,8 @@ def api_history_groups():
 @app.route('/api/history/percentile_data')
 @api_login_required
 def api_percentile_data():
-    """Return sorted list of historical mid prices for a given combo_symbol+role+strategy."""
+    """Return sorted list of historical mid prices for a given combo_symbol+role+strategy.
+    Query BOTH new (role='option') and old (pre-computed) formats, merge by ts."""
     combo_sym = request.args.get('combo_symbol', '')
     role      = request.args.get('role', 'xmas')
     strategy  = request.args.get('strategy', 'xmas')
@@ -1347,29 +1403,57 @@ def api_percentile_data():
 
     try:
         conn = sqlite3.connect(DB_PATH)
+
         placeholders = ','.join('?' * len(syms))
-        rows = conn.execute(f"""
+        # New format: individual legs role='option'
+        new_rows = conn.execute(f"""
             SELECT ts, opt_symbol, mid
             FROM premium_log
             WHERE role='option' AND mid IS NOT NULL AND mid >= 0
               AND opt_symbol IN ({placeholders})
             ORDER BY ts ASC
         """, syms).fetchall()
+
+        # Old format: pre-computed rows
+        old_rows = []
+        if role in ('bfly', 'xmas', 'spread'):
+            old_roles = {'bfly': 'bfly', 'xmas': 'xmas', 'spread': 'spread'}
+            old_rows = conn.execute("""
+                SELECT ts, opt_symbol, mid
+                FROM premium_log
+                WHERE role = ? AND opt_symbol = ? AND mid IS NOT NULL AND mid >= 0
+                ORDER BY ts ASC
+            """, (old_roles.get(role, 'xmas'), combo_sym)).fetchall()
+        elif role in ('short', 'mid', 'long'):
+            opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+            if opt_type == 'P':
+                sym_short, sym_mid, sym_long = syms[2], syms[1], syms[0]
+            else:
+                sym_short, sym_mid, sym_long = syms[0], syms[1], syms[2]
+            target = {'short': sym_short, 'mid': sym_mid, 'long': sym_long}.get(role)
+            if target:
+                old_rows = conn.execute("""
+                    SELECT ts, opt_symbol, mid
+                    FROM premium_log
+                    WHERE role = ? AND opt_symbol = ? AND mid IS NOT NULL AND mid >= 0
+                    ORDER BY ts ASC
+                """, (role, target)).fetchall()
         conn.close()
 
-        # Determine role-specific symbol mapping
-        # syms sorted ascending: [low_strike, high_strike] for spread, [low, mid, high] for bfly/xmas
+        # Merge: old mids first (ts -> mid), then new computed mids overlay
+        merged_mids = {}  # ts -> mid
+        for r in old_rows:
+            merged_mids[r[0]] = r[2]
+
+        # Group new rows by ts
+        new_by_ts = {}
+        for ts, sym, mid in new_rows:
+            if ts not in new_by_ts:
+                new_by_ts[ts] = {}
+            new_by_ts[ts][sym] = mid
+
         opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
-
-        # Group by ts
-        snaps = {}
-        for ts, sym, mid in rows:
-            if ts not in snaps:
-                snaps[ts] = {}
-            snaps[ts][sym] = mid
-
-        mids = []
-        for ts, legs in snaps.items():
+        for ts, legs in new_by_ts.items():
             if role in ('bfly', 'xmas'):
                 if len(syms) < 3 or any(s not in legs for s in syms):
                     continue
@@ -1381,9 +1465,6 @@ def api_percentile_data():
             elif role == 'spread':
                 if len(syms) < 2 or any(s not in legs for s in syms):
                     continue
-                # Spread: short - long. syms sorted ascending.
-                # For P: short=high(syms[1]), long=low(syms[0])
-                # For C: short=low(syms[0]), long=high(syms[1])
                 if opt_type == 'P':
                     combo_mid = legs[syms[1]] - legs[syms[0]]
                 else:
@@ -1399,9 +1480,9 @@ def api_percentile_data():
                 combo_mid = legs[target]
             else:
                 continue
-            mids.append(round(combo_mid, 4))
+            merged_mids[ts] = round(combo_mid, 4)
 
-        mids.sort()
+        mids = sorted(merged_mids.values())
         return jsonify({'status': 'ok', 'mids': mids, 'count': len(mids)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -1409,13 +1490,13 @@ def api_percentile_data():
 @socketio.on('update_watchlist')
 def handle_watchlist(data):
     global user_watchlist
-    user_watchlist = data
+    # 只保存非空组（有 date 的）
+    user_watchlist = [g for g in data if g.get('date')]
     try:
         with open(WATCHLIST_FILE, 'w') as f:
             json.dump(user_watchlist, f)
     except Exception as e:
         emit_toast(socketio, f"⚠️ Watchlist 保存失败: {e}")
-    # 核心：广播给所有连接的客户端，触发它们的回写逻辑
     socketio.emit('sync_watchlist', user_watchlist)
 
 @socketio.on('connect')

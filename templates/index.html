@@ -400,22 +400,7 @@
     <div id="sidebar">
         <h2 style="font-size: 18px; margin-top: 0;">⭐ Watchlist</h2>
         <div id="watchlist-inputs">
-            <script>
-                const WATCHLIST_SIZE = {{ watchlist_size | default(20) }};
-                for(let i=1; i<=WATCHLIST_SIZE; i++) {
-                    document.write(`
-                        <div class="input-group">
-                            <label>GROUP ${i}</label>
-                            <input type="text" id="sml-${i}" placeholder="YYMMDD S/M/L P/C (e.g. 260717 750/740/735P)">
-                            <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Premium (e.g. 1.20)">
-                            <select id="strategy-${i}" style="width:100%;padding:6px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-size:12px;">
-                                <option value="xmas">🎄 +1S/-3M/+2L</option>
-                                <option value="bfly">🦋 +1S/-2M/+1L</option>
-                            </select>
-                        </div>
-                    `);
-                }
-            </script>
+            <script>renderWatchlistGroups([]);</script>
         </div>
         <button class="sync-btn" onclick="saveWatchlist()">💾 Sync Devices</button>
     </div>
@@ -520,10 +505,50 @@
             btn.innerText = sb.classList.contains('collapsed') ? '➡️ Show Sidebar' : '⬅️ Hide Sidebar';
         }
 
+        function renderWatchlistGroups(groups) {
+            const container = document.getElementById('watchlist-inputs');
+            container.innerHTML = '';
+            // Always show N+1: existing groups + one empty slot
+            const all = [...groups, {}];
+            all.forEach((g, idx) => {
+                const i = idx + 1;
+                const div = document.createElement('div');
+                div.className = 'input-group';
+                div.innerHTML = `
+                    <label>GROUP ${i}</label>
+                    <input type="text" id="sml-${i}" placeholder="YYMMDD S/M/L P/C (e.g. 260717 750/740/735P)">
+                    <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Premium (e.g. 1.20)">
+                    <select id="strategy-${i}" style="width:100%;padding:6px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-size:12px;">
+                        <option value="xmas">🎄 +1S/-3M/+2L</option>
+                        <option value="bfly">🦋 +1S/-2M/+1L</option>
+                    </select>
+                `;
+                container.appendChild(div);
+                // Populate values
+                const grpDate = g.date || '';
+                const grpShort = g.short || '';
+                const grpMid = g.mid || '';
+                const grpLong = g.long || '';
+                if (grpDate && grpShort && grpLong) {
+                    const optType = parseFloat(grpShort) > parseFloat(grpLong) ? 'P' : 'C';
+                    document.getElementById(`sml-${i}`).value = grpMid
+                        ? `${grpDate} ${grpShort}/${grpMid}/${grpLong}${optType}`
+                        : `${grpDate} ${grpShort}//${grpLong}${optType}`;
+                }
+                document.getElementById(`entry-${i}`).value = g.entry || '';
+                const sel = document.getElementById(`strategy-${i}`);
+                if (sel) sel.value = g.strategy || 'xmas';
+            });
+        }
+
         function saveWatchlist() {
+            const groups = document.querySelectorAll('.input-group');
             const watchlist = [];
-            for(let i=1; i<=WATCHLIST_SIZE; i++) {
-                const sml = document.getElementById(`sml-${i}`).value.trim();
+            groups.forEach(group => {
+                const smlInput = group.querySelector('input[id^="sml-"]');
+                const entryInput = group.querySelector('input[id^="entry-"]');
+                const sel = group.querySelector('select[id^="strategy-"]');
+                const sml = smlInput.value.trim();
                 let date = '', short = '', mid = '', long = '';
                 const m = sml.match(/^(\d{6})\s+([\d.]*)\/([\d.]*)\/([\d.]*)([PC])$/i);
                 if (m) {
@@ -532,66 +557,54 @@
                     mid = m[3];
                     long = m[4];
                 }
-                watchlist.push({
-                    date: date,
-                    short: short,
-                    mid: mid,
-                    long: long,
-                    entry: document.getElementById(`entry-${i}`).value,
-                    strategy: document.getElementById(`strategy-${i}`).value
-                });
-            }
+                if (date) {
+                    watchlist.push({
+                        date: date,
+                        short: short,
+                        mid: mid,
+                        long: long,
+                        entry: entryInput.value,
+                        strategy: sel.value
+                    });
+                }
+            });
             socket.emit('update_watchlist', watchlist);
         }
 
         socket.on('sync_watchlist', (watchlist) => {
-            watchlist.forEach((group, index) => {
-                const i = index + 1;
-                if(i <= WATCHLIST_SIZE) {
-                    const grpDate = group.date || '';
-                    const grpShort = group.short || '';
-                    const grpMid = group.mid || '';
-                    const grpLong = group.long || '';
-                    if (grpDate && grpShort && grpLong) {
-                        const optType = parseFloat(grpShort) > parseFloat(grpLong) ? 'P' : 'C';
-                        document.getElementById(`sml-${i}`).value = grpMid
-                            ? `${grpDate} ${grpShort}/${grpMid}/${grpLong}${optType}`
-                            : `${grpDate} ${grpShort}//${grpLong}${optType}`;
-                    } else {
-                        document.getElementById(`sml-${i}`).value = '';
-                    }
-                    document.getElementById(`entry-${i}`).value = group.entry || '';
-                    const sel = document.getElementById(`strategy-${i}`);
-                    if (sel) { sel.value = group.strategy || 'xmas'; }
-                    
-                    // Clear spread card if inputs are emptied
-                    if (!group.date || !group.short || !group.long) {
-                        const card = document.getElementById(`sc-${i}`);
-                        if (card) { card.remove(); }
-                        delete shortDeltas[i];
-                    }
-                    const strat = group.strategy || 'xmas';
-                    // Three-leg strategy: clear spread + the unused strategy card
-                    if (group.mid) {
-                        const scard = document.getElementById(`sc-${i}`);
-                        if (scard) { scard.remove(); }
-                        delete shortDeltas[i];
-                        if (strat === 'xmas') {
-                            const bcard = document.getElementById(`bf-${i}`);
-                            if (bcard) { bcard.remove(); }
-                        } else {
-                            const xcard = document.getElementById(`xm-${i}`);
-                            if (xcard) { xcard.remove(); }
-                        }
-                    } else {
-                        // No mid: clear both strategy cards
+            renderWatchlistGroups(watchlist);
+            // Card cleanup for all groups + extra empty slot
+            const total = watchlist.length + 1;
+            for(let i=1; i<=total; i++) {
+                const group = i <= watchlist.length ? watchlist[i-1] : {};
+                const grpDate = group.date || '';
+                const grpShort = group.short || '';
+                const grpMid = group.mid || '';
+                const grpLong = group.long || '';
+                if (!grpDate || !grpShort || !grpLong) {
+                    const card = document.getElementById(`sc-${i}`);
+                    if (card) { card.remove(); }
+                    delete shortDeltas[i];
+                }
+                const strat = group.strategy || 'xmas';
+                if (grpMid) {
+                    const scard = document.getElementById(`sc-${i}`);
+                    if (scard) { scard.remove(); }
+                    delete shortDeltas[i];
+                    if (strat === 'xmas') {
                         const bcard = document.getElementById(`bf-${i}`);
                         if (bcard) { bcard.remove(); }
+                    } else {
                         const xcard = document.getElementById(`xm-${i}`);
                         if (xcard) { xcard.remove(); }
                     }
+                } else {
+                    const bcard = document.getElementById(`bf-${i}`);
+                    if (bcard) { bcard.remove(); }
+                    const xcard = document.getElementById(`xm-${i}`);
+                    if (xcard) { xcard.remove(); }
                 }
-            });
+            }
             updateActiveSpreadCount();
             updateShortDeltaSum();
             updateTrafficLight();
