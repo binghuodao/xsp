@@ -111,9 +111,9 @@ def _get_hist_mid(sym):
         pass
     return None
 
-def _find_14dte_expiry():
+def _find_n_dte_expiry(n):
     now_et = datetime.now(ET_TZ)
-    target = now_et + timedelta(days=14)
+    target = (now_et + timedelta(days=n)).replace(tzinfo=None)
     exps = set()
     for o in latest_data["options"].values():
         exps.add(o['expiry'])
@@ -127,13 +127,13 @@ def _find_14dte_expiry():
             continue
     return best
 
-def _find_delta_strike(expiry, target_delta):
+def _find_delta_strike(expiry, target_delta, opt_type='P'):
     best_s, best_d, best_diff = None, 0, 999
     for o in latest_data["options"].values():
-        if o['expiry'] != expiry or o['opt_type'] != 'P':
+        if o['expiry'] != expiry or o['opt_type'] != opt_type:
             continue
         d = o.get('delta', 0)
-        if d >= 0:
+        if (opt_type == 'P' and d >= 0) or (opt_type == 'C' and d <= 0):
             continue
         diff = abs(d - target_delta)
         if diff < best_diff:
@@ -181,13 +181,32 @@ def generate_morning_report():
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     skew = hs.get('skew', 0)
+    near_top = dup < 5
+    near_bottom = dlow < 5
 
-    if dup < 5:
+    if near_top:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif dlow < 5:
+    elif near_bottom:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
-    else:
+    elif is_trend:
         direction, reason = ('PUT', f'Skew {skew:.1f}') if skew < 0 else ('CALL', f'Skew {skew:.1f}')
+    else:
+        direction = None
+
+    lines = [f"📊 XSP 早报 — {datetime.now(S_TZ).strftime('%a %Y-%m-%d %H:%M SGT')}",
+             "━━━━━━━━━━━━━━━━━━━━━",
+             f"{icon} 综合 {score} / {slbl}",
+             f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
+             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | Skew {hs.get('skew',0):.1f}",
+             f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
+             f"BBL ${bbl:.2f} | BBU ${bbu:.2f}",
+             "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+
+    if not direction:
+        msg = "\n".join(lines)
+        send_telegram(msg)
+        _morning_report_date = today
+        return
 
     # Mid leg
     off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
@@ -197,29 +216,21 @@ def generate_morning_report():
     s = m + 10 if direction == 'PUT' else m - 10
     l = m - 5 if direction == 'PUT' else m + 5
 
-    expiry14 = _find_14dte_expiry()
+    expiry14 = _find_n_dte_expiry(14)
     ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
 
     def sym_str(strike, ot):
         return f"US.XSP{ds14}{ot}{int(strike * 1000)}" if ds14 else None
 
-    lines = [f"📊 XSP 早报 — {datetime.now(S_TZ).strftime('%a %Y-%m-%d %H:%M SGT')}",
-             "━━━━━━━━━━━━━━━━━━━━━",
-             f"{icon} 综合 {score} / {slbl}",
-             f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
-             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | Skew {hs.get('skew',0):.1f}",
-             f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
-             f"BBL ${bbl:.2f} | BBU ${bbu:.2f}",
-             "", f"→ 方向: {direction} ({reason})", ""]
+    ot_type = 'P' if direction == 'PUT' else 'C'
 
     if expiry14:
-        ot = 'P' if direction == 'PUT' else 'C'
-        sym_s = sym_str(s, ot)
-        sym_m = sym_str(m, ot)
-        sym_l = sym_str(l, ot)
+        sym_s = sym_str(s, ot_type)
+        sym_m = sym_str(m, ot_type)
+        sym_l = sym_str(l, ot_type)
 
         lines.append(f"═══ 14DTE {direction}树 ═══")
-        lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20, Ranging'})")
+        lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
 
         for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
             mid = _opt_mid(sym)
@@ -238,31 +249,22 @@ def generate_morning_report():
             lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
         lines.append("")
 
-        # PUT Spread
-        lines.append("═══ 14DTE PUT价差 ═══")
-        ps, pd = _find_delta_strike(expiry14, -0.075)
-        if ps:
-            pl = int(ps) - 5
-            sym_ss = sym_str(int(ps), 'P')
-            sym_sl = sym_str(pl, 'P')
-            ss_mid = _opt_mid(sym_ss)
-            sl_mid = _opt_mid(sym_sl)
-            ss_hist = _get_hist_mid(sym_ss)
-            sl_hist = _get_hist_mid(sym_sl)
-
-            def fmt(m, h):
-                p = f"${m:.2f}" if m is not None else "--"
-                if h is not None:
-                    p += f" | 历均 ${h:.2f}"
-                return p
-
-            lines.append(f"Short {int(ps)}P (Δ {pd:.3f})  mid {fmt(ss_mid, ss_hist)}")
-            lines.append(f"Long  {pl}P                     mid {fmt(sl_mid, sl_hist)}")
-
-            if ss_mid is not None and sl_mid is not None:
-                credit = ss_mid - sl_mid
-                max_loss = (5 - credit) * 100
-                lines.append(f"Credit: ${credit:.2f} | 宽 5pt → 一手 ≈ ${max_loss:.0f} max loss")
+        # Trending: 7DTE single long option
+        if is_trend:
+            expiry7 = _find_n_dte_expiry(7)
+            ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
+            if ds7:
+                td = 0.35 if direction == 'CALL' else -0.35
+                strike, delta = _find_delta_strike(expiry7, td, ot_type)
+                if strike:
+                    sym1 = f"US.XSP{ds7}{ot_type}{int(strike * 1000)}"
+                    mid = _opt_mid(sym1)
+                    hist = _get_hist_mid(sym1)
+                    p = f"${mid:.2f}" if mid is not None else "--"
+                    if hist is not None:
+                        p += f" | 历均 ${hist:.2f}"
+                    lines.append(f"═══ 7DTE 裸{ot_type} ═══")
+                    lines.append(f"{strike}{ot_type} (Δ {delta:+.3f})  mid {p}")
     else:
         lines.append("⚠️ 无可用14DTE期权数据")
 
