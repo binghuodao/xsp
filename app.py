@@ -1378,11 +1378,16 @@ def compute_combo_price(legs, syms_ordered, strategy):
     lo = legs[syms_ordered[0]]
     mi = legs[syms_ordered[1]]
     hi = legs[syms_ordered[2]]
+    opt_type = syms_ordered[0][12] if len(syms_ordered[0]) > 12 else 'P'
     if strategy == 'bfly':
         bid = round(lo['bid'] + hi['bid'] - 2 * mi['ask'], 4)
         ask = round(lo['ask'] + hi['ask'] - 2 * mi['bid'], 4)
         mid = round(lo['mid'] + hi['mid'] - 2 * mi['mid'], 4)
-    else:  # xmas: +1S / -3M / +2L
+    elif opt_type == 'P':  # xmas PUT: lo=L, hi=S → S + 2*L - 3*M
+        bid = round(hi['bid'] + 2 * lo['bid'] - 3 * mi['ask'], 4)
+        ask = round(hi['ask'] + 2 * lo['ask'] - 3 * mi['bid'], 4)
+        mid = round(hi['mid'] + 2 * lo['mid'] - 3 * mi['mid'], 4)
+    else:  # xmas CALL: lo=S, hi=L → S + 2*L - 3*M
         bid = round(lo['bid'] + 2 * hi['bid'] - 3 * mi['ask'], 4)
         ask = round(lo['ask'] + 2 * hi['ask'] - 3 * mi['bid'], 4)
         mid = round(lo['mid'] + 2 * hi['mid'] - 3 * mi['mid'], 4)
@@ -1740,7 +1745,9 @@ def api_percentile_data():
                 lo, mi, hi = legs[syms[0]], legs[syms[1]], legs[syms[2]]
                 if strategy == 'bfly':
                     combo_mid = lo + hi - 2 * mi
-                else:
+                elif opt_type == 'P':  # PUT: lo=L, hi=S → S + 2*L - 3*M
+                    combo_mid = hi + 2 * lo - 3 * mi
+                else:  # CALL: lo=S, hi=L → S + 2*L - 3*M
                     combo_mid = lo + 2 * hi - 3 * mi
             elif role == 'spread':
                 if len(syms) < 2 or any(s not in legs for s in syms):
