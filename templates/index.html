@@ -473,6 +473,10 @@
         <h2 style="font-size: 18px; margin-bottom: 15px;">🎄 Christmas Trees (圣诞树 2×3×1)</h2>
         <div id="xmas-container" class="grid" style="margin-bottom: 30px;"></div>
 
+        <!-- NAKED BUY SECTION -->
+        <h2 style="font-size: 18px; margin-bottom: 15px;">🟢 Naked Buys (裸买)</h2>
+        <div id="naked-container" class="grid" style="margin-bottom: 30px;"></div>
+
         <h2 style="font-size: 18px; margin-bottom: 15px;">⛓️ Option Chains (期权链)</h2>
         <div id="container" class="grid"></div>
     </div>
@@ -501,7 +505,7 @@
                 div.className = 'input-group';
                 div.innerHTML = `
                     <label>GROUP ${i}</label>
-                    <input type="text" id="sml-${i}" placeholder="YYMMDD S/M/L P/C (e.g. 260717 750/740/735P)">
+                    <input type="text" id="sml-${i}" placeholder="YYMMDD S P/C or S/M/L P/C (e.g. 260717 750P or 750/740/735P)">
                     <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Premium (e.g. 1.20)">
                     <select id="strategy-${i}" style="width:100%;padding:6px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-size:12px;">
                         <option value="xmas">🎄 +1S/-3M/+2L</option>
@@ -514,11 +518,16 @@
                 const grpShort = g.short || '';
                 const grpMid = g.mid || '';
                 const grpLong = g.long || '';
-                if (grpDate && grpShort && grpLong) {
-                    const optType = parseFloat(grpShort) > parseFloat(grpLong) ? 'P' : 'C';
-                    document.getElementById(`sml-${i}`).value = grpMid
-                        ? `${grpDate} ${grpShort}/${grpMid}/${grpLong}${optType}`
-                        : `${grpDate} ${grpShort}//${grpLong}${optType}`;
+                const grpOptType = g.opt_type || '';
+                if (grpDate && grpShort) {
+                    if (grpLong) {
+                        const optType = grpOptType || (parseFloat(grpShort) > parseFloat(grpLong) ? 'P' : 'C');
+                        document.getElementById(`sml-${i}`).value = grpMid
+                            ? `${grpDate} ${grpShort}/${grpMid}/${grpLong}${optType}`
+                            : `${grpDate} ${grpShort}//${grpLong}${optType}`;
+                    } else {
+                        document.getElementById(`sml-${i}`).value = `${grpDate} ${grpShort}${grpOptType}`;
+                    }
                 }
                 document.getElementById(`entry-${i}`).value = g.entry || '';
                 const sel = document.getElementById(`strategy-${i}`);
@@ -534,23 +543,35 @@
                 const entryInput = group.querySelector('input[id^="entry-"]');
                 const sel = group.querySelector('select[id^="strategy-"]');
                 const sml = smlInput.value.trim();
-                let date = '', short = '', mid = '', long = '';
-                const m = sml.match(/^(\d{6})\s+([\d.]*)\/([\d.]*)\/([\d.]*)([PC])$/i);
-                if (m) {
-                    date = m[1];
-                    short = m[2];
-                    mid = m[3];
-                    long = m[4];
+                let date = '', short = '', mid = '', long = '', opt_type = '';
+                // Try single-strike format: YYMMDD S PC
+                const m1 = sml.match(/^(\d{6})\s+([\d.]+)([PC])$/i);
+                if (m1) {
+                    date = m1[1];
+                    short = m1[2];
+                    opt_type = m1[3].toUpperCase();
+                } else {
+                    // Try triple-strike format: YYMMDD S/M/L PC
+                    const m3 = sml.match(/^(\d{6})\s+([\d.]*)\/([\d.]*)\/([\d.]*)([PC])$/i);
+                    if (m3) {
+                        date = m3[1];
+                        short = m3[2];
+                        mid = m3[3];
+                        long = m3[4];
+                        opt_type = m3[5].toUpperCase();
+                    }
                 }
                 if (date) {
-                    watchlist.push({
-                        date: date,
-                        short: short,
-                        mid: mid,
-                        long: long,
-                        entry: entryInput.value,
-                        strategy: sel.value
-                    });
+                    const entry = {date, short, entry: entryInput.value};
+                    if (long) {
+                        entry.mid = mid;
+                        entry.long = long;
+                        entry.opt_type = opt_type;
+                        entry.strategy = sel.value;
+                    } else {
+                        entry.opt_type = opt_type;
+                    }
+                    watchlist.push(entry);
                 }
             });
             socket.emit('update_watchlist', watchlist);
@@ -566,28 +587,36 @@
                 const grpShort = group.short || '';
                 const grpMid = group.mid || '';
                 const grpLong = group.long || '';
-                if (!grpDate || !grpShort || !grpLong) {
-                    const card = document.getElementById(`sc-${i}`);
-                    if (card) { card.remove(); }
+                const nkCard = document.getElementById(`nk-${i}`);
+                const scCard = document.getElementById(`sc-${i}`);
+                const bfCard = document.getElementById(`bf-${i}`);
+                const xmCard = document.getElementById(`xm-${i}`);
+                if (!grpDate || !grpShort) {
+                    if (scCard) scCard.remove();
+                    if (bfCard) bfCard.remove();
+                    if (xmCard) xmCard.remove();
+                    if (nkCard) nkCard.remove();
                     delete shortDeltas[i];
-                }
-                const strat = group.strategy || 'xmas';
-                if (grpMid) {
-                    const scard = document.getElementById(`sc-${i}`);
-                    if (scard) { scard.remove(); }
+                } else if (!grpLong) {
+                    // Naked buy: remove spread/bfly/xmas cards
+                    if (scCard) scCard.remove();
+                    if (bfCard) bfCard.remove();
+                    if (xmCard) xmCard.remove();
                     delete shortDeltas[i];
+                } else if (grpMid) {
+                    if (scCard) scCard.remove();
+                    if (nkCard) nkCard.remove();
+                    delete shortDeltas[i];
+                    const strat = group.strategy || 'xmas';
                     if (strat === 'xmas') {
-                        const bcard = document.getElementById(`bf-${i}`);
-                        if (bcard) { bcard.remove(); }
+                        if (bfCard) bfCard.remove();
                     } else {
-                        const xcard = document.getElementById(`xm-${i}`);
-                        if (xcard) { xcard.remove(); }
+                        if (xmCard) xmCard.remove();
                     }
                 } else {
-                    const bcard = document.getElementById(`bf-${i}`);
-                    if (bcard) { bcard.remove(); }
-                    const xcard = document.getElementById(`xm-${i}`);
-                    if (xcard) { xcard.remove(); }
+                    if (bfCard) bfCard.remove();
+                    if (xmCard) xmCard.remove();
+                    if (nkCard) nkCard.remove();
                 }
             }
             updateActiveSpreadCount();
@@ -1605,6 +1634,212 @@
                 const pw = document.getElementById(`pw-${chartId_xm}`);
                 if (pw) { pw.style.display = 'block'; }
                 setTimeout(() => renderPayoffChart(chartId_xm, d, 'xmas'), 30);
+            }
+        });
+
+        socket.on('naked_update', d => {
+            const container = document.getElementById('naked-container');
+            const cardId = `nk-${d.group_index}`;
+            let card = document.getElementById(cardId);
+
+            if (!card) {
+                card = document.createElement('div');
+                card.id = cardId;
+                container.appendChild(card);
+            }
+            card.dataset.expiry = d.expiry;
+            card.dataset.optType = d.opt_type;
+            const chartId_nk = `po-${cardId}`;
+            const payoffOpen_nk = document.getElementById(`pw-${chartId_nk}`)?.style.display !== 'none' && document.getElementById(`pw-${chartId_nk}`) !== null;
+            const legDetailsOpen = document.getElementById(`ld-${cardId}`)?.open || false;
+            const scOpen = document.getElementById(`sc-${cardId}`)?.open || false;
+            if (payoffCharts[chartId_nk]) { payoffCharts[chartId_nk].destroy(); delete payoffCharts[chartId_nk]; }
+            card.className = `spread-card ${d.opt_type === 'P' ? 'put-spread' : 'call-spread'}`;
+
+            let pnlHtml = '--';
+            if (d.pnl !== null) {
+                const prefix = d.pnl >= 0 ? '+' : '';
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div class="pnl-value" style="color: ${d.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+                            ${prefix}$${(d.pnl * 100).toFixed(1)}
+                            <span class="pnl-percent" style="font-size: 12px; font-weight: bold;">(${prefix}${d.pnl_percent.toFixed(1)}%)</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                pnlHtml = `
+                    <div>
+                        <span class="label" style="margin-bottom: 2px;">REAL-TIME P&L</span>
+                        <div style="font-size: 13px; color:#8b949e">Enter Entry Premium to track</div>
+                    </div>
+                `;
+            }
+
+            let emHtml = '';
+            if (d.expected_move && d.index_price) {
+                const lowerEM = d.index_price - d.expected_move;
+                const upperEM = d.index_price + d.expected_move;
+                const minScale = d.index_price - 2 * d.expected_move;
+                const maxScale = d.index_price + 2 * d.expected_move;
+
+                emHtml = `
+                    <div class="waterline-section" style="margin-bottom: 15px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span class="waterline-title" style="margin-bottom: 0;">Expected Move (期望波动)</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #8b949e; margin-bottom: 6px;">
+                            <span>-EM: <b>${lowerEM.toFixed(1)}</b></span>
+                            <span style="color: var(--blue);">Index: <b>${d.index_price.toFixed(1)}</b></span>
+                            <span>+EM: <b>${upperEM.toFixed(1)}</b></span>
+                        </div>
+                        <div style="position: relative; height: 6px; background: #21262d; border-radius: 3px; margin: 15px 0 22px 0; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="position: absolute; left: 25%; width: 50%; height: 100%; background: rgba(88, 166, 255, 0.15); border-radius: 3px;"></div>
+                            <div style="position: absolute; left: 50%; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); transform: translateX(-50%); box-shadow: 0 0 6px var(--blue);"></div>
+                        </div>
+                        <div style="font-size: 10px; color: #8b949e; text-align: center; margin-top: 10px; border-top: 1px solid rgba(48, 54, 77, 0.3); padding-top: 6px;">
+                            Implied Daily Range: <b>±${d.expected_move.toFixed(1)}</b> pts
+                        </div>
+                    </div>
+                `;
+            }
+
+            card.innerHTML = `
+                <div class="spread-header">
+                    <h3>
+                        🟢 Group ${d.group_index}: ${d.short_strike.toFixed(0)}${d.opt_type} (Naked Buy)
+                    </h3>
+                    <div style="display: flex; gap: 5px; align-items: center;">
+                        <span class="spread-badge ${d.opt_type === 'P' ? 'badge-put' : 'badge-call'}">
+                            ${d.opt_type === 'P' ? 'Put' : 'Call'}
+                        </span>
+                        <a href="/history?combo=${encodeURIComponent(d.combo_symbol)}&role=short" style="text-decoration: none; font-size: 11px; padding: 3px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.1); border: 1px solid rgba(88, 166, 255, 0.25); color: #58a6ff; font-weight: bold; display: flex; align-items: center; gap: 2px;" title="查看该裸买的历史路径">
+                        📈 历史
+                        </a>
+                    </div>
+                </div>
+
+                <div style="font-size: 11px; color:#8b949e; margin-top:-10px; margin-bottom:4px;">
+                    Expiry: <b>${d.expiry}</b> | DTE: <b>${d.dte !== null && d.dte !== undefined ? d.dte : '–'}</b>
+                </div>
+
+                <div class="spread-metrics">
+                    <div class="metric-item">
+                        <span class="m-lbl">Bid</span>
+                        <span class="m-val" style="color:var(--green)">$${d.bid.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Ask</span>
+                        <span class="m-val" style="color:var(--red)">$${d.ask.toFixed(2)}</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="m-lbl">Mid (Fair)</span>
+                        <span class="m-val" style="color:var(--blue)">$${d.mid.toFixed(2)}</span>
+                    </div>
+                </div>
+
+                <div class="spread-pnl-section ${d.pnl !== null ? (d.pnl >= 0 ? 'profit' : 'loss') : ''}">
+                    ${pnlHtml}
+                    ${d.entry !== null ? `<div style="text-align: right;"><span class="label" style="margin-bottom: 2px;">Entry</span><b style="font-size: 16px; color: white;">$${d.entry.toFixed(2)}</b></div>` : ''}
+                </div>
+
+                ${emHtml}
+
+                <div class="spread-greeks">
+                    <div class="greek-item">Delta: <b>${d.delta >= 0 ? '+' : ''}${d.delta.toFixed(3)}</b></div>
+                    <div class="greek-item">Gamma: <b>${d.gamma >= 0 ? '+' : ''}${d.gamma.toFixed(4)}</b></div>
+                    <div class="greek-item">Theta: <b style="color: var(--green)">${d.theta >= 0 ? '+' : ''}${d.theta.toFixed(3)}</b></div>
+                    <div class="greek-item">Vega: <b>${d.vega >= 0 ? '+' : ''}${d.vega.toFixed(3)}</b></div>
+                </div>
+
+                ${d.max_loss !== null && d.max_loss !== undefined ? `
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;font-size:11px;background:rgba(48,54,77,0.3);border-radius:6px;padding:6px 8px;">
+                    <span>Max Loss: <b style="color:var(--red)">$${d.max_loss.toFixed(2)}</b></span>
+                </div>
+                ` : ''}
+
+                ${d.theory !== null && d.theory !== undefined ? `
+                <div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-top:1px solid rgba(48,54,77,0.3);margin:2px 0;">
+                    <span><span class="label">Theo (BS)</span> <b>$${d.theory.toFixed(2)}</b></span>
+                    <span><span class="label">Edge</span> <b style="color:${d.edge >= 0 ? 'var(--green)' : 'var(--red)'}">${d.edge >= 0 ? '+' : ''}$${d.edge.toFixed(2)}</b></span>
+                </div>
+                ` : ''}
+
+                ${d.legs && d.legs.length > 0 ? `
+                <details id="ld-${cardId}" style="margin:4px 0;font-size:11px;">
+                    <summary style="cursor:pointer;color:#8b949e;font-weight:bold;">Leg Details ▼</summary>
+                    <div style="margin-top:4px;display:grid;grid-template-columns:1fr;gap:4px;">
+                        ${d.legs.map(l => `
+                        <div style="background:rgba(48,54,77,0.2);border-radius:4px;padding:4px 6px;text-align:center;">
+                            <div style="font-weight:bold;color:#c9d1d9;">${l.leg}</div>
+                            <div>${l.strike.toFixed(0)} ${l.type}</div>
+                            <div style="font-size:10px;color:#8b949e;">B: $${l.bid.toFixed(2)} / A: $${l.ask.toFixed(2)}</div>
+                            <div style="font-size:10px;color:#8b949e;">Δ ${l.delta.toFixed(3)} | IV ${(l.iv*100).toFixed(1)}%</div>
+                        </div>
+                        `).join('')}
+                    </div>
+                </details>
+                ` : ''}
+
+                ${d.scenarios ? `
+                <details id="sc-${cardId}" style="margin:4px 0;font-size:11px;">
+                    <summary style="cursor:pointer;color:#8b949e;font-weight:bold;">Scenario Analysis (BS Theo) ▼</summary>
+                    <div style="margin-top:4px;background:rgba(48,54,77,0.2);border-radius:4px;padding:4px 6px;">
+                        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+                            <tr style="border-bottom:1px solid rgba(48,54,77,0.5);">
+                                <th style="text-align:left;padding:2px 4px;color:#8b949e;">Scenario</th>
+                                <th style="text-align:right;padding:2px 4px;color:#8b949e;">Theo</th>
+                                <th style="text-align:right;padding:2px 4px;color:#8b949e;">Δ</th>
+                            </tr>
+                            ${Object.entries(d.scenarios).map(([key, val]) => key === 'current' ? `
+                            <tr style="border-bottom:1px solid rgba(48,54,77,0.3);">
+                                <td style="padding:2px 4px;font-weight:bold;">Market Mid</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;color:var(--blue)">$${val.mid.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:${val.edge > 0 ? 'var(--green)' : val.edge < 0 ? 'var(--red)' : '#8b949e'};font-weight:bold;">Edge: ${val.edge > 0 ? '+' : ''}${val.edge.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:2px 4px;">BS Fair</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;">$${val.price.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:#8b949e;">–</td>
+                            </tr>
+                            ` : `
+                            <tr>
+                                <td style="padding:2px 4px;">${key.replace(/_/g,' ')}</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;">$${val.price.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:${val.change > 0 ? 'var(--green)' : val.change < 0 ? 'var(--red)' : '#8b949e'};">${val.change > 0 ? '+' : ''}${val.change.toFixed(2)}</td>
+                            </tr>
+                            `).join('')}
+                        </table>
+                    </div>
+                </details>
+                ` : ''}
+
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                    <span class="pct-badge" id="pct-${cardId}"></span>
+                </div>
+            `;
+
+            fetchPercentileData('short', d.combo_symbol).then(mids => {
+                const pct = calcPercentile(d.mid, mids);
+                const el = document.getElementById(`pct-${cardId}`);
+                if (el && pct !== null) { const pc = pctColor(pct); el.textContent = `Pctl: ${pct}%`; el.style.display = 'inline'; el.style.color = pc; el.style.background = pc.replace('hsl', 'hsla').replace(/\)$/, ',0.12)'); }
+            });
+
+            sortElements(container);
+
+            if (legDetailsOpen) {
+                const ld = document.getElementById(`ld-${cardId}`);
+                if (ld) ld.open = true;
+            }
+            if (scOpen) {
+                const sc = document.getElementById(`sc-${cardId}`);
+                if (sc) sc.open = true;
+            }
+
+            if (payoffOpen_nk) {
+                const pw = document.getElementById(`pw-${chartId_nk}`);
+                if (pw) { pw.style.display = 'block'; }
             }
         });
 

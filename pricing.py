@@ -92,6 +92,41 @@ def xmas_payoff_extrema(combo_bid, strikes, opt_type, width, atr_val=10.0):
     }
 
 
+def single_option_scenarios(S, K, T, r, iv, opt_type, mid):
+    """Scenario analysis for a single long option."""
+    base_theory = black_scholes(S, K, T, r, iv, opt_type)
+    out = {
+        'current': {
+            'price': round(base_theory, 2),
+            'change': 0.0,
+            'mid': round(mid, 2),
+            'edge': round(mid - base_theory, 2),
+        }
+    }
+    for pct in [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]:
+        s2 = S * (1 + pct / 100.0)
+        theory = black_scholes(s2, K, T, r, iv, opt_type)
+        out[f'price_{pct:+.1f}pct'] = {
+            'price': round(theory, 2),
+            'change': round(theory - mid, 2)
+        }
+    for d_days in [-5, -3, -1]:
+        t2 = max(T + d_days / 365.0, 0.001)
+        theory = black_scholes(S, K, t2, r, iv, opt_type)
+        out[f'dte_{d_days}d'] = {
+            'price': round(theory, 2),
+            'change': round(theory - mid, 2)
+        }
+    for d_iv in [-5, -2, -1, 1, 2, 5]:
+        iv2 = max(0.05, iv + d_iv / 100.0)
+        theory = black_scholes(S, K, T, r, iv2, opt_type)
+        out[f'iv_{d_iv:+.0f}pct'] = {
+            'price': round(theory, 2),
+            'change': round(theory - mid, 2)
+        }
+    return out
+
+
 def xmas_scenarios(S, k_short, k_mid, k_long, T, r, iv_short, iv_mid, iv_long, opt_type, combo_mid):
     """Scenario analysis returning {key: {price, change}}."""
     base_theory = xmas_theory_price(
