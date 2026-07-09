@@ -1309,15 +1309,17 @@
         const worst = pts.reduce((b, p) => (p.mid < (b?.mid ?? Infinity) ? p : b), null);
 
         const peakMid = best ? `$${fmt(best.mid, 4)}` : '--';
+        const peakBA = best && best.bid != null && best.ask != null ? `(B $${fmt(best.bid, 2)} A $${fmt(best.ask, 2)})` : '';
         const peakSess = best ? (sessLabels[best.session] || best.session) : '--';
         const lowMid = worst ? `$${fmt(worst.mid, 4)}` : '--';
+        const lowBA = worst && worst.bid != null && worst.ask != null ? `(B $${fmt(worst.bid, 2)} A $${fmt(worst.ask, 2)})` : '';
         const lowSess = worst ? (sessLabels[worst.session] || worst.session) : '--';
 
         return `<div class="day-row" onclick="highlightDay('${d}')">
       <span class="date">${d}</span>
       <span class="chg ${chgCls}">${chgTxt}</span>
-      <span class="peak-sess">🔺${peakMid} @ ${peakSess}</span>
-      <span class="low-sess">🔻${lowMid} @ ${lowSess}</span>
+      <span class="peak-sess">🔺${peakMid} ${peakBA} @ ${peakSess}</span>
+      <span class="low-sess">🔻${lowMid} ${lowBA} @ ${lowSess}</span>
     </div>`;
       }).join('');
     }
