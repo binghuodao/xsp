@@ -718,7 +718,14 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
     ticker = yf.Ticker("^XSP")
     for ds in dates:
         # get option chain from yfinance
-        opt_chain = ticker.option_chain(datetime.strptime(ds, "%y%m%d").strftime("%Y-%m-%d"))
+        try:
+            opt_chain = ticker.option_chain(datetime.strptime(ds, "%y%m%d").strftime("%Y-%m-%d"))
+            if opt_chain is None or opt_chain.puts is None or opt_chain.calls is None:
+                print(f"⚠️ 跳过 {ds}: option chain 数据不完整")
+                continue
+        except Exception as e:
+            print(f"⚠️ 跳过 {ds}: YF option_chain 异常 {e}")
+            continue
         # Generate Puts (ensure start < end)
         if p_start <= p_end:
             for strike in range(p_start, p_end + 5, 5):
@@ -731,12 +738,14 @@ def generate_xsp_symbols(current_price, floor_price, ceiling_price):
                 if strike in opt_chain.calls['strike'].values:
                     symbols.append(f"US.XSP{ds}C{int(strike * 1000)}")
         
-        # Force-add ATM option(s) for SKEW calculation
+        # Force-add ATM option(s) for SKEW calculation (verify strike exists in YF)
         atm_strike = round(current_price / 5) * 5
         for t in ('P', 'C'):
             sym = f"US.XSP{ds}{t}{int(atm_strike * 1000)}"
             if sym not in symbols:
-                symbols.append(sym)
+                df = opt_chain.puts if t == 'P' else opt_chain.calls
+                if atm_strike in df['strike'].values:
+                    symbols.append(sym)
         
         if len(symbols) >= 399: break
     
@@ -990,9 +999,9 @@ def start_moomoo():
                     # Fetch order book for watched symbols
                     for sym in watched_symbols:
                         ret_ob, ob_data = quote_ctx.get_order_book(sym, num=3)
-                        if ret_ob == RET_OK:
-                            latest_data["options"][sym]['ob_ask'] = ob_data['Ask']
-                            latest_data["options"][sym]['ob_bid'] = ob_data['Bid']
+                        if ret_ob == RET_OK and ob_data is not None:
+                            latest_data["options"][sym]['ob_ask'] = ob_data.get('Ask', 0)
+                            latest_data["options"][sym]['ob_bid'] = ob_data.get('Bid', 0)
                     
                     # Emit updates to frontend
                     for sym in updated_symbols:
