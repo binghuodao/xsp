@@ -75,8 +75,9 @@ def send_telegram(msg):
         except:
             pass
 
-# --- MORNING REPORT ---
+# --- MARKET REPORTS (Evening & Morning) ---
 _morning_report_date = ""
+_evening_report_date = ""
 S_TZ = pytz.timezone('Australia/Sydney')
 
 def _s5(v):
@@ -140,13 +141,26 @@ def _find_delta_strike(expiry, target_delta, opt_type='P'):
             best_diff, best_s, best_d = diff, o['strike'], d
     return best_s, best_d
 
-def generate_morning_report():
-    global _morning_report_date
+def send_market_report(report_type):
+    global _morning_report_date, _evening_report_date
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
-    if now_syd.weekday() >= 5 or now_syd.hour != 21 or now_syd.minute < 25 or now_syd.minute > 35:
-        return
-    if _morning_report_date == today:
+
+    if report_type == 'morning':
+        if now_syd.weekday() >= 5 or now_syd.hour != 21 or now_syd.minute < 25 or now_syd.minute > 35:
+            return
+        if _morning_report_date == today:
+            return
+        title = "📊 XSP 盘前早报"
+        dte_adj = 0
+    elif report_type == 'evening':
+        if now_syd.weekday() >= 5 or now_syd.hour != 9 or now_syd.minute < 25 or now_syd.minute > 35:
+            return
+        if _evening_report_date == today:
+            return
+        title = "📊 XSP 盘后晚报"
+        dte_adj = 1
+    else:
         return
 
     idx = latest_data.get("index", {})
@@ -164,7 +178,7 @@ def generate_morning_report():
     W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
     T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
          'bbw': [45, 30, 18, 10, 0], 'vr': [2.0, 1.3, .8, .5, 0]}
-    total = 5  # 50*0.1 base
+    total = 5
     for k, w in W.items():
         v = hs.get(k)
         if v is None:
@@ -193,7 +207,8 @@ def generate_morning_report():
     else:
         direction = None
 
-    lines = [f"📊 XSP 早报 — {datetime.now(S_TZ).strftime('%a %Y-%m-%d %H:%M SGT')}",
+    now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
+    lines = [f"{title} — {now_et_str}",
              "━━━━━━━━━━━━━━━━━━━━━",
              f"{icon} 综合 {score} / {slbl}",
              f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
@@ -205,7 +220,7 @@ def generate_morning_report():
     if not direction:
         msg = "\n".join(lines)
         send_telegram(msg)
-        _morning_report_date = today
+        _mark_report_dedupe(report_type, today)
         return
 
     # Mid leg
@@ -216,7 +231,7 @@ def generate_morning_report():
     s = m + 10 if direction == 'PUT' else m - 10
     l = m - 5 if direction == 'PUT' else m + 5
 
-    expiry14 = _find_n_dte_expiry(14)
+    expiry14 = _find_n_dte_expiry(14 + dte_adj)
     ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
 
     def sym_str(strike, ot):
@@ -251,7 +266,7 @@ def generate_morning_report():
 
         # Trending: 7DTE single long option
         if is_trend:
-            expiry7 = _find_n_dte_expiry(7)
+            expiry7 = _find_n_dte_expiry(7 + dte_adj)
             ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
             if ds7:
                 td = 0.35 if direction == 'CALL' else -0.35
@@ -270,7 +285,14 @@ def generate_morning_report():
 
     msg = "\n".join(lines)
     send_telegram(msg)
-    _morning_report_date = today
+    _mark_report_dedupe(report_type, today)
+
+def _mark_report_dedupe(report_type, today):
+    global _morning_report_date, _evening_report_date
+    if report_type == 'morning':
+        _morning_report_date = today
+    elif report_type == 'evening':
+        _evening_report_date = today
 
 app = Flask(__name__)
 app.secret_key = CONFIG.get('secret_key') or secrets.token_hex(32)
@@ -1450,7 +1472,8 @@ def start_moomoo():
                 # 5. 控制频率
                 log_premium_snapshot()
                 clean_expired_watchlist(socketio)
-                generate_morning_report()
+                send_market_report('morning')
+                send_market_report('evening')
                 time.sleep(REFRESH_INTERVAL)
                 
             except Exception as e:
