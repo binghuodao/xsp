@@ -229,7 +229,7 @@ def generate_morning_report():
         sym_m = sym_str(m, ot_type)
         sym_l = sym_str(l, ot_type)
 
-        lines.append(f"═══ 14DTE {direction}树 ═══")
+        lines.append(f"═══ 14DTE {direction}树 ({expiry14}) ═══")
         lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
 
         for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
@@ -1570,6 +1570,7 @@ def api_history_snapshots():
             new_by_ts[ts][r['opt_symbol']] = r
 
         opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+        prev_leg_mids = {}
         for ts, legs in sorted(new_by_ts.items()):
             if len(syms) == 1:
                 # Single leg (naked buy)
@@ -1618,6 +1619,25 @@ def api_history_snapshots():
                 for s in check_syms
             ):
                 continue
+
+            # Validate computed combo price
+            if not (bid < ask):
+                continue
+            is_single = len(syms) == 1
+            if not is_single:
+                # Frozen leg detection: if some legs changed >$0.10 while others changed <$0.01
+                if prev_leg_mids:
+                    max_delta, min_delta = 0, 999
+                    for s in syms:
+                        if s in prev_leg_mids:
+                            d = abs(legs[s]['mid'] - prev_leg_mids[s])
+                            max_delta = max(max_delta, d)
+                            min_delta = min(min_delta, d)
+                    if max_delta > 0.10 and min_delta < 0.01:
+                        continue
+
+            for s in syms:
+                prev_leg_mids[s] = legs[s]['mid']
 
             r0 = legs[syms[0]]
             merged[ts] = {
@@ -1873,6 +1893,7 @@ def api_percentile_data():
             new_by_ts[ts][sym] = mid
 
         opt_type = syms[0][12] if len(syms[0]) > 12 else 'P'
+        prev_leg_mids = {}
         for ts, legs in new_by_ts.items():
             if is_single:
                 if syms[0] not in legs:
@@ -1906,8 +1927,22 @@ def api_percentile_data():
                 combo_mid = legs[target]
             else:
                 continue
-            if not is_single and width > 0 and abs(combo_mid) > width * 2:
-                continue
+            if not is_single and width > 0:
+                if abs(combo_mid) > width * 2:
+                    continue
+                # Frozen leg detection: if some legs changed >$0.10 while others changed <$0.01
+                if prev_leg_mids:
+                    max_delta, min_delta = 0, 999
+                    for s in syms:
+                        if s in prev_leg_mids:
+                            d = abs(legs[s] - prev_leg_mids[s])
+                            max_delta = max(max_delta, d)
+                            min_delta = min(min_delta, d)
+                    if max_delta > 0.10 and min_delta < 0.01:
+                        continue
+
+            for s in syms:
+                prev_leg_mids[s] = legs[s]
             merged_mids[ts] = round(combo_mid, 4)
 
         mids = sorted(merged_mids.values())
