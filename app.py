@@ -223,6 +223,12 @@ def send_market_report(report_type):
         _mark_report_dedupe(report_type, today)
         return
 
+    # ETF reference
+    if direction == 'CALL':
+        lines.append("★ 做多 SPYM（S&P500 低成本 ETF）")
+    elif direction == 'PUT':
+        lines.append("★ 做多 SH（S&P500 反向 ETF，大盘跌则涨）")
+
     # Mid leg
     off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
     m = _s5(ema20 + off)
