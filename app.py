@@ -78,6 +78,7 @@ def send_telegram(msg):
 # --- MARKET REPORTS (Evening & Morning) ---
 _morning_report_date = ""
 _evening_report_date = ""
+_latest_report = {}
 S_TZ = pytz.timezone('Australia/Sydney')
 
 def _s5(v):
@@ -141,27 +142,37 @@ def _find_delta_strike(expiry, target_delta, opt_type='P'):
             best_diff, best_s, best_d = diff, o['strike'], d
     return best_s, best_d
 
-def send_market_report(report_type):
-    global _morning_report_date, _evening_report_date
+def send_market_report(report_type, force=False):
+    global _morning_report_date, _evening_report_date, _latest_report
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
-    if report_type == 'morning':
-        if now_syd.weekday() >= 5 or now_syd.hour != 21 or now_syd.minute < 25 or now_syd.minute > 35:
+    if not force:
+        if report_type == 'morning':
+            if now_syd.weekday() >= 5 or now_syd.hour != 21 or now_syd.minute < 25 or now_syd.minute > 35:
+                return
+            if _morning_report_date == today:
+                return
+            title = "📊 XSP 盘前早报"
+            dte_adj = 0
+        elif report_type == 'evening':
+            if now_syd.weekday() >= 5 or now_syd.hour != 9 or now_syd.minute < 25 or now_syd.minute > 35:
+                return
+            if _evening_report_date == today:
+                return
+            title = "📊 XSP 盘后晚报"
+            dte_adj = 1
+        else:
             return
-        if _morning_report_date == today:
-            return
-        title = "📊 XSP 盘前早报"
-        dte_adj = 0
-    elif report_type == 'evening':
-        if now_syd.weekday() >= 5 or now_syd.hour != 9 or now_syd.minute < 25 or now_syd.minute > 35:
-            return
-        if _evening_report_date == today:
-            return
-        title = "📊 XSP 盘后晚报"
-        dte_adj = 1
     else:
-        return
+        if report_type == 'morning':
+            title = "📊 XSP 盘前早报"
+            dte_adj = 0
+        elif report_type == 'evening':
+            title = "📊 XSP 盘后晚报"
+            dte_adj = 1
+        else:
+            return
 
     idx = latest_data.get("index", {})
     price = idx.get("price", 0)
@@ -206,6 +217,7 @@ def send_market_report(report_type):
         direction, reason = ('PUT', f'Skew {skew:.1f}') if skew < 0 else ('CALL', f'Skew {skew:.1f}')
     else:
         direction = None
+        reason = 'BB 中段'
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -219,6 +231,12 @@ def send_market_report(report_type):
 
     if not direction:
         msg = "\n".join(lines)
+        _latest_report = {
+            'title': title, 'time': now_et_str,
+            'icon': icon, 'score': score, 'slbl': slbl,
+            'direction': None, 'reason': reason,
+        }
+        socketio.emit('market_report', _latest_report)
         send_telegram(msg)
         _mark_report_dedupe(report_type, today)
         return
@@ -271,6 +289,7 @@ def send_market_report(report_type):
         lines.append("")
 
         # Trending: 7DTE single long option
+        strike, delta, mid_single = None, None, None
         if is_trend:
             expiry7 = _find_n_dte_expiry(7 + dte_adj)
             ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
@@ -290,8 +309,34 @@ def send_market_report(report_type):
         lines.append("⚠️ 无可用14DTE期权数据")
 
     msg = "\n".join(lines)
-    send_telegram(msg)
-    _mark_report_dedupe(report_type, today)
+
+    # 更新前端展示
+    _latest_report = {
+        'title': title, 'time': now_et_str,
+        'icon': icon, 'score': score, 'slbl': slbl,
+        'direction': direction, 'reason': reason,
+    }
+    if direction:
+        if direction == 'CALL':
+            _latest_report['etf'] = "★ 做多 SPYM（S&P500 低成本 ETF）"
+        else:
+            _latest_report['etf'] = "★ 做多 SH（S&P500 反向 ETF，大盘跌则涨）"
+        if expiry14:
+            _latest_report['tree_label'] = f"14DTE {direction}树 ({expiry14})"
+            _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
+            if all(v is not None for v in (s_mid, m_mid, l_mid)):
+                _latest_report['tree_mids'] = f"${s_mid:.2f} / ${m_mid:.2f} / ${l_mid:.2f}"
+                tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
+                _latest_report['combo'] = f"${abs(combo_val):.2f} {tag}"
+        if is_trend and strike and mid is not None:
+            _latest_report['single_label'] = f"7DTE 裸{ot_type}"
+            _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
+            _latest_report['single_mid'] = f"${mid:.2f}"
+    socketio.emit('market_report', _latest_report)
+
+    if not force:
+        send_telegram(msg)
+        _mark_report_dedupe(report_type, today)
 
 def _mark_report_dedupe(report_type, today):
     global _morning_report_date, _evening_report_date
@@ -2008,6 +2053,15 @@ def handle_connect():
     # 按照 Expiry 和 Strike 排序后再推送给前端（可选，前端 JS 也有排序逻辑）
     for sym in latest_data["options"]:
         socketio.emit('option_update', latest_data["options"][sym])
+    # 推送最新日报，空则尝试强制生成
+    if _latest_report:
+        socketio.emit('market_report', _latest_report)
+    else:
+        now_et = datetime.now(ET_TZ)
+        first, second = ('morning', 'evening') if now_et.hour < 12 else ('evening', 'morning')
+        send_market_report(first, force=True)
+        if not _latest_report:
+            send_market_report(second, force=True)
 
 # --- AUTH ROUTES ---
 @app.route('/login')
