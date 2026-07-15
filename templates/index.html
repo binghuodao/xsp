@@ -372,9 +372,9 @@
 </head>
 <body>
 
-    <button id="toggle-btn" onclick="toggleSidebar()">⬅️ Hide Sidebar</button>
+    <button id="toggle-btn" onclick="toggleSidebar()">➡️ Show Sidebar</button>
 
-    <div id="sidebar">
+    <div id="sidebar" class="collapsed">
         <h2 style="font-size: 18px; margin-top: 0;">⭐ Watchlist</h2>
         <div id="watchlist-inputs">
             <script>renderWatchlistGroups([]);</script>
@@ -382,7 +382,7 @@
         <button class="sync-btn" onclick="saveWatchlist()">💾 Sync Devices</button>
     </div>
 
-    <div id="main-content">
+    <div id="main-content" class="expanded">
         <div id="header">
             <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
             <div class="stat"><span class="label">{{ (floor_pct*100)|int }}% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>

@@ -143,7 +143,7 @@ def _find_delta_strike(expiry, target_delta, opt_type='P'):
     return best_s, best_d
 
 def send_market_report(report_type, force=False):
-    global _morning_report_date, _evening_report_date, _latest_report
+    global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -333,6 +333,32 @@ def send_market_report(report_type, force=False):
             _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
             _latest_report['single_mid'] = f"${mid:.2f}"
     socketio.emit('market_report', _latest_report)
+
+    # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
+    if direction and expiry14 and ds14:
+        g_date = ds14
+        g_short = str(int(s))
+        g_mid = str(int(m))
+        g_long = str(int(l))
+        g_opt = ot_type
+        exists = any(
+            g.get('date') == g_date and g.get('short') == g_short
+            and g.get('mid') == g_mid and g.get('long') == g_long
+            and g.get('opt_type') == g_opt
+            for g in user_watchlist
+        )
+        if not exists:
+            user_watchlist.append({
+                "date": g_date, "short": g_short, "mid": g_mid,
+                "long": g_long, "opt_type": g_opt,
+                "strategy": "xmas", "entry": ""
+            })
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"⚠️ Watchlist save failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
 
     if not force:
         send_telegram(msg)
