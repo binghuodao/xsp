@@ -1322,20 +1322,23 @@
 
         const peakMid = best ? `$${fmt(best.mid, 4)}` : '--';
         const peakBA = best && best.bid != null && best.ask != null ? `(B $${fmt(best.bid, 2)} A $${fmt(best.ask, 2)})` : '';
+        const peakXsp = best && best.xsp != null ? `XSP $${fmt(best.xsp, 2)}` : '';
         const peakSess = best ? (sessLabels[best.session] || best.session) : '--';
         const lowMid = worst ? `$${fmt(worst.mid, 4)}` : '--';
         const lowBA = worst && worst.bid != null && worst.ask != null ? `(B $${fmt(worst.bid, 2)} A $${fmt(worst.ask, 2)})` : '';
+        const lowXsp = worst && worst.xsp != null ? `XSP $${fmt(worst.xsp, 2)}` : '';
         const lowSess = worst ? (sessLabels[worst.session] || worst.session) : '--';
         const tightMid = tightest ? `$${fmt(tightest.mid, 4)}` : '--';
         const tightBA = tightest ? `(B $${fmt(tightest.bid, 2)} A $${fmt(tightest.ask, 2)} $${fmt(tightest.spread, 2)})` : '';
+        const tightXsp = tightest && tightest.xsp != null ? `XSP $${fmt(tightest.xsp, 2)}` : '';
         const tightSess = tightest ? (sessLabels[tightest.session] || tightest.session) : '--';
 
         return `<div class="day-row" onclick="highlightDay('${d}')">
       <span class="date">${d}</span>
       <span class="chg ${chgCls}">${chgTxt}</span>
-      <span class="peak-sess">🔺${peakMid} ${peakBA} @ ${peakSess}</span>
-      <span class="low-sess">🔻${lowMid} ${lowBA} @ ${lowSess}</span>
-      <span class="tight-sess">🔹${tightMid} ${tightBA} @ ${tightSess}</span>
+      <span class="peak-sess">🔺${peakMid} ${peakBA} ${peakXsp} @ ${peakSess}</span>
+      <span class="low-sess">🔻${lowMid} ${lowBA} ${lowXsp} @ ${lowSess}</span>
+      <span class="tight-sess">🔹${tightMid} ${tightBA} ${tightXsp} @ ${tightSess}</span>
     </div>`;
       }).join('');
     }
