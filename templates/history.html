@@ -598,6 +598,13 @@
       text-align: right;
     }
 
+    .day-row .tight-sess {
+      font-size: 11px;
+      color: var(--green);
+      flex: 1;
+      text-align: right;
+    }
+
     /* empty / loading states */
     .empty-state {
       text-align: center;
@@ -1307,6 +1314,11 @@
 
         const best = pts.reduce((b, p) => (p.mid > (b?.mid ?? -Infinity) ? p : b), null);
         const worst = pts.reduce((b, p) => (p.mid < (b?.mid ?? Infinity) ? p : b), null);
+        const tightest = pts.reduce((b, p) => {
+            if (p.bid == null || p.ask == null || p.ask <= p.bid) return b;
+            const s = p.ask - p.bid;
+            return (s < (b?.spread ?? Infinity)) ? { ...p, spread: s } : b;
+        }, null);
 
         const peakMid = best ? `$${fmt(best.mid, 4)}` : '--';
         const peakBA = best && best.bid != null && best.ask != null ? `(B $${fmt(best.bid, 2)} A $${fmt(best.ask, 2)})` : '';
@@ -1314,12 +1326,16 @@
         const lowMid = worst ? `$${fmt(worst.mid, 4)}` : '--';
         const lowBA = worst && worst.bid != null && worst.ask != null ? `(B $${fmt(worst.bid, 2)} A $${fmt(worst.ask, 2)})` : '';
         const lowSess = worst ? (sessLabels[worst.session] || worst.session) : '--';
+        const tightMid = tightest ? `$${fmt(tightest.mid, 4)}` : '--';
+        const tightBA = tightest ? `(B $${fmt(tightest.bid, 2)} A $${fmt(tightest.ask, 2)} $${fmt(tightest.spread, 2)})` : '';
+        const tightSess = tightest ? (sessLabels[tightest.session] || tightest.session) : '--';
 
         return `<div class="day-row" onclick="highlightDay('${d}')">
       <span class="date">${d}</span>
       <span class="chg ${chgCls}">${chgTxt}</span>
       <span class="peak-sess">🔺${peakMid} ${peakBA} @ ${peakSess}</span>
       <span class="low-sess">🔻${lowMid} ${lowBA} @ ${lowSess}</span>
+      <span class="tight-sess">🔹${tightMid} ${tightBA} @ ${tightSess}</span>
     </div>`;
       }).join('');
     }

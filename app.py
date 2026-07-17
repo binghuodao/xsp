@@ -206,8 +206,13 @@ def send_market_report(report_type, force=False):
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     skew = hs.get('skew', 0)
-    near_top = dup < 5
-    near_bottom = dlow < 5
+    atr14 = hs.get("atr_14")
+    if atr14 and atr14 > 0:
+        near_threshold = atr14 * 0.30
+    else:
+        near_threshold = bw * 0.10
+    near_top = (bbu - price) < near_threshold
+    near_bottom = (price - bbl) < near_threshold
 
     if near_top:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
