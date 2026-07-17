@@ -248,9 +248,9 @@ def send_market_report(report_type, force=False):
 
     # ETF reference
     if direction == 'CALL':
-        lines.append("★ 做多 SPYM（S&P500 低成本 ETF）")
+        lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
     elif direction == 'PUT':
-        lines.append("★ 做多 SH（S&P500 反向 ETF，大盘跌则涨）")
+        lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)")
 
     # Mid leg
     off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
@@ -260,20 +260,20 @@ def send_market_report(report_type, force=False):
     s = m + 10 if direction == 'PUT' else m - 10
     l = m - 5 if direction == 'PUT' else m + 5
 
-    expiry14 = _find_n_dte_expiry(14 + dte_adj)
-    ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
+    expiry_tree = _find_n_dte_expiry(7 + dte_adj)
+    ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
 
     def sym_str(strike, ot):
-        return f"US.XSP{ds14}{ot}{int(strike * 1000)}" if ds14 else None
+        return f"US.XSP{ds_tree}{ot}{int(strike * 1000)}" if ds_tree else None
 
     ot_type = 'P' if direction == 'PUT' else 'C'
 
-    if expiry14:
+    if expiry_tree:
         sym_s = sym_str(s, ot_type)
         sym_m = sym_str(m, ot_type)
         sym_l = sym_str(l, ot_type)
 
-        lines.append(f"═══ 14DTE {direction}树 ({expiry14}) ═══")
+        lines.append(f"═══ 7DTE {direction}树 ({expiry_tree}) ═══")
         lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
 
         for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
@@ -323,11 +323,11 @@ def send_market_report(report_type, force=False):
     }
     if direction:
         if direction == 'CALL':
-            _latest_report['etf'] = "★ 做多 SPYM（S&P500 低成本 ETF）"
+            _latest_report['etf'] = "★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)"
         else:
-            _latest_report['etf'] = "★ 做多 SH（S&P500 反向 ETF，大盘跌则涨）"
-        if expiry14:
-            _latest_report['tree_label'] = f"14DTE {direction}树 ({expiry14})"
+            _latest_report['etf'] = "★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)"
+        if expiry_tree:
+            _latest_report['tree_label'] = f"7DTE {direction}树 ({expiry_tree})"
             _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
             if all(v is not None for v in (s_mid, m_mid, l_mid)):
                 _latest_report['tree_mids'] = f"${s_mid:.2f} / ${m_mid:.2f} / ${l_mid:.2f}"
@@ -340,8 +340,8 @@ def send_market_report(report_type, force=False):
     socketio.emit('market_report', _latest_report)
 
     # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
-    if direction and expiry14 and ds14:
-        g_date = ds14
+    if direction and expiry_tree and ds_tree:
+        g_date = ds_tree
         g_short = str(int(s))
         g_mid = str(int(m))
         g_long = str(int(l))
