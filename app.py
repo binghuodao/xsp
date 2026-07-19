@@ -142,8 +142,18 @@ def _find_delta_strike(expiry, target_delta, opt_type='P'):
             best_diff, best_s, best_d = diff, o['strike'], d
     return best_s, best_d
 
+
+def _dte_from_yyyymmdd(yymmdd):
+    try:
+        exp = datetime.strptime('20' + yymmdd, '%Y%m%d')
+        return (exp - datetime.now(ET_TZ).replace(tzinfo=None)).days
+    except:
+        return None
+
+
 def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
+    global _prev_report_score, _prev_report_direction
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -234,94 +244,170 @@ def send_market_report(report_type, force=False):
              f"BBL ${bbl:.2f} | BBU ${bbu:.2f}",
              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
 
+    # ── 平仓提示 ──
+    try:
+        close_lines = []
+        for g in user_watchlist:
+            entry_str = g.get('entry', '').strip()
+            if not entry_str:
+                continue
+            try:
+                entry_val = float(entry_str)
+            except:
+                continue
+            g_date = g.get('date', '')
+            g_short = g.get('short', '')
+            g_mid = g.get('mid', '')
+            g_long = g.get('long', '')
+            g_opt = g.get('opt_type', 'P')
+            g_strategy = g.get('strategy', 'xmas')
+            if not g_date or not g_short:
+                continue
+            dte = _dte_from_yyyymmdd(g_date)
+            sym_s = f"US.XSP{g_date}{g_opt}{int(float(g_short) * 1000)}"
+            sym_m = f"US.XSP{g_date}{g_opt}{int(float(g_mid) * 1000)}" if g_mid else None
+            sym_l = f"US.XSP{g_date}{g_opt}{int(float(g_long) * 1000)}" if g_long else None
+            o_s = latest_data["options"].get(sym_s)
+            o_m = latest_data["options"].get(sym_m) if sym_m else None
+            o_l = latest_data["options"].get(sym_l) if sym_l else None
+            cur_mid = None
+            max_loss = None
+            if g_strategy == 'xmas' and o_s and o_m and o_l:
+                legs = {sym_s: o_s, sym_m: o_m, sym_l: o_l}
+                _, _, cur_mid = compute_combo_price(legs, sorted([sym_s, sym_m, sym_l]), 'xmas')
+                s_mid, m_mid, l_mid = o_s['mid'], o_m['mid'], o_l['mid']
+                if g_opt == 'P':
+                    combo_val = s_mid + 2 * l_mid - 3 * m_mid
+                else:
+                    combo_val = s_mid + 2 * l_mid - 3 * m_mid
+                max_loss = abs(combo_val * 100)
+            elif (g_strategy == 'spread' or g_strategy == 'bfly') and o_s and o_m and o_l:
+                legs = {sym_s: o_s, sym_m: o_m, sym_l: o_l}
+                _, _, cur_mid = compute_combo_price(legs, sorted([sym_s, sym_m, sym_l]), g_strategy)
+            elif not g_mid and not g_long and o_s:
+                cur_mid = o_s['mid']
+            else:
+                continue
+            if cur_mid is None:
+                continue
+            pnl = cur_mid - entry_val
+            pnl_pct = (pnl / entry_val * 100) if entry_val != 0 else 0
+            alerts = []
+            # (2) DTE ≤ 3
+            if dte is not None and dte <= 3:
+                alerts.append(f"仅剩{dte}天到期")
+            # (5) P&L ≥ 50% or ≤ -50%
+            if abs(pnl_pct) >= 50:
+                tag = '盈利' if pnl_pct > 0 else '亏损'
+                alerts.append(f"{tag}{pnl_pct:.0f}%")
+            # (6) Direction conflict
+            if direction and g_opt != direction:
+                alerts.append("方向冲突")
+            # (7) Weekend risk
+            now_et = datetime.now(ET_TZ)
+            if now_et.weekday() == 4:
+                alerts.append("周末持仓风险")
+            # (8) Max loss 80%
+            if max_loss is not None and pnl < 0:
+                cur_loss = -pnl * 100
+                if cur_loss >= max_loss * 0.8:
+                    alerts.append(f"浮亏达最大损失{cur_loss / max_loss * 100:.0f}%")
+            if alerts:
+                close_lines.append(f"  ⚠️ {g_date} {g_short}{g_opt}: {' | '.join(alerts)}")
+        # (3) BB middle
+        if not direction and score < 65:
+            close_lines.append("  💡 价格在BB中段，综合分不足，建议减少仓位")
+        # (4) Trend ended
+        if _prev_report_score >= 65 and score < 65:
+            close_lines.append("  💡 趋势结束（上期{:.0f}→本期{:.0f}），建议平仓".format(_prev_report_score, score))
+        elif _prev_report_direction and direction and _prev_report_direction != direction:
+            close_lines.append("  💡 方向已由{}转为{}，建议平仓".format(_prev_report_direction, direction))
+        _prev_report_score = score
+        _prev_report_direction = direction
+    except Exception as e:
+        print(f"⚠️ close_lines error: {e}")
+        close_lines = []
+
     if not direction:
-        msg = "\n".join(lines)
         _latest_report = {
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
         }
-        socketio.emit('market_report', _latest_report)
-        send_telegram(msg)
-        _mark_report_dedupe(report_type, today)
-        return
-
-    # ETF reference
-    if direction == 'CALL':
-        lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
-    elif direction == 'PUT':
-        lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)")
-
-    # Mid leg
-    off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
-    m = _s5(ema20 + off)
-
-    # Tree strikes
-    s = m + 10 if direction == 'PUT' else m - 10
-    l = m - 5 if direction == 'PUT' else m + 5
-
-    expiry_tree = _find_n_dte_expiry(7 + dte_adj)
-    ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
-
-    def sym_str(strike, ot):
-        return f"US.XSP{ds_tree}{ot}{int(strike * 1000)}" if ds_tree else None
-
-    ot_type = 'P' if direction == 'PUT' else 'C'
-
-    if expiry_tree:
-        sym_s = sym_str(s, ot_type)
-        sym_m = sym_str(m, ot_type)
-        sym_l = sym_str(l, ot_type)
-
-        lines.append(f"═══ 7DTE {direction}树 ({expiry_tree}) ═══")
-        lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
-
-        for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
-            mid = _opt_mid(sym)
-            hist = _get_hist_mid(sym)
-            p = f"${mid:.2f}" if mid is not None else "--"
-            if hist is not None:
-                p += f" | 历均 ${hist:.2f}"
-            lines.append(f"{label} {strike}  mid {p}")
-
-        s_mid = _opt_mid(sym_s)
-        m_mid = _opt_mid(sym_m)
-        l_mid = _opt_mid(sym_l)
-        if all(v is not None for v in (s_mid, m_mid, l_mid)):
-            combo_val = s_mid + 2 * l_mid - 3 * m_mid
-            tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
-            lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
-        lines.append("")
-
-        # Trending: 7DTE single long option
-        strike, delta, mid_single = None, None, None
-        if is_trend:
-            expiry7 = _find_n_dte_expiry(7 + dte_adj)
-            ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
-            if ds7:
-                td = 0.35 if direction == 'CALL' else -0.35
-                strike, delta = _find_delta_strike(expiry7, td, ot_type)
-                if strike:
-                    sym1 = f"US.XSP{ds7}{ot_type}{int(strike * 1000)}"
-                    mid = _opt_mid(sym1)
-                    hist = _get_hist_mid(sym1)
-                    p = f"${mid:.2f}" if mid is not None else "--"
-                    if hist is not None:
-                        p += f" | 历均 ${hist:.2f}"
-                    lines.append(f"═══ 7DTE 裸{ot_type} ═══")
-                    lines.append(f"{strike}{ot_type} (Δ {delta:+.3f})  mid {p}")
     else:
-        lines.append("⚠️ 无可用14DTE期权数据")
+        # ETF reference
+        if direction == 'CALL':
+            lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
+        elif direction == 'PUT':
+            lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)")
 
-    msg = "\n".join(lines)
+        # Mid leg
+        off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
+        m = _s5(ema20 + off)
 
-    # 更新前端展示
-    _latest_report = {
-        'title': title, 'time': now_et_str,
-        'icon': icon, 'score': score, 'slbl': slbl,
-        'direction': direction, 'reason': reason,
-    }
-    if direction:
+        # Tree strikes
+        s = m + 10 if direction == 'PUT' else m - 10
+        l = m - 5 if direction == 'PUT' else m + 5
+
+        expiry_tree = _find_n_dte_expiry(7 + dte_adj)
+        ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
+
+        def sym_str(strike, ot):
+            return f"US.XSP{ds_tree}{ot}{int(strike * 1000)}" if ds_tree else None
+
+        ot_type = 'P' if direction == 'PUT' else 'C'
+
+        if expiry_tree:
+            sym_s = sym_str(s, ot_type)
+            sym_m = sym_str(m, ot_type)
+            sym_l = sym_str(l, ot_type)
+
+            lines.append(f"═══ 7DTE {direction}树 ({expiry_tree}) ═══")
+            lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
+
+            for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
+                mid = _opt_mid(sym)
+                hist = _get_hist_mid(sym)
+                p = f"${mid:.2f}" if mid is not None else "--"
+                if hist is not None:
+                    p += f" | 历均 ${hist:.2f}"
+                lines.append(f"{label} {strike}  mid {p}")
+
+            s_mid = _opt_mid(sym_s)
+            m_mid = _opt_mid(sym_m)
+            l_mid = _opt_mid(sym_l)
+            if all(v is not None for v in (s_mid, m_mid, l_mid)):
+                combo_val = s_mid + 2 * l_mid - 3 * m_mid
+                tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
+                lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
+            lines.append("")
+
+            # Trending: 7DTE single long option
+            strike, delta, mid_single = None, None, None
+            if is_trend:
+                expiry7 = _find_n_dte_expiry(7 + dte_adj)
+                ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
+                if ds7:
+                    td = 0.35 if direction == 'CALL' else -0.35
+                    strike, delta = _find_delta_strike(expiry7, td, ot_type)
+                    if strike:
+                        sym1 = f"US.XSP{ds7}{ot_type}{int(strike * 1000)}"
+                        mid = _opt_mid(sym1)
+                        hist = _get_hist_mid(sym1)
+                        p = f"${mid:.2f}" if mid is not None else "--"
+                        if hist is not None:
+                            p += f" | 历均 ${hist:.2f}"
+                        lines.append(f"═══ 7DTE 裸{ot_type} ═══")
+                        lines.append(f"{strike}{ot_type} (Δ {delta:+.3f})  mid {p}")
+        else:
+            lines.append("⚠️ 无可用14DTE期权数据")
+
+        # 更新前端展示
+        _latest_report = {
+            'title': title, 'time': now_et_str,
+            'icon': icon, 'score': score, 'slbl': slbl,
+            'direction': direction, 'reason': reason,
+        }
         if direction == 'CALL':
             _latest_report['etf'] = "★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)"
         else:
@@ -337,34 +423,41 @@ def send_market_report(report_type, force=False):
             _latest_report['single_label'] = f"7DTE 裸{ot_type}"
             _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
             _latest_report['single_mid'] = f"${mid:.2f}"
+
+        # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
+        if direction and expiry_tree and ds_tree:
+            g_date = ds_tree
+            g_short = str(int(s))
+            g_mid = str(int(m))
+            g_long = str(int(l))
+            g_opt = ot_type
+            exists = any(
+                g.get('date') == g_date and g.get('short') == g_short
+                and g.get('mid') == g_mid and g.get('long') == g_long
+                and g.get('opt_type') == g_opt
+                for g in user_watchlist
+            )
+            if not exists:
+                user_watchlist.append({
+                    "date": g_date, "short": g_short, "mid": g_mid,
+                    "long": g_long, "opt_type": g_opt,
+                    "strategy": "xmas", "entry": ""
+                })
+                try:
+                    with open(WATCHLIST_FILE, 'w') as f:
+                        json.dump(user_watchlist, f)
+                except Exception as e:
+                    print(f"⚠️ Watchlist save failed: {e}")
+                socketio.emit('sync_watchlist', user_watchlist)
+
+    if close_lines:
+        lines.append("")
+        lines.append("━━━ 平仓提示 ━━━")
+        lines.extend(close_lines)
+        _latest_report['close_alerts'] = close_lines
+
+    msg = "\n".join(lines)
     socketio.emit('market_report', _latest_report)
-
-    # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
-    if direction and expiry_tree and ds_tree:
-        g_date = ds_tree
-        g_short = str(int(s))
-        g_mid = str(int(m))
-        g_long = str(int(l))
-        g_opt = ot_type
-        exists = any(
-            g.get('date') == g_date and g.get('short') == g_short
-            and g.get('mid') == g_mid and g.get('long') == g_long
-            and g.get('opt_type') == g_opt
-            for g in user_watchlist
-        )
-        if not exists:
-            user_watchlist.append({
-                "date": g_date, "short": g_short, "mid": g_mid,
-                "long": g_long, "opt_type": g_opt,
-                "strategy": "xmas", "entry": ""
-            })
-            try:
-                with open(WATCHLIST_FILE, 'w') as f:
-                    json.dump(user_watchlist, f)
-            except Exception as e:
-                print(f"⚠️ Watchlist save failed: {e}")
-            socketio.emit('sync_watchlist', user_watchlist)
-
     if not force:
         send_telegram(msg)
         _mark_report_dedupe(report_type, today)
@@ -427,6 +520,8 @@ latest_data = {
 }
 
 _toast_throttle = {"msg": "", "ts": 0}
+_prev_report_score = 0
+_prev_report_direction = None
 
 def emit_toast(sio, msg):
     global _toast_throttle
@@ -907,10 +1002,23 @@ def calc_skew_from_options():
     latest_data["index"]["skew"] = historical_stats["skew"]
 
 def start_moomoo():
-    global latest_data
+    global latest_data, user_watchlist
     print(f"🚀 Unified Snapshot Loop Active (Interval: {REFRESH_INTERVAL}s)...")
     
     with OpenQuoteContext(host=OPEND_ADDR, port=OPEND_PORT) as quote_ctx:
+        # 启动时清理过期 watchlist（不限时间，比 today 旧的都删）
+        now_et = datetime.now(ET_TZ)
+        today = now_et.strftime('%y%m%d')
+        before = len(user_watchlist)
+        user_watchlist = [g for g in user_watchlist if g.get('date', '') > today]
+        if len(user_watchlist) < before:
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"⚠️ Startup watchlist clean failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
+
         while True:
             try:
                 # 检查并更新历史统计数据 (VIX, ATR)
@@ -2078,21 +2186,24 @@ def handle_watchlist(data):
 
 @socketio.on('connect')
 def handle_connect():
-    # 当新设备连入时，立即同步当前的内存数据
-    socketio.emit('index_update', latest_data["index"])
-    socketio.emit('sync_watchlist', user_watchlist)
-    # 按照 Expiry 和 Strike 排序后再推送给前端（可选，前端 JS 也有排序逻辑）
-    for sym in latest_data["options"]:
-        socketio.emit('option_update', latest_data["options"][sym])
-    # 推送最新日报，空则尝试强制生成
-    if _latest_report:
-        socketio.emit('market_report', _latest_report)
-    else:
-        now_et = datetime.now(ET_TZ)
-        first, second = ('morning', 'evening') if now_et.hour < 12 else ('evening', 'morning')
-        send_market_report(first, force=True)
-        if not _latest_report:
-            send_market_report(second, force=True)
+    try:
+        # 当新设备连入时，立即同步当前的内存数据
+        socketio.emit('index_update', latest_data["index"])
+        socketio.emit('sync_watchlist', user_watchlist)
+        # 按照 Expiry 和 Strike 排序后再推送给前端（可选，前端 JS 也有排序逻辑）
+        for sym in latest_data["options"]:
+            socketio.emit('option_update', latest_data["options"][sym])
+        # 推送最新日报，空则尝试强制生成
+        if _latest_report:
+            socketio.emit('market_report', _latest_report)
+        else:
+            now_et = datetime.now(ET_TZ)
+            first, second = ('morning', 'evening') if now_et.hour < 12 else ('evening', 'morning')
+            send_market_report(first, force=True)
+            if not _latest_report:
+                send_market_report(second, force=True)
+    except Exception as e:
+        print(f"⚠️ Connect handler error: {e}")
 
 # --- AUTH ROUTES ---
 @app.route('/login')
