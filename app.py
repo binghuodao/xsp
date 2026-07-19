@@ -241,7 +241,7 @@ def send_market_report(report_type, force=False):
              f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
              f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | Skew {hs.get('skew',0):.1f}",
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
-             f"BBL ${bbl:.2f} | BBU ${bbu:.2f}",
+              f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
 
     # ── 平仓提示 ──
