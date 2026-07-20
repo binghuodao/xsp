@@ -138,7 +138,22 @@ def vol_ratio(close, period=10):
     vr = ((close - low) / (high - low).replace(0, np.nan)).fillna(0.5)
     return vr.clip(0, 1) * 2  # Scale to ~0-2 range
 
+# RSI(14)
+def rsi_indicator(close, period=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
 df['vr'] = vol_ratio(price_series, 10)
+
+# RSI(14) & Price/EMA20
+df['rsi_14'] = rsi_indicator(price_series, 14)
+df['price_ema20_pct'] = (df['price'] / df['ema_20'] - 1) * 100
 
 # Support/Resistance (Bollinger Bands)
 df['support'] = df['bbl']
@@ -214,6 +229,66 @@ def get_direction(row):
         return None, 'BB中段'
 
 # ────────────────────────────────────────────
+# 4b. Direction v2 — fusion logic
+# ────────────────────────────────────────────
+def get_direction_v2(row):
+    price = row['price']
+    bbu = row['bbu']
+    bbl = row['bbl']
+    bw = row['bw']
+    ema20 = row['ema_20']
+    di_diff = row['di_diff']
+    atr14 = row['atr_14']
+    score = row['score']
+    vix_pct = row.get('vix_percentile', 50)
+
+    if bbu == bbl or bw <= 0 or np.isnan(bw):
+        return None, 'insufficient_data', None
+
+    dup = (bbu - price) / bw * 100
+    dlow = (price - bbl) / bw * 100
+    if atr14 and atr14 > 0 and not np.isnan(atr14):
+        near_threshold = atr14 * 0.50
+    else:
+        near_threshold = bw * 0.10
+    near_top = (bbu - price) < near_threshold
+    near_bottom = (price - bbl) < near_threshold
+
+    is_trend = score >= 65
+    near_bb_overall = near_top or near_bottom
+
+    # Level 1: 趋势 (原有的非近轨趋势)
+    if not near_bb_overall and is_trend:
+        if di_diff > 0:
+            return 'CALL', f'DI+({di_diff:.2f})', 'trend'
+        elif di_diff < 0:
+            return 'PUT', f'DI-({di_diff:.2f})', 'trend'
+        else:
+            return None, 'trend_neutral', None
+
+    # Level 2: 近轨 + VIX高 → 确认反转
+    if near_top and score >= 60 and vix_pct > 75:
+        return 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
+    if near_bottom and score >= 60 and vix_pct > 75:
+        return 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)', 'nearbb_vix'
+
+    # Level 3: 矛盾过滤 — DI diff 与近轨方向相反 → 不开仓
+    if near_top and di_diff > 0:
+        return None, '矛盾:近上+DI+', 'filtered'
+    if near_bottom and di_diff < 0:
+        return None, '矛盾:近下+DI-', 'filtered'
+
+    # Level 4: 近轨 (原有逻辑) — 非矛盾 + 非VIX极端
+    if near_top and score >= 60:
+        return 'PUT', f'贴BB上轨({dup:.0f}%)', 'nearbb'
+    if near_bottom and score >= 60:
+        return 'CALL', f'贴BB下轨({dlow:.0f}%)', 'nearbb'
+    if near_top or near_bottom:
+        return None, 'BB中段', None   # score < 60
+
+    return None, 'BB中段', None
+
+# ────────────────────────────────────────────
 # 5. Rolling backtest
 # ────────────────────────────────────────────
 print("⏳ Running backtest...")
@@ -237,14 +312,16 @@ for i in range(len(rows)):
     if row['score'] is None:
         continue
 
+    # Old direction logic
     direction, reason = get_direction(row)
-    if direction is None:
-        # Still record for skip stats
-        row['direction'] = None
-        row['reason'] = reason
-        row['score'] = row.get('score', 0)
-        signals.append(row.copy())
-        continue
+    row['direction'] = direction
+    row['reason'] = reason
+
+    # New direction logic (fusion)
+    direction_v2, reason_v2, tier_v2 = get_direction_v2(row)
+    row['direction_v2'] = direction_v2
+    row['reason_v2'] = reason_v2
+    row['tier_v2'] = tier_v2
 
     # Check future price changes
     future_prices = {}
@@ -255,8 +332,6 @@ for i in range(len(rows)):
         else:
             future_prices[f't+{offset}'] = None
 
-    row['direction'] = direction
-    row['reason'] = reason
     row['price_t'] = row['price']
     for k, v in future_prices.items():
         row[k] = v
@@ -267,9 +342,8 @@ df_signals = pd.DataFrame(signals).set_index('date')
 # ────────────────────────────────────────────
 # 6. Accuracy evaluation
 # ────────────────────────────────────────────
-def eval_window(df_sig, offset_key):
-    """Evaluate direction accuracy for a given t+N window."""
-    valid = df_sig[df_sig['direction'].notna()].copy()
+def eval_col(df_sig, offset_key, dir_col):
+    valid = df_sig[df_sig[dir_col].notna()].copy()
     if valid.empty:
         return {}, 0, 0, 0, 0
     future_col = offset_key
@@ -278,107 +352,166 @@ def eval_window(df_sig, offset_key):
         return {}, 0, 0, 0, 0
     actual_change = valid[future_col].values - valid['price_t'].values
     actual_dir = np.where(actual_change > 0, 'CALL', 'PUT')
-    correct = valid['direction'].values == actual_dir
+    correct = valid[dir_col].values == actual_dir
     n_correct = int(correct.sum())
     n_total = len(correct)
     acc = n_correct / n_total if n_total > 0 else 0
-    tp = int(((valid['direction'].values == 'CALL') & (actual_dir == 'CALL')).sum())
-    fp = int(((valid['direction'].values == 'CALL') & (actual_dir == 'PUT')).sum())
-    tn = int(((valid['direction'].values == 'PUT') & (actual_dir == 'PUT')).sum())
-    fn = int(((valid['direction'].values == 'PUT') & (actual_dir == 'CALL')).sum())
+    tp = int(((valid[dir_col].values == 'CALL') & (actual_dir == 'CALL')).sum())
+    fp = int(((valid[dir_col].values == 'CALL') & (actual_dir == 'PUT')).sum())
+    tn = int(((valid[dir_col].values == 'PUT') & (actual_dir == 'PUT')).sum())
+    fn = int(((valid[dir_col].values == 'PUT') & (actual_dir == 'CALL')).sum())
     return {'accuracy': round(acc, 4), 'correct': n_correct, 'total': n_total,
             'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn}, n_correct, n_total, tp, fp, tn, fn
 
-results = {}
+# ── Old logic evaluation ──
+results_old = {}
 for offset in [1, 2, 3, 4, 5]:
     key = f't+{offset}'
-    r, *_ = eval_window(df_signals, key)
-    results[key] = r
+    r, *_ = eval_col(df_signals, key, 'direction')
+    results_old[key] = r
 
-# Per-scenario breakdown (t+3)
-has_signal = df_signals[df_signals['direction'].notna()].copy()
-near_bb = has_signal[has_signal['reason'].str.contains('贴BB', na=False)]
-trend = has_signal[~has_signal['reason'].str.contains('贴BB', na=False)]
-for name, subset in [('near_bb', near_bb), ('trend', trend)]:
+has_signal_old = df_signals[df_signals['direction'].notna()].copy()
+near_bb_old = has_signal_old[has_signal_old['reason'].str.contains('贴BB', na=False)]
+trend_old = has_signal_old[~has_signal_old['reason'].str.contains('贴BB', na=False)]
+for name, subset in [('near_bb', near_bb_old), ('trend', trend_old)]:
     if not subset.empty:
-        actual_change = subset['t+3'].values - subset['price_t'].values
-        actual_dir = np.where(actual_change > 0, 'CALL', 'PUT')
-        correct = subset['direction'].values == actual_dir
-        acc = correct.mean()
-        n_correct = int(correct.sum())
-        n_total = len(correct)
-        results[f'{name}_t+3'] = {'accuracy': round(acc, 4), 'correct': n_correct, 'total': n_total}
-        results[f'{name}_score_t+3'] = subset['score'].mean()
+        ac = subset['t+3'].values - subset['price_t'].values
+        ad = np.where(ac > 0, 'CALL', 'PUT')
+        c = subset['direction'].values == ad
+        results_old[f'{name}_t+3'] = {'accuracy': round(c.mean(), 4), 'correct': int(c.sum()), 'total': len(c)}
+        results_old[f'{name}_score_t+3'] = subset['score'].mean()
 
-# Monthly breakdown
-df_monthly = has_signal.copy()
-df_monthly['month'] = pd.DatetimeIndex(df_monthly.index).strftime('%Y-%m')
-monthly_accs = {}
-for month, grp in df_monthly.groupby('month'):
+n_signals_old = len(has_signal_old)
+n_total_all = len(df_signals)
+skip_reasons_old = df_signals[df_signals['direction'].isna()]['reason'].value_counts().to_dict()
+
+# ── New logic (fusion v2) evaluation ──
+results_new = {}
+for offset in [1, 2, 3, 4, 5]:
+    key = f't+{offset}'
+    r, *_ = eval_col(df_signals, key, 'direction_v2')
+    results_new[key] = r
+
+has_signal_new = df_signals[df_signals['direction_v2'].notna()].copy()
+n_signals_new = len(has_signal_new)
+skip_reasons_new = df_signals[df_signals['direction_v2'].isna()]['reason_v2'].value_counts().to_dict()
+
+# Per-tier breakdown (new logic, t+3)
+tier_labels = [
+    ('trend', '趋势(原有)'),
+    ('nearbb_vix', '近轨+VIX确认'),
+    ('nearbb', '近轨(原有)'),
+]
+for tier_key, _ in tier_labels:
+    subset = has_signal_new[has_signal_new['tier_v2'] == tier_key]
+    if not subset.empty:
+        ac = subset['t+3'].values - subset['price_t'].values
+        ad = np.where(ac > 0, 'CALL', 'PUT')
+        c = subset['direction_v2'].values == ad
+        results_new[f'{tier_key}_t+3'] = {'accuracy': round(c.mean(), 4), 'correct': int(c.sum()), 'total': len(c)}
+        results_new[f'{tier_key}_score'] = subset['score'].mean()
+    else:
+        results_new[f'{tier_key}_t+3'] = {'accuracy': 0, 'correct': 0, 'total': 0}
+        results_new[f'{tier_key}_score'] = 0
+
+# Comparison categories (新 / 旧 同口径)
+for name, tiers in [('near_bb', ['nearbb_vix', 'nearbb']), ('trend', ['trend'])]:
+    subset = has_signal_new[has_signal_new['tier_v2'].isin(tiers)]
+    if not subset.empty:
+        ac = subset['t+3'].values - subset['price_t'].values
+        ad = np.where(ac > 0, 'CALL', 'PUT')
+        c = subset['direction_v2'].values == ad
+        results_new[f'{name}_cmp_t+3'] = {'accuracy': round(c.mean(), 4), 'correct': int(c.sum()), 'total': len(c)}
+    else:
+        results_new[f'{name}_cmp_t+3'] = {'accuracy': 0, 'correct': 0, 'total': 0}
+
+# Monthly breakdown (new logic)
+df_monthly_new = has_signal_new.copy()
+df_monthly_new['month'] = pd.DatetimeIndex(df_monthly_new.index).strftime('%Y-%m')
+monthly_accs_new = {}
+for month, grp in df_monthly_new.groupby('month'):
     for offset in [1, 2, 3]:
         key = f't+{offset}'
         grp2 = grp[grp[key].notna()]
         if not grp2.empty:
-            actual_change = grp2[key].values - grp2['price_t'].values
-            actual_dir = np.where(actual_change > 0, 'CALL', 'PUT')
-            correct = grp2['direction'].values == actual_dir
-            monthly_accs.setdefault(month, {})[key] = round(correct.mean() * 100, 1)
-
-# Skip stats
-n_signals = len(has_signal)
-n_total = len(df_signals)
-n_skipped = n_total - n_signals
-skip_reasons = df_signals[df_signals['direction'].isna()]['reason'].value_counts().to_dict()
+            ac = grp2[key].values - grp2['price_t'].values
+            ad = np.where(ac > 0, 'CALL', 'PUT')
+            c = grp2['direction_v2'].values == ad
+            monthly_accs_new.setdefault(month, {})[key] = round(c.mean() * 100, 1)
 
 # ────────────────────────────────────────────
 # 7. Text report
 # ────────────────────────────────────────────
 lines = []
-lines.append("=" * 60)
-lines.append("XSP 市场早报方向准确率回测报告")
-lines.append("=" * 60)
+lines.append("=" * 80)
+lines.append("XSP 方向准确率回测 — 旧逻辑 vs 融合逻辑(v2)")
+lines.append("=" * 80)
 lines.append(f"数据范围: {df.index[0].date()} → {df.index[-1].date()}")
 lines.append(f"总交易日: {len(df)}")
-lines.append(f"信号天数: {n_signals} ({n_skipped} 天跳过)")
 lines.append("")
 
-lines.append("--- 跳过原因分布 ---")
-for reason, cnt in sorted(skip_reasons.items(), key=lambda x: -x[1]):
-    lines.append(f"  {reason}: {cnt} ({cnt/n_total*100:.1f}%)")
-
-lines.append("")
-lines.append(f"{'持有窗口':>10}  {'准确率':>8}  {'正确/总':>14}")
-lines.append("-" * 40)
+# ── Overall comparison ──
+lines.append(f"{'持有窗口':>15}  {'旧逻辑':>16}  {'融合v2':>16}")
+lines.append("-" * 55)
 for offset in [1, 2, 3, 4, 5]:
     key = f't+{offset}'
-    r = results.get(key, {})
+    ro = results_old.get(key, {})
+    rn = results_new.get(key, {})
+    acc_o = ro.get('accuracy', 0) * 100
+    n_o = ro.get('total', 0)
+    acc_n = rn.get('accuracy', 0) * 100
+    n_n = rn.get('total', 0)
+    lines.append(f"  {key:>12}  {acc_o:>6.1f}% ({n_o:>3})   {acc_n:>6.1f}% ({n_n:>3})")
+
+lines.append("")
+lines.append("--- 分场景对比 (t+3) ---")
+for label, old_key, cmp_key in [
+    ('近轨信号', 'near_bb_t+3', 'near_bb_cmp_t+3'),
+    ('趋势信号', 'trend_t+3', 'trend_cmp_t+3'),
+]:
+    ro = results_old.get(old_key, {})
+    rn = results_new.get(cmp_key, {})
+    lines.append(f"  {label:>12}: 旧 {ro.get('accuracy',0)*100:>5.1f}% ({ro.get('total',0)})  →  "
+                 f"新 {rn.get('accuracy',0)*100:>5.1f}% ({rn.get('total',0)})")
+
+
+lines.append("")
+lines.append("--- 融合v2 分Tier准确率 (t+3) ---")
+for tier_key, tier_label in tier_labels:
+    r = results_new.get(f'{tier_key}_t+3', {})
     acc = r.get('accuracy', 0)
     c = r.get('correct', 0)
     t = r.get('total', 0)
-    lines.append(f"{key:>10}  {acc*100:>7.1f}%  {c:>4}/{t:<4}")
-    if offset in (1, 2, 3):
-        cm = f"      TP={r.get('tp',0)} FP={r.get('fp',0)}  TN={r.get('tn',0)} FN={r.get('fn',0)}"
-        lines.append(f"{'':>10}  {cm}")
+    score = results_new.get(f'{tier_key}_score', 0)
+    if t > 0:
+        lines.append(f"  {tier_label:>16}: {acc*100:>5.1f}%  ({c}/{t})  Score {score:.0f}")
+    else:
+        lines.append(f"  {tier_label:>16}: —  (无信号)")
 
 lines.append("")
-lines.append("--- 分场景 (t+3) ---")
-for name, label in [('near_bb', '近轨信号'), ('trend', '趋势信号')]:
-    r = results.get(f'{name}_t+3', {})
-    acc = r.get('accuracy', 0)
-    c = r.get('correct', 0)
-    t = r.get('total', 0)
-    score = results.get(f'{name}_score_t+3', 0)
-    lines.append(f"  {label:>12}: {acc*100:>6.1f}%  ({c}/{t})  平均Score {score:.0f}")
+lines.append(f"旧逻辑: 信号 {n_signals_old}/{n_total_all} ({n_signals_old/n_total_all*100:.1f}%)")
+lines.append(f"融合v2: 信号 {n_signals_new}/{n_total_all} ({n_signals_new/n_total_all*100:.1f}%)")
 
 lines.append("")
-lines.append("--- 月度准确率 ---")
-monthly_months = sorted(monthly_accs.keys())
-lines.append(f"  {'月份':>8}  {'t+1':>7}  {'t+2':>7}  {'t+3':>7}  {'信号数':>7}")
-lines.append("  " + "-" * 42)
-for month in monthly_months:
-    m = monthly_accs[month]
-    cnt = len(has_signal[df_monthly['month'] == month])
-    lines.append(f"  {month:>8}  {m.get('t+1',0):>6.1f}%  {m.get('t+2',0):>6.1f}%  {m.get('t+3',0):>6.1f}%  {cnt:>6}")
+lines.append("--- 旧逻辑跳过原因 ---")
+for reason, cnt in sorted(skip_reasons_old.items(), key=lambda x: -x[1]):
+    lines.append(f"  {reason}: {cnt} ({cnt/n_total_all*100:.1f}%)")
+
+lines.append("")
+lines.append("--- 融合v2跳过原因 ---")
+for reason, cnt in sorted(skip_reasons_new.items(), key=lambda x: -x[1]):
+    lines.append(f"  {reason}: {cnt} ({cnt/n_total_all*100:.1f}%)")
+
+if len(monthly_accs_new) > 0:
+    lines.append("")
+    lines.append("--- 融合v2月度准确率 ---")
+    monthly_months_new = sorted(monthly_accs_new.keys())
+    lines.append(f"  {'月份':>8}  {'t+1':>7}  {'t+2':>7}  {'t+3':>7}  {'信号数':>7}")
+    lines.append("  " + "-" * 42)
+    for month in monthly_months_new:
+        m = monthly_accs_new[month]
+        cnt = len(has_signal_new[df_monthly_new['month'] == month])
+        lines.append(f"  {month:>8}  {m.get('t+1',0):>6.1f}%  {m.get('t+2',0):>6.1f}%  {m.get('t+3',0):>6.1f}%  {cnt:>6}")
 
 report = "\n".join(lines)
 print(report)
@@ -390,79 +523,99 @@ with open(os.path.join(OUT_DIR, 'backtest_results.txt'), 'w') as f:
 # 8. Charts
 # ────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-fig.suptitle('XSP Direction Accuracy Backtest', fontsize=16, fontweight='bold')
+fig.suptitle('XSP Direction Accuracy — Old vs Fusion(v2)', fontsize=16, fontweight='bold')
 
-# Chart 1: Accuracy vs Hold Days
+# Chart 1: Accuracy comparison
 ax1 = axes[0, 0]
 offsets = [1, 2, 3, 4, 5]
-accs_plot = [results[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
-bars = ax1.bar([f't+{o}' for o in offsets], accs_plot, color='steelblue', width=0.6)
-for bar, val in zip(bars, accs_plot):
+old_accs = [results_old[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
+new_accs = [results_new[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
+x = np.arange(len(offsets))
+w = 0.35
+bars1 = ax1.bar(x - w/2, old_accs, w, label='Old', color='steelblue', alpha=0.7)
+bars2 = ax1.bar(x + w/2, new_accs, w, label='Fusion v2', color='#2ecc71', alpha=0.8)
+for bar, val in zip(bars1, old_accs):
     ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-             f'{val:.1f}%', ha='center', va='bottom', fontsize=11)
+             f'{val:.1f}%', ha='center', va='bottom', fontsize=8, color='steelblue')
+for bar, val in zip(bars2, new_accs):
+    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+             f'{val:.1f}%', ha='center', va='bottom', fontsize=8, color='#2ecc71')
 ax1.axhline(y=50, color='gray', linestyle='--', alpha=0.5, label='50% (random)')
+ax1.set_xticks(x)
+ax1.set_xticklabels([f't+{o}' for o in offsets])
 ax1.set_ylabel('Accuracy (%)')
 ax1.set_title('Direction Accuracy vs Hold Days')
-ax1.set_ylim(0, max(accs_plot) + 8)
-ax1.legend()
+ax1.set_ylim(0, max(max(old_accs), max(new_accs)) + 10)
+ax1.legend(fontsize=8)
 
-# Chart 2: Monthly accuracy heatmap
+# Chart 2: Monthly accuracy heatmap (new logic)
 ax2 = axes[0, 1]
-months_show = monthly_months[-24:]
+monthly_months_new = sorted(monthly_accs_new.keys())
+months_show = monthly_months_new[-24:]
 if len(months_show) > 0:
-    t1_vals = [monthly_accs[m].get('t+1', 0) for m in months_show]
-    t2_vals = [monthly_accs[m].get('t+2', 0) for m in months_show]
-    t3_vals = [monthly_accs[m].get('t+3', 0) for m in months_show]
+    t1_vals = [monthly_accs_new[m].get('t+1', 0) for m in months_show]
+    t2_vals = [monthly_accs_new[m].get('t+2', 0) for m in months_show]
+    t3_vals = [monthly_accs_new[m].get('t+3', 0) for m in months_show]
     heat_data = np.array([t1_vals, t2_vals, t3_vals])
     im = ax2.imshow(heat_data, aspect='auto', cmap='RdYlGn', vmin=20, vmax=80)
     ax2.set_yticks([0, 1, 2])
     ax2.set_yticklabels(['t+1', 't+2', 't+3'])
     ax2.set_xticks(range(len(months_show)))
     ax2.set_xticklabels(months_show, rotation=45, ha='right', fontsize=8)
-    ax2.set_title('Monthly Accuracy Heatmap')
+    ax2.set_title('Monthly Accuracy (Fusion v2)')
     fig.colorbar(im, ax=ax2, shrink=0.8)
 
-# Chart 3: Signal type pie
+# Chart 3: Signal type pie (new)
 ax3 = axes[1, 0]
-near_bb_cnt = len(near_bb)
-trend_cnt = len(trend)
-skip_cnt = max(0, n_total - n_signals)
+tier_cnt = has_signal_new['tier_v2'].value_counts()
 pie_labels = []
 pie_values = []
 pie_colors = []
-if near_bb_cnt > 0:
-    pie_labels.append(f'Near-Band\n({near_bb_cnt})')
-    pie_values.append(near_bb_cnt)
-    pie_colors.append('#2ecc71')
-if trend_cnt > 0:
-    pie_labels.append(f'Trend\n({trend_cnt})')
-    pie_values.append(trend_cnt)
-    pie_colors.append('#3498db')
+tier_colors = {'trend': '#3498db', 'nearbb_vix': '#9b59b6', 'nearbb': '#2ecc71'}
+for tier_key, _ in tier_labels:
+    cnt = int(tier_cnt.get(tier_key, 0))
+    if cnt > 0:
+        short_label = {'trend': '趋势', 'nearbb_vix': '近轨+VIX', 'nearbb': '近轨'}[tier_key]
+        pie_labels.append(f'{short_label}\n({cnt})')
+        pie_values.append(cnt)
+        pie_colors.append(tier_colors.get(tier_key, '#95a5a6'))
+skip_cnt = n_total_all - n_signals_new
 if skip_cnt > 0:
     pie_labels.append(f'Skipped\n({skip_cnt})')
     pie_values.append(skip_cnt)
     pie_colors.append('#95a5a6')
-ax3.pie(pie_values, labels=pie_labels, colors=pie_colors, autopct='%1.1f%%', startangle=90)
-ax3.set_title('Signal Type Distribution')
+if pie_values:
+    ax3.pie(pie_values, labels=pie_labels, colors=pie_colors, autopct='%1.1f%%', startangle=90)
+ax3.set_title('Signal Distribution (Fusion v2)')
 
-# Chart 4: Cumulative return (simulated)
+# Chart 4: Cumulative return (new logic)
 ax4 = axes[1, 1]
-has_signal_sorted = has_signal.sort_index()
-if len(has_signal_sorted) > 0:
-    for offset, label, color in [(1, 't+1', '#3498db'), (2, 't+2', '#e67e22'), (3, 't+3', '#2ecc71')]:
+has_signal_new_sorted = has_signal_new.sort_index()
+if len(has_signal_new_sorted) > 0:
+    for offset, label, color in [(1, 't+1', '#3498db'), (3, 't+3', '#2ecc71')]:
         col = f't+{offset}'
-        sub = has_signal_sorted[has_signal_sorted[col].notna()].copy()
+        sub = has_signal_new_sorted[has_signal_new_sorted[col].notna()].copy()
         if len(sub) > 0:
             ret = (sub[col].values - sub['price_t'].values) / sub['price_t'].values
-            direction_val = np.where(sub['direction'].values == 'CALL', 1, -1)
-            daily_pnl = direction_val * ret * 10000  # 1 contract * return
+            direction_val = np.where(sub['direction_v2'].values == 'CALL', 1, -1)
+            daily_pnl = direction_val * ret * 10000
             cum = np.cumsum(daily_pnl)
-            ax4.plot(cum, label=label, color=color, alpha=0.8)
+            ax4.plot(cum, label=f'v2 {label}', color=color, alpha=0.8)
+    # Overlay old t+3 for reference
+    has_signal_old_sorted = has_signal_old.sort_index()
+    if len(has_signal_old_sorted) > 0:
+        sub = has_signal_old_sorted[has_signal_old_sorted['t+3'].notna()].copy()
+        if len(sub) > 0:
+            ret = (sub['t+3'].values - sub['price_t'].values) / sub['price_t'].values
+            direction_val = np.where(sub['direction'].values == 'CALL', 1, -1)
+            daily_pnl = direction_val * ret * 10000
+            cum = np.cumsum(daily_pnl)
+            ax4.plot(cum, label='old t+3', color='gray', alpha=0.4, linestyle='--')
     ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.3)
     ax4.set_xlabel('Trades')
     ax4.set_ylabel('Cumulative PnL ($)')
     ax4.set_title('Simulated Cumulative Return (1 contract/trade)')
-    ax4.legend()
+    ax4.legend(fontsize=8)
 
 plt.tight_layout(rect=[0, 0, 1, 0.95])
 chart_path = os.path.join(OUT_DIR, 'backtest_charts.png')

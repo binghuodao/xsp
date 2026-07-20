@@ -212,10 +212,11 @@ def send_market_report(report_type, force=False):
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
     is_trend = score >= 65
 
-    # Direction
+    # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     di_diff = hs.get('di_diff', 0)
+    vix_pct = hs.get('vix_percentile', 50)
     atr14 = hs.get("atr_14")
     if atr14 and atr14 > 0:
         near_threshold = atr14 * 0.50
@@ -223,21 +224,35 @@ def send_market_report(report_type, force=False):
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
+    near_bb_overall = near_top or near_bottom
 
-    if near_top and score >= 60:
+    # Level 1: 趋势 (非近轨时)
+    if not near_bb_overall and is_trend:
+        if di_diff > 0:
+            direction, reason = 'CALL', f'DI+({di_diff:.2f})'
+        elif di_diff < 0:
+            direction, reason = 'PUT', f'DI-({di_diff:.2f})'
+        else:
+            direction, reason = None, 'BB 中段'
+    # Level 2: 近轨 + VIX高 → 确认反转
+    elif near_top and score >= 60 and vix_pct > 75:
+        direction, reason = 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)'
+    elif near_bottom and score >= 60 and vix_pct > 75:
+        direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
+    # Level 3: 矛盾过滤
+    elif near_top and di_diff > 0:
+        direction, reason = None, 'BB 中段'
+    elif near_bottom and di_diff < 0:
+        direction, reason = None, 'BB 中段'
+    # Level 4: 近轨 (原有)
+    elif near_top and score >= 60:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
     elif near_bottom and score >= 60:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
-        direction = None
-        reason = 'BB 中段'
-    elif is_trend:
-        direction, reason = ('CALL', f'DI+({di_diff:.2f})') if di_diff > 0 else ('PUT', f'DI-({di_diff:.2f})') if di_diff < 0 else (None, 'trend_neutral')
-        if direction is None:
-            reason = 'BB 中段'
+        direction, reason = None, 'BB 中段'
     else:
-        direction = None
-        reason = 'BB 中段'
+        direction, reason = None, 'BB 中段'
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -798,6 +813,21 @@ def update_historical_data():
                 avg_vol = vol.rolling(20).mean()
                 vr_val = vol.iloc[-1] / avg_vol.iloc[-1]
                 historical_stats["vr"] = float(vr_val)
+
+                # 6. RSI(14)
+                delta = close.diff()
+                gain = delta.clip(lower=0)
+                loss = (-delta).clip(lower=0)
+                avg_gain = gain.rolling(14).mean()
+                avg_loss = loss.rolling(14).mean()
+                rs = avg_gain / avg_loss.replace(0, float('nan'))
+                rsi_14 = 100 - (100 / (1 + rs))
+                historical_stats["rsi_14"] = float(rsi_14.iloc[-1])
+
+                # 7. Price/EMA20 ratio (%)
+                ema20_price = close.ewm(span=20, adjust=False).mean()
+                pe_ratio = (close.iloc[-1] / ema20_price.iloc[-1] - 1) * 100
+                historical_stats["price_ema20_pct"] = float(pe_ratio)
         except Exception as spy_err:
             emit_toast(socketio, f"⚠️ SPY 趋势数据获取失败: {spy_err}")
 
@@ -1056,7 +1086,9 @@ def start_moomoo():
                         "dev": historical_stats["dev"],
                         "vr": historical_stats["vr"],
                         "support": historical_stats["support"],
-                        "resistance": historical_stats["resistance"]
+                        "resistance": historical_stats["resistance"],
+                        "rsi_14": historical_stats.get("rsi_14", 50),
+                        "price_ema20_pct": historical_stats.get("price_ema20_pct", 0)
                     }
                     if mes_price is not None:
                         latest_data["index"]["mes_price"] = mes_price

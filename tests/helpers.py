@@ -43,6 +43,8 @@ def std_hs(**overrides):
         'support': 740.0, 'resistance': 760.0,
         'bw': 20.0, 'bbl': 740.0, 'bbu': 760.0,
         'di_diff': 0.0,
+        'rsi_14': 50.0,
+        'price_ema20_pct': 0.0,
     }
     hs.update(overrides)
     return hs
