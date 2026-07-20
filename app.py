@@ -254,6 +254,14 @@ def send_market_report(report_type, force=False):
     else:
         direction, reason = None, 'BB 中段'
 
+    # SKEW filter: 尾部风险低不做空, 尾部风险高不做多
+    if direction is not None:
+        skew_val = hs.get('skew_index', 146)
+        if direction == 'PUT' and skew_val < 140:
+            direction, reason = None, 'BB 中段'
+        elif direction == 'CALL' and skew_val > 155:
+            direction, reason = None, 'BB 中段'
+
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
              "━━━━━━━━━━━━━━━━━━━━━",
@@ -579,6 +587,7 @@ historical_stats = {
     "vr": 1.0,
     "support": 0.0,
     "resistance": 0.0,
+    "skew_index": 146.0,
     "last_updated": 0
 }
 
@@ -751,7 +760,17 @@ def update_historical_data():
             historical_stats["vix"] = float(current_vix)
             historical_stats["vix_rank"] = float(vix_rank) * 100
             historical_stats["vix_percentile"] = float(vix_percentile) * 100
-            
+
+        # SKEW Index
+        try:
+            skew_df = yf.download("^SKEW", period="1mo")
+            skew_df.columns = [c[0] for c in skew_df.columns]
+            if not skew_df.empty:
+                historical_stats["skew_index"] = float(skew_df['Close'].iloc[-1])
+        except Exception as skew_err:
+            print(f"⚠️  SKEW download failed: {skew_err}")
+            historical_stats["skew_index"] = 146.0  # fallback to mean
+
         # XSP ATR 14 & EMA 20
         xsp_ticker = yf.Ticker("^XSP")
         xsp_hist = xsp_ticker.history(period="2mo")
@@ -832,7 +851,8 @@ def update_historical_data():
             emit_toast(socketio, f"⚠️ SPY 趋势数据获取失败: {spy_err}")
 
         historical_stats["last_updated"] = now_ts
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, DI={historical_stats['di_diff']:+.3f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x")
+        skew_idx = historical_stats.get('skew_index', 146)
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, DI={historical_stats['di_diff']:+.3f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x, SKEW_Idx={skew_idx:.1f}")
     except Exception as e:
         emit_toast(socketio, f"⚠️ 历史数据更新失败: {e}")
 
@@ -1088,7 +1108,8 @@ def start_moomoo():
                         "support": historical_stats["support"],
                         "resistance": historical_stats["resistance"],
                         "rsi_14": historical_stats.get("rsi_14", 50),
-                        "price_ema20_pct": historical_stats.get("price_ema20_pct", 0)
+                        "price_ema20_pct": historical_stats.get("price_ema20_pct", 0),
+                        "skew_index": historical_stats.get("skew_index", 146)
                     }
                     if mes_price is not None:
                         latest_data["index"]["mes_price"] = mes_price

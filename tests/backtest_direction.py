@@ -30,10 +30,16 @@ vix = yf.download("^VIX", period="3y", interval="1d", auto_adjust=False)
 vix.columns = [c[0] for c in vix.columns]
 vix.index = pd.to_datetime(vix.index)
 
+print("⏳ Fetching ^SKEW data...")
+skew_data = yf.download("^SKEW", period="3y", interval="1d", auto_adjust=False)
+skew_data.columns = [c[0] for c in skew_data.columns]
+skew_data.index = pd.to_datetime(skew_data.index)
+
 # Use adjusted close if available
 close_col = 'Adj Close' if 'Adj Close' in xsp.columns else 'Close'
 price_series = xsp[close_col]
 vix_close = vix['Close'] if 'Close' in vix.columns else vix['Adj Close']
+skew_close = skew_data['Close'] if 'Close' in skew_data.columns else skew_data['Adj Close']
 
 # ────────────────────────────────────────────
 # 2. Compute indicators (identical to app.py)
@@ -63,6 +69,10 @@ for i in range(n_vix):
 df['vix'] = vi
 df['vix_rank'] = vix_rank_arr
 df['vix_percentile'] = vix_pct_arr
+
+# SKEW index
+skew_aligned = skew_close.reindex(df.index, method='ffill')
+df['skew_index'] = skew_aligned.values.astype(float)
 
 # EMA20
 df['ema_20'] = df['price'].ewm(span=20, min_periods=20).mean()
@@ -289,6 +299,23 @@ def get_direction_v2(row):
     return None, 'BB中段', None
 
 # ────────────────────────────────────────────
+# 4c. SKEW filter wrappers
+# ────────────────────────────────────────────
+def get_direction_v2_skew(row):
+    """V2 direction + SKEW filter:
+       PUT + low SKEW (<140) → skip (no tail risk, don't short)
+       CALL + high SKEW (>155) → skip (tail risk, don't go long)"""
+    d, r, t = get_direction_v2(row)
+    if d is None:
+        return None, r, None
+    skew = row.get('skew_index', 146)
+    if d == 'PUT' and skew < 140:
+        return None, f'skew_filtered_PUT({skew:.0f})', 'skew_filtered'
+    if d == 'CALL' and skew > 155:
+        return None, f'skew_filtered_CALL({skew:.0f})', 'skew_filtered'
+    return d, r + f'(SKEW={skew:.0f})', t
+
+# ────────────────────────────────────────────
 # 5. Rolling backtest
 # ────────────────────────────────────────────
 print("⏳ Running backtest...")
@@ -322,6 +349,12 @@ for i in range(len(rows)):
     row['direction_v2'] = direction_v2
     row['reason_v2'] = reason_v2
     row['tier_v2'] = tier_v2
+
+    # V2 + SKEW filter
+    direction_v2s, reason_v2s, tier_v2s = get_direction_v2_skew(row)
+    row['direction_v2s'] = direction_v2s
+    row['reason_v2s'] = reason_v2s
+    row['tier_v2s'] = tier_v2s
 
     # Check future price changes
     future_prices = {}
@@ -439,29 +472,52 @@ for month, grp in df_monthly_new.groupby('month'):
             c = grp2['direction_v2'].values == ad
             monthly_accs_new.setdefault(month, {})[key] = round(c.mean() * 100, 1)
 
+# ── V2 + SKEW evaluation ──
+results_skew = {}
+for offset in [1, 2, 3, 4, 5]:
+    key = f't+{offset}'
+    r, *_ = eval_col(df_signals, key, 'direction_v2s')
+    results_skew[key] = r
+
+has_signal_skew = df_signals[df_signals['direction_v2s'].notna()].copy()
+n_signals_skew = len(has_signal_skew)
+skip_reasons_skew = df_signals[df_signals['direction_v2s'].isna()]['reason_v2s'].value_counts().to_dict()
+
+skew_filtered_count = len(df_signals[df_signals['tier_v2s'] == 'skew_filtered'])
+print(f"SKEW filters applied: {skew_filtered_count}")
+
+for tier_key, _ in tier_labels:
+    subset = has_signal_skew[has_signal_skew['tier_v2s'] == tier_key]
+    if not subset.empty:
+        ac = subset['t+3'].values - subset['price_t'].values
+        ad = np.where(ac > 0, 'CALL', 'PUT')
+        c = subset['direction_v2s'].values == ad
+        results_skew[f'{tier_key}_t+3'] = {'accuracy': round(c.mean(), 4), 'correct': int(c.sum()), 'total': len(c)}
+    else:
+        results_skew[f'{tier_key}_t+3'] = {'accuracy': 0, 'correct': 0, 'total': 0}
+
 # ────────────────────────────────────────────
 # 7. Text report
 # ────────────────────────────────────────────
 lines = []
-lines.append("=" * 80)
-lines.append("XSP 方向准确率回测 — 旧逻辑 vs 融合逻辑(v2)")
-lines.append("=" * 80)
+lines.append("=" * 95)
+lines.append("XSP 方向准确率回测 — 旧逻辑 vs V2 vs V2+SKEW")
+lines.append("=" * 95)
 lines.append(f"数据范围: {df.index[0].date()} → {df.index[-1].date()}")
 lines.append(f"总交易日: {len(df)}")
 lines.append("")
 
 # ── Overall comparison ──
-lines.append(f"{'持有窗口':>15}  {'旧逻辑':>16}  {'融合v2':>16}")
-lines.append("-" * 55)
+lines.append(f"{'持有窗口':>15}  {'旧逻辑':>16}  {'V2':>16}  {'V2+SKEW':>16}")
+lines.append("-" * 70)
 for offset in [1, 2, 3, 4, 5]:
     key = f't+{offset}'
     ro = results_old.get(key, {})
     rn = results_new.get(key, {})
-    acc_o = ro.get('accuracy', 0) * 100
-    n_o = ro.get('total', 0)
-    acc_n = rn.get('accuracy', 0) * 100
-    n_n = rn.get('total', 0)
-    lines.append(f"  {key:>12}  {acc_o:>6.1f}% ({n_o:>3})   {acc_n:>6.1f}% ({n_n:>3})")
+    rs = results_skew.get(key, {})
+    lines.append(f"  {key:>12}  {ro.get('accuracy',0)*100:>6.1f}% ({ro.get('total',0):>3})  "
+                 f"{rn.get('accuracy',0)*100:>6.1f}% ({rn.get('total',0):>3})  "
+                 f"{rs.get('accuracy',0)*100:>6.1f}% ({rs.get('total',0):>3})")
 
 lines.append("")
 lines.append("--- 分场景对比 (t+3) ---")
@@ -472,7 +528,7 @@ for label, old_key, cmp_key in [
     ro = results_old.get(old_key, {})
     rn = results_new.get(cmp_key, {})
     lines.append(f"  {label:>12}: 旧 {ro.get('accuracy',0)*100:>5.1f}% ({ro.get('total',0)})  →  "
-                 f"新 {rn.get('accuracy',0)*100:>5.1f}% ({rn.get('total',0)})")
+                 f"V2 {rn.get('accuracy',0)*100:>5.1f}% ({rn.get('total',0)})")
 
 
 lines.append("")
@@ -489,8 +545,22 @@ for tier_key, tier_label in tier_labels:
         lines.append(f"  {tier_label:>16}: —  (无信号)")
 
 lines.append("")
-lines.append(f"旧逻辑: 信号 {n_signals_old}/{n_total_all} ({n_signals_old/n_total_all*100:.1f}%)")
-lines.append(f"融合v2: 信号 {n_signals_new}/{n_total_all} ({n_signals_new/n_total_all*100:.1f}%)")
+lines.append("--- V2+SKEW 分Tier准确率 (t+3) ---")
+for tier_key, tier_label in tier_labels:
+    r = results_skew.get(f'{tier_key}_t+3', {})
+    acc = r.get('accuracy', 0)
+    c = r.get('correct', 0)
+    t = r.get('total', 0)
+    if t > 0:
+        lines.append(f"  {tier_label:>16}: {acc*100:>5.1f}%  ({c}/{t})")
+    else:
+        lines.append(f"  {tier_label:>16}: —  (无信号)")
+lines.append(f"  {'SKEW过滤(新增)':>16}: —  ({skew_filtered_count} 次过滤)")
+
+lines.append("")
+lines.append(f"旧逻辑:  信号 {n_signals_old}/{n_total_all} ({n_signals_old/n_total_all*100:.1f}%)")
+lines.append(f"V2:      信号 {n_signals_new}/{n_total_all} ({n_signals_new/n_total_all*100:.1f}%)")
+lines.append(f"V2+SKEW:信号 {n_signals_skew}/{n_total_all} ({n_signals_skew/n_total_all*100:.1f}%)")
 
 lines.append("")
 lines.append("--- 旧逻辑跳过原因 ---")
@@ -498,20 +568,14 @@ for reason, cnt in sorted(skip_reasons_old.items(), key=lambda x: -x[1]):
     lines.append(f"  {reason}: {cnt} ({cnt/n_total_all*100:.1f}%)")
 
 lines.append("")
-lines.append("--- 融合v2跳过原因 ---")
+lines.append("--- V2跳过原因 ---")
 for reason, cnt in sorted(skip_reasons_new.items(), key=lambda x: -x[1]):
     lines.append(f"  {reason}: {cnt} ({cnt/n_total_all*100:.1f}%)")
 
-if len(monthly_accs_new) > 0:
-    lines.append("")
-    lines.append("--- 融合v2月度准确率 ---")
-    monthly_months_new = sorted(monthly_accs_new.keys())
-    lines.append(f"  {'月份':>8}  {'t+1':>7}  {'t+2':>7}  {'t+3':>7}  {'信号数':>7}")
-    lines.append("  " + "-" * 42)
-    for month in monthly_months_new:
-        m = monthly_accs_new[month]
-        cnt = len(has_signal_new[df_monthly_new['month'] == month])
-        lines.append(f"  {month:>8}  {m.get('t+1',0):>6.1f}%  {m.get('t+2',0):>6.1f}%  {m.get('t+3',0):>6.1f}%  {cnt:>6}")
+lines.append("")
+lines.append("--- V2+SKEW跳过原因 ---")
+for reason, cnt in sorted(skip_reasons_skew.items(), key=lambda x: -x[1]):
+    lines.append(f"  {reason}: {cnt} ({cnt/n_total_all*100:.1f}%)")
 
 report = "\n".join(lines)
 print(report)
@@ -523,29 +587,34 @@ with open(os.path.join(OUT_DIR, 'backtest_results.txt'), 'w') as f:
 # 8. Charts
 # ────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-fig.suptitle('XSP Direction Accuracy — Old vs Fusion(v2)', fontsize=16, fontweight='bold')
+fig.suptitle('XSP Direction Accuracy — Old vs V2 vs V2+SKEW', fontsize=16, fontweight='bold')
 
 # Chart 1: Accuracy comparison
 ax1 = axes[0, 0]
 offsets = [1, 2, 3, 4, 5]
 old_accs = [results_old[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
-new_accs = [results_new[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
+v2_accs = [results_new[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
+skew_accs = [results_skew[f't+{o}'].get('accuracy', 0) * 100 for o in offsets]
 x = np.arange(len(offsets))
-w = 0.35
-bars1 = ax1.bar(x - w/2, old_accs, w, label='Old', color='steelblue', alpha=0.7)
-bars2 = ax1.bar(x + w/2, new_accs, w, label='Fusion v2', color='#2ecc71', alpha=0.8)
+w = 0.25
+bars1 = ax1.bar(x - w, old_accs, w, label='Old', color='steelblue', alpha=0.5)
+bars2 = ax1.bar(x, v2_accs, w, label='V2', color='#2ecc71', alpha=0.7)
+bars3 = ax1.bar(x + w, skew_accs, w, label='V2+SKEW', color='#e74c3c', alpha=0.8)
 for bar, val in zip(bars1, old_accs):
-    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-             f'{val:.1f}%', ha='center', va='bottom', fontsize=8, color='steelblue')
-for bar, val in zip(bars2, new_accs):
-    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-             f'{val:.1f}%', ha='center', va='bottom', fontsize=8, color='#2ecc71')
+    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
+             f'{val:.1f}%', ha='center', va='bottom', fontsize=7, color='steelblue')
+for bar, val in zip(bars2, v2_accs):
+    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
+             f'{val:.1f}%', ha='center', va='bottom', fontsize=7, color='#2ecc71')
+for bar, val in zip(bars3, skew_accs):
+    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
+             f'{val:.1f}%', ha='center', va='bottom', fontsize=7, color='#e74c3c')
 ax1.axhline(y=50, color='gray', linestyle='--', alpha=0.5, label='50% (random)')
 ax1.set_xticks(x)
 ax1.set_xticklabels([f't+{o}' for o in offsets])
 ax1.set_ylabel('Accuracy (%)')
 ax1.set_title('Direction Accuracy vs Hold Days')
-ax1.set_ylim(0, max(max(old_accs), max(new_accs)) + 10)
+ax1.set_ylim(0, max(max(old_accs), max(v2_accs), max(skew_accs)) + 10)
 ax1.legend(fontsize=8)
 
 # Chart 2: Monthly accuracy heatmap (new logic)

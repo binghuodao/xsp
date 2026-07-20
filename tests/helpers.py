@@ -45,6 +45,7 @@ def std_hs(**overrides):
         'di_diff': 0.0,
         'rsi_14': 50.0,
         'price_ema20_pct': 0.0,
+        'skew_index': 146.0,
     }
     hs.update(overrides)
     return hs
