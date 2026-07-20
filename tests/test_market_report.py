@@ -587,3 +587,115 @@ class TestOutputFormat:
         r = app._latest_report
         time_str = r.get('time', '')
         assert 'ET' in time_str, f"标题应包含ET时区: {time_str}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 2.9 信号强度 + 持有天数
+# ═══════════════════════════════════════════════════════════
+
+class TestSignalTier:
+
+    def test_signal_tier_strong(self, reset_globals, mock_sio):
+        """strong: di_diff>0, score≥72, skew_confirm"""
+        app.historical_stats.update(std_hs(di_diff=0.15, adx=35, er=0.7, vr=2.0, vix_rank=50, skew_index=143))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('direction') == 'CALL'
+        assert r.get('signal_tier') == 'strong'
+        assert r.get('tool_recommend', {}).get('naked_buy') == 2
+        assert r['tool_recommend']['etf_amount'] == 1500
+
+    def test_signal_tier_normal(self, reset_globals, mock_sio):
+        """normal: trending, skew passes filter (≤155) but fails confirm (≥145)"""
+        app.historical_stats.update(std_hs(
+            di_diff=0.10, adx=35, er=0.7, bbw=18, vr=2.0,
+            vix_rank=50, skew_index=150,
+        ))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('direction') == 'CALL'
+        assert r.get('signal_tier') == 'normal'
+        assert r.get('tool_recommend', {}).get('naked_buy') == 1
+        assert r['tool_recommend']['etf_amount'] == 1000
+
+    def test_signal_tier_weak(self, reset_globals, mock_sio):
+        """weak: direction exists but score<65 (near-BB with score≈63)"""
+        app.historical_stats.update(std_hs(
+            di_diff=-0.01, adx=30, er=0.55, bbw=18, dev=0.0, vr=1.0,
+            vix_rank=50, atr_14=8.0, bbl=740, bbu=760,
+        ))
+        app.latest_data["index"]["price"] = 758.5  # near BB top → PUT, score≈63
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('direction') is not None
+        assert r.get('signal_tier') == 'weak'
+        assert r.get('tool_recommend', {}).get('naked_buy') == 0
+        assert r['tool_recommend']['etf_amount'] == 500
+
+    def test_signal_tier_skew_downgrade(self, reset_globals, mock_sio):
+        """SKEW confirm fail (skew≥145 for CALL) → strong→normal"""
+        app.historical_stats.update(std_hs(
+            di_diff=0.15, adx=35, er=0.7, bbw=18, vr=2.0,
+            vix_rank=50, skew_index=150,
+        ))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('direction') == 'CALL'
+        assert r.get('signal_tier') == 'normal', f"expected normal, got {r.get('signal_tier')}"
+        assert r.get('tool_recommend', {}).get('naked_buy') == 1
+
+    def test_signal_tier_direction_none(self, reset_globals, mock_sio):
+        """direction=None → no signal_tier/tool_recommend"""
+        app.historical_stats.update(std_hs(adx=15, vr=0.8, atr_14=8.0, bbl=740, bbu=760))
+        app.latest_data["index"]["price"] = 750.0  # BB中段
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('direction') is None
+        assert r.get('signal_tier') is None
+        assert r.get('tool_recommend') is None
+
+    def test_holding_days_reset_on_direction_change(self, reset_globals, mock_sio):
+        """方向切换→holding_days=0"""
+        # First report: CALL
+        app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        r1 = app._latest_report
+        assert r1.get('holding_days') == 0
+        # Second report: PUT (different direction)
+        app.historical_stats.update(std_hs(di_diff=-0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.send_market_report('morning', force=True)
+        r2 = app._latest_report
+        assert r2.get('direction') == 'PUT'
+        assert r2.get('holding_days') == 0, "direction changed → holding_days should reset"
+
+    def test_holding_days_increment(self, reset_globals, mock_sio):
+        """同方向两次→holding_days=1"""
+        app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        r1 = app._latest_report
+        assert r1.get('holding_days') == 0
+        # Pretend next day: move _active_position_date back 1 day
+        from datetime import timedelta
+        app._active_position_date = app._active_position_date - timedelta(days=1)
+        app.send_market_report('morning', force=True)
+        r2 = app._latest_report
+        assert r2.get('holding_days') >= 1, f"expected ≥1, got {r2.get('holding_days')}"
+
+    def test_holding_alert_in_close_lines(self, reset_globals, mock_sio):
+        """持仓>3天→Telegram含换仓提示"""
+        # First report to establish direction
+        app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.latest_data["index"]["price"] = 750.0
+        app.send_market_report('morning', force=True)
+        # Simulate position opened 5 days ago
+        from datetime import timedelta
+        app._active_position_date = app._active_position_date - timedelta(days=5)
+        app.send_market_report('morning', force=True)
+        r = app._latest_report
+        assert r.get('holding_days', 0) >= 5
+        assert mock_sio.emit.called

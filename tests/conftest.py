@@ -1,5 +1,5 @@
 """Shared fixtures for XSP market report tests."""
-import os, sys, math, json, datetime
+import os, sys, math, json, datetime, tempfile
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -28,6 +28,8 @@ def reset_globals():
     app._prev_report_score = 0
     app._prev_report_direction = None
     app._last_watchlist_clean_date = None
+    app._active_position_date = None
+    app.POSITION_FILE = tempfile.mktemp(suffix='.json')
     app.user_watchlist = []
     app.latest_data = {
         "index": {"price": 750.0},

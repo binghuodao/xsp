@@ -46,6 +46,7 @@ MES_SYMBOL = 'US.MESmain'
 REFRESH_INTERVAL = args.refresh
 OPTION_DAYS = args.option_days
 WATCHLIST_FILE = 'watchlist.json'
+POSITION_FILE = 'position_tracker.json'
 
 # --- PREMIUM LOGGER SETTINGS ---
 DB_PATH      = 'premium_log.db'
@@ -79,6 +80,14 @@ def send_telegram(msg):
 _morning_report_date = ""
 _evening_report_date = ""
 _latest_report = {}
+_active_position_date = None
+try:
+    with open(POSITION_FILE) as f:
+        _pd = json.load(f)
+    if _pd.get('active_position_date'):
+        _active_position_date = datetime.datetime.strptime(_pd['active_position_date'], '%Y-%m-%d').date()
+except:
+    pass
 S_TZ = pytz.timezone('Australia/Sydney')
 
 def _s5(v):
@@ -153,7 +162,7 @@ def _dte_from_yyyymmdd(yymmdd):
 
 def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
-    global _prev_report_score, _prev_report_direction
+    global _prev_report_score, _prev_report_direction, _active_position_date
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -198,7 +207,8 @@ def send_market_report(report_type, force=False):
     # Trend composite
     W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
     T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
-         'bbw': [45, 30, 18, 10, 0], 'vr': [2.0, 1.3, .8, .5, 0]}
+         'bbw': [45, 30, 18, 10, 0], 'dev': [3.0, 1.5, 0.8, 0.3, 0],
+         'vr': [2.0, 1.3, .8, .5, 0]}
     total = 5
     for k, w in W.items():
         v = hs.get(k)
@@ -356,11 +366,58 @@ def send_market_report(report_type, force=False):
         print(f"⚠️ close_lines error: {e}")
         close_lines = []
 
+    # ── 信号强度 + 持有天数 ──
+    hs = historical_stats
+    di_strength = abs(hs.get('di_diff', 0))
+    skew_val = hs.get('skew_index', 146)
+    skew_confirm = (direction == 'CALL' and skew_val < 145) or (direction == 'PUT' and skew_val > 145)
+
+    if not direction:
+        signal_tier = None
+        tool_recommend = None
+        holding_days = 0
+        _active_position_date = None
+    else:
+        if direction != _prev_report_direction:
+            _active_position_date = datetime.now(ET_TZ).date()
+            holding_days = 0
+        else:
+            if _active_position_date:
+                holding_days = (datetime.now(ET_TZ).date() - _active_position_date).days
+            else:
+                _active_position_date = datetime.now(ET_TZ).date()
+                holding_days = 0
+
+        if di_strength > 0 and score >= 72 and skew_confirm:
+            signal_tier = 'strong'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
+            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
+            tool_recommend = {
+                'etf': etf3, 'etf_amount': 1500, 'naked_buy': 2,
+                'hold_3x_days': 3, 'switch_to_1x': etf1,
+            }
+        elif score >= 65:
+            signal_tier = 'normal'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
+            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
+            tool_recommend = {
+                'etf': etf3, 'etf_amount': 1000, 'naked_buy': 1,
+                'hold_3x_days': 3, 'switch_to_1x': etf1,
+            }
+        else:
+            signal_tier = 'weak'
+            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
+            tool_recommend = {
+                'etf': etf1, 'etf_amount': 500, 'naked_buy': 0,
+            }
+
     if not direction:
         _latest_report = {
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
+            'signal_tier': None, 'tool_recommend': None,
+            'holding_days': 0, 'active_position_date': None,
         }
     else:
         # ETF reference
@@ -453,6 +510,22 @@ def send_market_report(report_type, force=False):
             _latest_report['single_label'] = f"7DTE 裸{ot_type}"
             _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
             _latest_report['single_mid'] = f"${mid:.2f}"
+        _latest_report['signal_tier'] = signal_tier
+        _latest_report['tool_recommend'] = tool_recommend
+        _latest_report['holding_days'] = holding_days
+        _latest_report['active_position_date'] = str(_active_position_date) if _active_position_date else None
+
+        # Telegram 工具行
+        if tool_recommend:
+            lines.append("")
+            etf_info = f"{tool_recommend['etf']} ${tool_recommend['etf_amount']}"
+            if tool_recommend.get('naked_buy', 0) > 0:
+                etf_info += f" + 裸买 ×{tool_recommend['naked_buy']}"
+            lines.append(f"📋 强度: {signal_tier} | 工具: {etf_info}")
+            if tool_recommend.get('hold_3x_days'):
+                lines.append(f"⏱ 3x ≤3天 → {tool_recommend['switch_to_1x']}")
+        if holding_days > 3:
+            lines.append(f"⚠️ 已持仓{holding_days}天，建议换1x")
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
         if direction and expiry_tree and ds_tree:
@@ -488,6 +561,15 @@ def send_market_report(report_type, force=False):
 
     msg = "\n".join(lines)
     socketio.emit('market_report', _latest_report)
+    try:
+        with open(POSITION_FILE, 'w') as f:
+            json.dump({
+                'active_position_date': str(_active_position_date) if _active_position_date else None,
+                'prev_report_direction': _prev_report_direction,
+                'prev_report_score': _prev_report_score,
+            }, f)
+    except Exception as e:
+        print(f"⚠️ Position tracker save failed: {e}")
     if not force:
         send_telegram(msg)
         _mark_report_dedupe(report_type, today)

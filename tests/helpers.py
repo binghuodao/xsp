@@ -39,7 +39,7 @@ def std_hs(**overrides):
     hs = {
         'vix': 14.0, 'vix_rank': 30.0, 'vix_percentile': 35.0,
         'atr_14': 8.0, 'ema_20': 750.0, 'skew': 0.0,
-        'adx': 18.0, 'er': 0.30, 'bbw': 3.5, 'dev': 0.0, 'vr': 1.0,
+        'adx': 18.0, 'er': 0.30, 'bbw': 3.5, 'dev': 3.0, 'vr': 1.0,
         'support': 740.0, 'resistance': 760.0,
         'bw': 20.0, 'bbl': 740.0, 'bbu': 760.0,
         'di_diff': 0.0,
