@@ -538,6 +538,9 @@ class TestOutputFormat:
         assert 'SPYM' in r.get('etf', '')
         assert 'CALL树' in r.get('tree_label', '')
         assert '裸C' in r.get('single_label', '') or 'CALL' in r.get('single_label', '')
+        assert r.get('hold_plan') is not None
+        assert r['hold_plan'].get('tree_naked_close') is not None
+        assert r['hold_plan'].get('etf_1x_close') is not None
 
     def test_ranging_no_single_leg(self, reset_globals, mock_sio):
         """case 60: 震荡→有树、无裸买"""
@@ -558,6 +561,7 @@ class TestOutputFormat:
         assert 'etf' not in r
         assert 'tree_label' not in r
         assert 'single_label' not in r
+        assert 'hold_plan' not in r
 
     def test_close_alerts_in_report(self, reset_globals, mock_sio):
         """case 62: close_lines非空→包含在报告"""

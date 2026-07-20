@@ -527,6 +527,17 @@ def send_market_report(report_type, force=False):
         if holding_days > 3:
             lines.append(f"⚠️ 已持仓{holding_days}天，建议换1x")
 
+        # ── 持有计划 ──
+        today_et = datetime.now(ET_TZ).date()
+        d3_str = (today_et + timedelta(days=3)).strftime('%m/%d')
+        d5_str = (today_et + timedelta(days=5)).strftime('%m/%d')
+        hold_plan = {
+            'tree_naked_close': d3_str,
+            'etf_1x_close': d5_str,
+        }
+        lines.append(f"持仓策略: 树/裸→{d3_str}平 | ETF→{d5_str}平")
+        _latest_report['hold_plan'] = hold_plan
+
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
         if direction and expiry_tree and ds_tree:
             g_date = ds_tree
