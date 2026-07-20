@@ -352,10 +352,14 @@ def send_market_report(report_type, force=False):
         expiry_tree = _find_n_dte_expiry(7 + dte_adj)
         ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
 
-        def sym_str(strike, ot):
-            return f"US.XSP{ds_tree}{ot}{int(strike * 1000)}" if ds_tree else None
+        def sym_str(sk, ot):
+            return f"US.XSP{ds_tree}{ot}{int(sk * 1000)}" if ds_tree else None
 
         ot_type = 'P' if direction == 'PUT' else 'C'
+
+        # Trending: 7DTE single long option (initialized before expiry check)
+        strike, delta, mid_single = None, None, None
+        mid = None
 
         if expiry_tree:
             sym_s = sym_str(s, ot_type)
@@ -365,13 +369,13 @@ def send_market_report(report_type, force=False):
             lines.append(f"═══ 7DTE {direction}树 ({expiry_tree}) ═══")
             lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
 
-            for label, strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
+            for label, sk_strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
                 mid = _opt_mid(sym)
                 hist = _get_hist_mid(sym)
                 p = f"${mid:.2f}" if mid is not None else "--"
                 if hist is not None:
                     p += f" | 历均 ${hist:.2f}"
-                lines.append(f"{label} {strike}  mid {p}")
+                lines.append(f"{label} {sk_strike}  mid {p}")
 
             s_mid = _opt_mid(sym_s)
             m_mid = _opt_mid(sym_m)
@@ -382,8 +386,6 @@ def send_market_report(report_type, force=False):
                 lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
             lines.append("")
 
-            # Trending: 7DTE single long option
-            strike, delta, mid_single = None, None, None
             if is_trend:
                 expiry7 = _find_n_dte_expiry(7 + dte_adj)
                 ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
