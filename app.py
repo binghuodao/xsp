@@ -215,21 +215,26 @@ def send_market_report(report_type, force=False):
     # Direction
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
-    skew = hs.get('skew', 0)
+    di_diff = hs.get('di_diff', 0)
     atr14 = hs.get("atr_14")
     if atr14 and atr14 > 0:
-        near_threshold = atr14 * 0.30
+        near_threshold = atr14 * 0.50
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    if near_top:
+    if near_top and score >= 60:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom:
+    elif near_bottom and score >= 60:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
+    elif near_top or near_bottom:
+        direction = None
+        reason = 'BB 中段'
     elif is_trend:
-        direction, reason = ('PUT', f'Skew {skew:.1f}') if skew < 0 else ('CALL', f'Skew {skew:.1f}')
+        direction, reason = ('CALL', f'DI+({di_diff:.2f})') if di_diff > 0 else ('PUT', f'DI-({di_diff:.2f})') if di_diff < 0 else (None, 'trend_neutral')
+        if direction is None:
+            reason = 'BB 中段'
     else:
         direction = None
         reason = 'BB 中段'
@@ -239,7 +244,7 @@ def send_market_report(report_type, force=False):
              "━━━━━━━━━━━━━━━━━━━━━",
              f"{icon} 综合 {score} / {slbl}",
              f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
-             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | Skew {hs.get('skew',0):.1f}",
+             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | DI {hs.get('di_diff',0):+.2f}",
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
               f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
@@ -762,9 +767,12 @@ def update_historical_data():
                 low   = spy_daily['Low']
                 vol   = spy_daily['Volume']
 
-                # 1. ADX(14)
+                # 1. ADX(14) + Directional Indicators
                 adx_df = ta.adx(high, low, close, length=14)
                 historical_stats["adx"] = float(adx_df['ADX_14'].iloc[-1])
+                dmp = float(adx_df['DMP_14'].iloc[-1]) if 'DMP_14' in adx_df.columns else 0.0
+                dmn = float(adx_df['DMN_14'].iloc[-1]) if 'DMN_14' in adx_df.columns else 0.0
+                historical_stats["di_diff"] = round((dmp - dmn) / 100, 3)
 
                 # 2. Efficiency Ratio(10)
                 changes = close.diff().abs()
@@ -794,7 +802,7 @@ def update_historical_data():
             emit_toast(socketio, f"⚠️ SPY 趋势数据获取失败: {spy_err}")
 
         historical_stats["last_updated"] = now_ts
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x")
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, DI={historical_stats['di_diff']:+.3f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x")
     except Exception as e:
         emit_toast(socketio, f"⚠️ 历史数据更新失败: {e}")
 
@@ -1042,6 +1050,7 @@ def start_moomoo():
                         "ema_20": historical_stats["ema_20"],
                         "skew": historical_stats["skew"],
                         "adx": historical_stats["adx"],
+                        "di_diff": historical_stats["di_diff"],
                         "er": historical_stats["er"],
                         "bbw": historical_stats["bbw"],
                         "dev": historical_stats["dev"],

@@ -39,37 +39,37 @@ class TestTrendIdentification:
 
 class TestDirection:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_dir,exp_reason_substr", [
-        # case 5: 震荡 + 近BB上轨 → PUT
+        # case 4: 震荡 + 近BB上轨 → PUT (score ≥ 60)
         ("震荡+近BB上轨→PUT",
-         {'adx': 15, 'vr': 0.8, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
+         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          758.5, 'PUT', '贴BB上轨'),
-        # case 6: 震荡 + 近BB下轨 → CALL
+        # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 60)
         ("震荡+近BB下轨→CALL",
-         {'adx': 15, 'vr': 0.8, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
+         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          741.5, 'CALL', '贴BB下轨'),
         # case 7: 震荡 + BB中段 → None
         ("震荡+BB中段→None",
          {'adx': 15, 'vr': 0.8, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          750.0, None, 'BB 中段'),
-        # case 8: 单边上升趋势 → CALL
+        # case 8: 单边上升趋势 → CALL (DI+ > 0)
         ("case 8: 单边上升趋势 → CALL",
-         {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'skew': 3.5, 'bbl': 740, 'bbu': 760},
-         750.0, 'CALL', 'Skew'),
-        # case 9: 单边下降趋势 → PUT
+         {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': 0.12, 'bbl': 740, 'bbu': 760},
+         750.0, 'CALL', 'DI+'),
+        # case 9: 单边下降趋势 → PUT (DI- < 0)
         ("单边下降→PUT",
-         {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'skew': -2.1, 'bbl': 740, 'bbu': 760},
-         750.0, 'PUT', 'Skew'),
-        # case 10: 近轨阈值 ATR14 可用
-        ("ATR14阈值:价差<ATR14*30%→PUT",
-         {'adx': 15, 'vr': 0.8, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
+         {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': -0.10, 'bbl': 740, 'bbu': 760},
+         750.0, 'PUT', 'DI-'),
+        # case 10: 近轨阈值 ATR14×50% 可用 (gap=2.0 < 4.0)
+        ("ATR14阈值:价差<ATR14*50%→PUT",
+         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          758.0, 'PUT', '贴BB上轨'),
         # case 11: 近轨阈值 ATR14 不可用，降级 BW×10%（gap=1.5 < 2.0）
         ("ATR14不可用→降级BW×10%",
-         {'adx': 15, 'vr': 0.8, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
+         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
          758.5, 'PUT', '贴BB上轨'),
         # case 12: ATR14不可用且价差超BW×10% → 不触发近轨
         ("ATR14不可用且价差超BW×10%→不触发",
-         {'adx': 15, 'vr': 0.8, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
+         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
          757.0, None, 'BB 中段'),
     ])
     def test_direction(self, reset_globals, mock_sio, desc, hs_overrides, price, exp_dir, exp_reason_substr):
@@ -153,8 +153,8 @@ class TestNakedBuy:
 
 class TestETFReference:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_etf_substr", [
-        ("case 19: PUT→做空ETF", {'skew': -2, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SH'),
-        ("case 20: CALL→做多ETF", {'skew': 2, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SPYM'),
+        ("case 19: PUT→做空ETF", {'di_diff': -0.10, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SH'),
+        ("case 20: CALL→做多ETF", {'di_diff': 0.10, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SPYM'),
         ("case 21: None→无ETF行", {'adx': 15, 'vr': 0.8}, 750, None),
     ])
     def test_etf(self, reset_globals, mock_sio, desc, hs_overrides, price, exp_etf_substr):
@@ -177,7 +177,8 @@ class TestCloseAlerts:
         app.user_watchlist = entries
 
     def run_report(self, direction_setup='CALL'):
-        hs = std_hs(skew=2.0 if direction_setup == 'CALL' else -2.0, adx=35, er=0.6, vr=1.8, vix_rank=50)
+        di_val = 0.10 if direction_setup == 'CALL' else -0.10
+        hs = std_hs(di_diff=di_val, adx=35, er=0.6, vr=1.8, vix_rank=50)
         app.historical_stats.update(hs)
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
@@ -253,7 +254,7 @@ class TestCloseAlerts:
         self.setup_watchlist([
             make_wl_entry('260724', 755, 745, 740, 'P', entry='1.50'),
         ])
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -266,7 +267,7 @@ class TestCloseAlerts:
         ])
         app._prev_report_score = 72
         app._prev_report_direction = 'PUT'
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -280,7 +281,7 @@ class TestCloseAlerts:
         ])
         app._prev_report_score = 72
         app._prev_report_direction = 'PUT'
-        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, skew=3.0))
+        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, di_diff=0.10))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -294,7 +295,7 @@ class TestCloseAlerts:
         ])
         app._prev_report_score = 0
         app._prev_report_direction = None
-        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, skew=3.0))
+        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, di_diff=0.10))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -307,7 +308,7 @@ class TestCloseAlerts:
             make_wl_entry('260724', 755, 745, 740, 'P', entry='1.50'),
         ])
         app._prev_report_score = 70
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0
         # score will be < 65 since is_trend=False, so this depends on actual score calc
         app.send_market_report('morning', force=True)
@@ -318,7 +319,7 @@ class TestCloseAlerts:
         self.setup_watchlist([
             make_wl_entry('260717', 755, 745, 740, 'P', entry='1.50'),
         ])
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -476,11 +477,11 @@ class TestEdgeCases:
     def test_no_expiry_found(self, reset_globals, mock_sio):
         """case 52: 找不到到期日→跳过树/裸买"""
         app.latest_data["options"] = {}
-        app.historical_stats.update(std_hs(skew=3.0, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
-        # 方向应有（trending, skew→CALL），但树和裸买可能缺失（无期权数据）
+        # 方向应有（trending, di_diff→CALL），但树和裸买可能缺失（无期权数据）
         assert r.get('direction') is not None
 
     def test_wl_missing_fields(self, reset_globals, mock_sio):
@@ -517,7 +518,7 @@ class TestEdgeCases:
 class TestOutputFormat:
     def test_full_report_trending_put(self, reset_globals, mock_sio):
         """case 58: 趋势PUT→含ETF+树+裸买+方向行"""
-        app.historical_stats.update(std_hs(skew=-3.0, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.historical_stats.update(std_hs(di_diff=-0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -529,7 +530,7 @@ class TestOutputFormat:
 
     def test_full_report_trending_call(self, reset_globals, mock_sio):
         """case 59: 趋势CALL→含ETF+树+裸买"""
-        app.historical_stats.update(std_hs(skew=3.0, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -540,8 +541,8 @@ class TestOutputFormat:
 
     def test_ranging_no_single_leg(self, reset_globals, mock_sio):
         """case 60: 震荡→有树、无裸买"""
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
-        app.latest_data["index"]["price"] = 758.0  # 近BB上轨
+        app.historical_stats.update(std_hs(adx=25, er=0.65, vr=1.0, atr_14=8.0, bbw=3.5))
+        app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*50%=4.0)
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') in ('PUT', 'CALL')
@@ -549,7 +550,7 @@ class TestOutputFormat:
 
     def test_direction_none_format(self, reset_globals, mock_sio):
         """case 61: direction=None→无ETF/树/裸买"""
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0  # BB中段
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -563,7 +564,7 @@ class TestOutputFormat:
         app.user_watchlist = [
             make_wl_entry('260717', 755, 745, 740, 'P', entry='1.50'),
         ]
-        app.historical_stats.update(std_hs(adx=15, vr=0.8, skew=0))
+        app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
@@ -572,7 +573,7 @@ class TestOutputFormat:
     def test_close_alerts_empty(self, reset_globals, mock_sio):
         """case 63: close_lines为空→close_alerts不存在或为空"""
         app.user_watchlist = []
-        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, skew=3.0, atr_14=8))
+        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, di_diff=0.10, atr_14=8))
         app.latest_data["index"]["price"] = 741.5  # near BB bottom → CALL, no BB中段
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', None)
@@ -580,9 +581,8 @@ class TestOutputFormat:
 
     def test_title_has_et_date(self, reset_globals, mock_sio):
         """case 64: 报告标题含ET时间"""
-        app.historical_stats.update(std_hs(adx=28, skew=3.0))
+        app.historical_stats.update(std_hs(adx=35, er=0.6, vr=1.8, vix_rank=50, di_diff=0.10))
         app.latest_data["index"]["price"] = 750.0
-        # We'll patch the now_et_str to check format
         app.send_market_report('morning', force=True)
         r = app._latest_report
         time_str = r.get('time', '')

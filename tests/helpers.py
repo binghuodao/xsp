@@ -42,6 +42,7 @@ def std_hs(**overrides):
         'adx': 18.0, 'er': 0.30, 'bbw': 3.5, 'dev': 0.0, 'vr': 1.0,
         'support': 740.0, 'resistance': 760.0,
         'bw': 20.0, 'bbl': 740.0, 'bbu': 760.0,
+        'di_diff': 0.0,
     }
     hs.update(overrides)
     return hs
