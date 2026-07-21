@@ -207,7 +207,7 @@ def get_direction(row):
     di_diff = row['di_diff']
     atr14 = row['atr_14']
     score = row['score']
-    is_trend = score >= 65
+    is_trend = score >= 55
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
@@ -215,15 +215,15 @@ def get_direction(row):
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     if atr14 and atr14 > 0 and not np.isnan(atr14):
-        near_threshold = atr14 * 0.50
+        near_threshold = atr14 * 0.30
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    if near_top and score >= 60:
+    if near_top and score >= 50:
         return 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 60:
+    elif near_bottom and score >= 50:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top:
         return None, 'BB中段'
@@ -259,13 +259,13 @@ def get_direction_v2(row):
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     if atr14 and atr14 > 0 and not np.isnan(atr14):
-        near_threshold = atr14 * 0.50
+        near_threshold = atr14 * 0.30
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    is_trend = score >= 65
+    is_trend = score >= 55
     near_bb_overall = near_top or near_bottom
 
     # Level 1: 趋势 (原有的非近轨趋势)
@@ -278,9 +278,9 @@ def get_direction_v2(row):
             return None, 'trend_neutral', None
 
     # Level 2: 近轨 + VIX高 → 确认反转
-    if near_top and score >= 60 and vix_pct > 75:
+    if near_top and score >= 50 and vix_pct > 75:
         return 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
-    if near_bottom and score >= 60 and vix_pct > 75:
+    if near_bottom and score >= 50 and vix_pct > 75:
         return 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)', 'nearbb_vix'
 
     # Level 3: 矛盾过滤 — DI diff 与近轨方向相反 → 不开仓
@@ -290,9 +290,9 @@ def get_direction_v2(row):
         return None, '矛盾:近下+DI-', 'filtered'
 
     # Level 4: 近轨 (原有逻辑) — 非矛盾 + 非VIX极端
-    if near_top and score >= 60:
+    if near_top and score >= 50:
         return 'PUT', f'贴BB上轨({dup:.0f}%)', 'nearbb'
-    if near_bottom and score >= 60:
+    if near_bottom and score >= 50:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)', 'nearbb'
     if near_top or near_bottom:
         return None, 'BB中段', None   # score < 60

@@ -1879,6 +1879,8 @@
                     html += ' | <span style="color:#8b949e;">\u5f00\u4ed3 ' + r.active_position_date + '</span>';
                 if (r.hold_plan)
                     html += ' | <span style="color:#58a6ff;">\u6811/\u88f8\u2192' + r.hold_plan.tree_naked_close + ' ETF\u2192' + r.hold_plan.etf_1x_close + '</span>';
+                if (r.stop_loss && r.stop_loss.length)
+                    html += ' | <span style="color:#f0883e;">\ud83d\uded1 ' + r.stop_loss.join(', ') + '</span>';
                 html += '</div>';
             }
             if (r.close_alerts && r.close_alerts.length) {

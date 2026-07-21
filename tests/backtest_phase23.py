@@ -93,24 +93,24 @@ def get_direction_v2(row):
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
     dup = (bbu - price) / bw * 100; dlow = (price - bbl) / bw * 100
-    near_threshold = atr14 * 0.50 if (atr14 and atr14 > 0 and not np.isnan(atr14)) else bw * 0.10
+    near_threshold = atr14 * 0.30 if (atr14 and atr14 > 0 and not np.isnan(atr14)) else bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
     near_bb_overall = near_top or near_bottom
-    is_trend = score >= 65
+    is_trend = score >= 55
     # Level 1: trend (not near-BB)
     if not near_bb_overall and is_trend:
         if di_diff > 0: return 'CALL', 'trend'
         elif di_diff < 0: return 'PUT', 'trend'
     # Level 2: nearBB + VIX high
-    if near_top and score >= 60 and vix_pct > 75: return 'PUT', 'nearbb_vix'
-    if near_bottom and score >= 60 and vix_pct > 75: return 'CALL', 'nearbb_vix'
+    if near_top and score >= 50 and vix_pct > 75: return 'PUT', 'nearbb_vix'
+    if near_bottom and score >= 50 and vix_pct > 75: return 'CALL', 'nearbb_vix'
     # Level 3: conflict filter
     if near_top and di_diff > 0: return None, 'filtered'
     if near_bottom and di_diff < 0: return None, 'filtered'
     # Level 4: nearBB (original)
-    if near_top and score >= 60: return 'PUT', 'nearbb'
-    if near_bottom and score >= 60: return 'CALL', 'nearbb'
+    if near_top and score >= 50: return 'PUT', 'nearbb'
+    if near_bottom and score >= 50: return 'CALL', 'nearbb'
     if near_top or near_bottom: return None, 'BB_center'
     return None, 'BB_center'
 

@@ -220,7 +220,7 @@ def send_market_report(report_type, force=False):
     score = round(total)
     icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
-    is_trend = score >= 65
+    is_trend = score >= 55
 
     # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100
@@ -229,7 +229,7 @@ def send_market_report(report_type, force=False):
     vix_pct = hs.get('vix_percentile', 50)
     atr14 = hs.get("atr_14")
     if atr14 and atr14 > 0:
-        near_threshold = atr14 * 0.50
+        near_threshold = atr14 * 0.30
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
@@ -245,9 +245,9 @@ def send_market_report(report_type, force=False):
         else:
             direction, reason = None, 'BB 中段'
     # Level 2: 近轨 + VIX高 → 确认反转
-    elif near_top and score >= 60 and vix_pct > 75:
+    elif near_top and score >= 50 and vix_pct > 75:
         direction, reason = 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)'
-    elif near_bottom and score >= 60 and vix_pct > 75:
+    elif near_bottom and score >= 50 and vix_pct > 75:
         direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
     # Level 3: 矛盾过滤
     elif near_top and di_diff > 0:
@@ -255,9 +255,9 @@ def send_market_report(report_type, force=False):
     elif near_bottom and di_diff < 0:
         direction, reason = None, 'BB 中段'
     # Level 4: 近轨 (原有)
-    elif near_top and score >= 60:
+    elif near_top and score >= 50:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 60:
+    elif near_bottom and score >= 50:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
         direction, reason = None, 'BB 中段'
@@ -393,7 +393,7 @@ def send_market_report(report_type, force=False):
             etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
-                'etf': etf3, 'etf_amount': 1500, 'naked_buy': 2,
+                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 2,
                 'hold_3x_days': 3, 'switch_to_1x': etf1,
             }
         elif score >= 65:
@@ -401,14 +401,16 @@ def send_market_report(report_type, force=False):
             etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
-                'etf': etf3, 'etf_amount': 1000, 'naked_buy': 1,
+                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 1,
                 'hold_3x_days': 3, 'switch_to_1x': etf1,
             }
         else:
             signal_tier = 'weak'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
-                'etf': etf1, 'etf_amount': 500, 'naked_buy': 0,
+                'etf': etf3, 'etf_amount': 2000, 'naked_buy': 0,
+                'hold_3x_days': 3, 'switch_to_1x': etf1,
             }
 
     if not direction:
@@ -536,6 +538,18 @@ def send_market_report(report_type, force=False):
             'etf_1x_close': d5_str,
         }
         lines.append(f"持仓策略: 树/裸→{d3_str}平 | ETF→{d5_str}平")
+        # 止损行
+        if tool_recommend:
+            sl_lines = []
+            if tool_recommend.get('naked_buy', 0) > 0:
+                sl_lines.append(f"裸买 -$100/张")
+            xsp_price = latest_data["index"].get("price", 0)
+            atr = hs.get('atr_14', 0)
+            sl_pct = max(0.005, atr / xsp_price * 0.5) if atr and xsp_price else 0.005
+            sl_dollar = round(xsp_price * sl_pct, 2) if xsp_price else 0
+            sl_lines.append(f"ETF -{sl_pct*100:.1f}% (~${sl_dollar})")
+            lines.append(f"🛑 止损: {' | '.join(sl_lines)}")
+            _latest_report['stop_loss'] = sl_lines
         _latest_report['hold_plan'] = hold_plan
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）

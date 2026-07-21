@@ -39,11 +39,11 @@ class TestTrendIdentification:
 
 class TestDirection:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_dir,exp_reason_substr", [
-        # case 4: 震荡 + 近BB上轨 → PUT (score ≥ 60)
+        # case 4: 震荡 + 近BB上轨 → PUT (score ≥ 50)
         ("震荡+近BB上轨→PUT",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          758.5, 'PUT', '贴BB上轨'),
-        # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 60)
+        # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 50)
         ("震荡+近BB下轨→CALL",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          741.5, 'CALL', '贴BB下轨'),
@@ -59,8 +59,8 @@ class TestDirection:
         ("单边下降→PUT",
          {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': -0.10, 'bbl': 740, 'bbu': 760},
          750.0, 'PUT', 'DI-'),
-        # case 10: 近轨阈值 ATR14×50% 可用 (gap=2.0 < 4.0)
-        ("ATR14阈值:价差<ATR14*50%→PUT",
+        # case 10: 近轨阈值 ATR14×30% 可用 (gap=2.0 < 2.4)
+        ("ATR14阈值:价差<ATR14*30%→PUT",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          758.0, 'PUT', '贴BB上轨'),
         # case 11: 近轨阈值 ATR14 不可用，降级 BW×10%（gap=1.5 < 2.0）
@@ -544,8 +544,8 @@ class TestOutputFormat:
 
     def test_ranging_no_single_leg(self, reset_globals, mock_sio):
         """case 60: 震荡→有树、无裸买"""
-        app.historical_stats.update(std_hs(adx=25, er=0.65, vr=1.0, atr_14=8.0, bbw=3.5))
-        app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*50%=4.0)
+        app.historical_stats.update(std_hs(adx=20, er=0.40, atr_14=8.0, bbw=3.5))
+        app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*30%=2.4)
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') in ('PUT', 'CALL')
@@ -608,7 +608,7 @@ class TestSignalTier:
         assert r.get('direction') == 'CALL'
         assert r.get('signal_tier') == 'strong'
         assert r.get('tool_recommend', {}).get('naked_buy') == 2
-        assert r['tool_recommend']['etf_amount'] == 1500
+        assert r['tool_recommend']['etf_amount'] == 4000
 
     def test_signal_tier_normal(self, reset_globals, mock_sio):
         """normal: trending, skew passes filter (≤155) but fails confirm (≥145)"""
@@ -622,7 +622,7 @@ class TestSignalTier:
         assert r.get('direction') == 'CALL'
         assert r.get('signal_tier') == 'normal'
         assert r.get('tool_recommend', {}).get('naked_buy') == 1
-        assert r['tool_recommend']['etf_amount'] == 1000
+        assert r['tool_recommend']['etf_amount'] == 4000
 
     def test_signal_tier_weak(self, reset_globals, mock_sio):
         """weak: direction exists but score<65 (near-BB with score≈63)"""
@@ -636,7 +636,7 @@ class TestSignalTier:
         assert r.get('direction') is not None
         assert r.get('signal_tier') == 'weak'
         assert r.get('tool_recommend', {}).get('naked_buy') == 0
-        assert r['tool_recommend']['etf_amount'] == 500
+        assert r['tool_recommend']['etf_amount'] == 2000
 
     def test_signal_tier_skew_downgrade(self, reset_globals, mock_sio):
         """SKEW confirm fail (skew≥145 for CALL) → strong→normal"""
