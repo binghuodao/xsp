@@ -18,7 +18,7 @@
 |------|----|
 | is_trend | score ≥ 55 |
 | 显示标签 Trending | score ≥ 65 |
-| 近轨 ATR 乘数 | ATR14 × 0.30 |
+| 近轨 ATR 乘数 | ATR14 × 0.60 |
 | 近轨 BW 回退 | BW × 0.10（ATR14 不可用时） |
 | 近轨方向分数下限 | score ≥ 50 |
 | VIX 百分位阈值 | > 75 |
@@ -60,7 +60,7 @@ BB 中段                  → 不开仓
 
 ### 近轨判定
 ```
-near_threshold = ATR14 × 0.30
+near_threshold = ATR14 × 0.60
 near_top      = (BBU - price) < near_threshold
 near_bottom   = (price - BBL) < near_threshold
 ```

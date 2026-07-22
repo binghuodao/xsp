@@ -249,7 +249,7 @@ def send_market_report(report_type, force=False):
     vix_pct = hs.get('vix_percentile', 50)
     atr14 = hs.get("atr_14")
     if atr14 and atr14 > 0:
-        near_threshold = atr14 * 0.30
+        near_threshold = atr14 * 0.60
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold

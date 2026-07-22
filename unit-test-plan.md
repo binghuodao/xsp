@@ -40,8 +40,8 @@
 
 | # | 场景 | 输入 | 预期 `direction` | 预期 `reason` |
 |---|---|---|---|---|
-| 5 | 震荡 + 近 BB 上轨 | `BBU-price < ATR14×30%` | `PUT` | `贴BB上轨(95%)` |
-| 6 | 震荡 + 近 BB 下轨 | `price-BBL < ATR14×30%` | `CALL` | `贴BB下轨(5%)` |
+| 5 | 震荡 + 近 BB 上轨 | `BBU-price < ATR14×60%` | `PUT` | `贴BB上轨(95%)` |
+| 6 | 震荡 + 近 BB 下轨 | `price-BBL < ATR14×60%` | `CALL` | `贴BB下轨(5%)` |
 | 7 | 震荡 + BB 中段 | 不满足近轨条件，且非趋势 | `None` | `BB 中段` |
 | 8 | 单边上升趋势 | `is_trend=True`, `skew=3.5` | `CALL` | `Skew 3.5` |
 | 9 | 单边下降趋势 | `is_trend=True`, `skew=-2.1` | `PUT` | `Skew -2.1` |

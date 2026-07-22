@@ -164,7 +164,7 @@ def get_direction_v2(row):
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, '', None
     if atr14 and atr14 > 0 and not np.isnan(atr14):
-        near_threshold = atr14 * 0.30
+        near_threshold = atr14 * 0.60
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
