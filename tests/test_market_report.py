@@ -607,7 +607,7 @@ class TestSignalTier:
         r = app._latest_report
         assert r.get('direction') == 'CALL'
         assert r.get('signal_tier') == 'strong'
-        assert r.get('tool_recommend', {}).get('naked_buy') == 2
+        assert r.get('tool_recommend', {}).get('naked_buy') == 1
         assert r['tool_recommend']['etf_amount'] == 4000
 
     def test_signal_tier_normal(self, reset_globals, mock_sio):

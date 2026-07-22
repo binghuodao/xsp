@@ -81,11 +81,15 @@ _morning_report_date = ""
 _evening_report_date = ""
 _latest_report = {}
 _active_position_date = None
+_entry_price = None
+_peak_price = None
 try:
     with open(POSITION_FILE) as f:
         _pd = json.load(f)
     if _pd.get('active_position_date'):
         _active_position_date = datetime.datetime.strptime(_pd['active_position_date'], '%Y-%m-%d').date()
+    _entry_price = _pd.get('entry_price')
+    _peak_price = _pd.get('peak_price')
 except:
     pass
 S_TZ = pytz.timezone('Australia/Sydney')
@@ -158,6 +162,22 @@ def _dte_from_yyyymmdd(yymmdd):
         return (exp - datetime.now(ET_TZ).replace(tzinfo=None)).days
     except:
         return None
+
+
+_etf_price_cache = {}
+def _get_etf_price(ticker):
+    """Fetch current ETF price with cache (1 call per ticker per report)."""
+    if ticker in _etf_price_cache:
+        return _etf_price_cache[ticker]
+    try:
+        tk = yf.Ticker(ticker)
+        p = tk.fast_info.last_price
+        if p and p > 0:
+            _etf_price_cache[ticker] = p
+            return p
+    except:
+        pass
+    return None
 
 
 def send_market_report(report_type, force=False):
@@ -390,15 +410,15 @@ def send_market_report(report_type, force=False):
 
         if di_strength > 0 and score >= 72 and skew_confirm:
             signal_tier = 'strong'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
-                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 2,
+                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 1,
                 'hold_3x_days': 3, 'switch_to_1x': etf1,
             }
         elif score >= 65:
             signal_tier = 'normal'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
                 'etf': etf3, 'etf_amount': 4000, 'naked_buy': 1,
@@ -406,7 +426,7 @@ def send_market_report(report_type, force=False):
             }
         else:
             signal_tier = 'weak'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXS'
+            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
             etf1 = 'SPYM' if direction == 'CALL' else 'SH'
             tool_recommend = {
                 'etf': etf3, 'etf_amount': 2000, 'naked_buy': 0,
@@ -426,7 +446,7 @@ def send_market_report(report_type, force=False):
         if direction == 'CALL':
             lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
         elif direction == 'PUT':
-            lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)")
+            lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXU(3x)")
 
         # Mid leg
         off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
@@ -500,7 +520,7 @@ def send_market_report(report_type, force=False):
         if direction == 'CALL':
             _latest_report['etf'] = "★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)"
         else:
-            _latest_report['etf'] = "★ 做空 ETF: SH(1x) / SDS(2x) / SPXS(3x)"
+            _latest_report['etf'] = "★ 做空 ETF: SH(1x) / SDS(2x) / SPXU(3x)"
         if expiry_tree:
             _latest_report['tree_label'] = f"7DTE {direction}树 ({expiry_tree})"
             _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
@@ -538,18 +558,36 @@ def send_market_report(report_type, force=False):
             'etf_1x_close': d5_str,
         }
         lines.append(f"持仓策略: 树/裸→{d3_str}平 | ETF→{d5_str}平")
-        # 止损行
+        # 止损行（ETF基价）
         if tool_recommend:
+            global _entry_price, _peak_price
             sl_lines = []
-            if tool_recommend.get('naked_buy', 0) > 0:
-                sl_lines.append(f"裸买 -$100/张")
-            xsp_price = latest_data["index"].get("price", 0)
-            atr = hs.get('atr_14', 0)
-            sl_pct = max(0.005, atr / xsp_price * 0.5) if atr and xsp_price else 0.005
-            sl_dollar = round(xsp_price * sl_pct, 2) if xsp_price else 0
-            sl_lines.append(f"ETF -{sl_pct*100:.1f}% (~${sl_dollar})")
-            lines.append(f"🛑 止损: {' | '.join(sl_lines)}")
-            _latest_report['stop_loss'] = sl_lines
+            is_3x = holding_days < tool_recommend.get('hold_3x_days', 3)
+            etf_ticker = tool_recommend['etf'] if is_3x else tool_recommend['switch_to_1x']
+            etf_price = _get_etf_price(etf_ticker)
+            tier_stop = {'strong': 0.015, 'normal': 0.015, 'weak': 0.015}
+            stop_pct = tier_stop.get(signal_tier, 0.015)
+
+            if etf_price and etf_price > 0:
+                if holding_days == 0:
+                    _entry_price = etf_price
+                    _peak_price = etf_price
+                elif _peak_price and etf_price > _peak_price:
+                    _peak_price = etf_price
+
+                fixed_stop = etf_price * (1 - stop_pct)
+                trail_val = None
+                if _peak_price and _entry_price and _peak_price > _entry_price:
+                    trail_val = _peak_price * (1 - stop_pct * 0.5)
+                effective = min(fixed_stop, trail_val) if trail_val else fixed_stop
+                sl_parts = [f"{etf_ticker} 止损 ${effective:.2f}",
+                            f"固定 ${fixed_stop:.2f}",
+                            f"入场 ${_entry_price:.2f} / -{stop_pct*100:.1f}%"]
+                if trail_val and trail_val > fixed_stop:
+                    sl_parts.insert(1, f"追踪 ${trail_val:.2f} (最高 ${_peak_price:.2f})")
+                sl_lines = sl_parts
+                _latest_report['stop_loss'] = sl_lines
+                lines.append(f"🛑 {' | '.join(sl_lines)}")
         _latest_report['hold_plan'] = hold_plan
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
@@ -592,6 +630,8 @@ def send_market_report(report_type, force=False):
                 'active_position_date': str(_active_position_date) if _active_position_date else None,
                 'prev_report_direction': _prev_report_direction,
                 'prev_report_score': _prev_report_score,
+                'entry_price': _entry_price,
+                'peak_price': _peak_price,
             }, f)
     except Exception as e:
         print(f"⚠️ Position tracker save failed: {e}")
