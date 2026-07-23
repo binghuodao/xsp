@@ -430,10 +430,9 @@ def send_market_report(report_type, force=False):
             signal_tier = 'weak'
 
         etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
-        etf1 = 'SPYM' if direction == 'CALL' else 'SH'
         tool_recommend = {
             'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
-            'hold_3x_days': 3, 'switch_to_1x': etf1,
+            'hold_3x_days': 5,
         }
 
     if not direction:
@@ -547,11 +546,6 @@ def send_market_report(report_type, force=False):
             if tool_recommend.get('naked_buy', 0) > 0:
                 etf_info += f" + 裸买 ×{tool_recommend['naked_buy']}"
             lines.append(f"📋 强度: {signal_tier} | 工具: {etf_info}")
-            if tool_recommend.get('hold_3x_days'):
-                lines.append(f"⏱ 3x ≤3天 → {tool_recommend['switch_to_1x']}")
-        if holding_days > 3:
-            lines.append(f"⚠️ 已持仓{holding_days}天，建议换1x")
-
         # ── 持有计划 ──
         today_et = datetime.now(ET_TZ).date()
         d5_str = (today_et + timedelta(days=5)).strftime('%m/%d')
@@ -559,13 +553,12 @@ def send_market_report(report_type, force=False):
             'tree_naked_close': d5_str,
             'etf_1x_close': d5_str,
         }
-        lines.append(f"持仓计划: 全部→{d5_str}平 (3x第3天换1x)")
+        lines.append(f"持仓计划: 全部→{d5_str}平 (3x全程)")
         # 止损行（ETF基价）
         if tool_recommend:
             global _entry_price, _peak_price
             sl_lines = []
-            is_3x = holding_days < tool_recommend.get('hold_3x_days', 3)
-            etf_ticker = tool_recommend['etf'] if is_3x else tool_recommend['switch_to_1x']
+            etf_ticker = tool_recommend['etf']
             etf_price = _get_etf_price(etf_ticker)
             is_nearbb = reason and ('贴BB' in reason)
             stop_pct = 0.01 if is_nearbb else 0.03

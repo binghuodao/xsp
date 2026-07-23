@@ -1871,14 +1871,10 @@
                 html += ' | 工具: <b>' + r.tool_recommend.etf + '</b> $' + r.tool_recommend.etf_amount;
                 if (r.tool_recommend.naked_buy > 0)
                     html += ' + 裸买 \u00d7' + r.tool_recommend.naked_buy;
-                if (r.tool_recommend.hold_3x_days)
-                    html += ' | \u23f1 3x\u2192' + r.tool_recommend.switch_to_1x;
-                if (r.holding_days > 3)
-                    html += ' | <span style="color:#f85149;">\u26a0\ufe0f ' + r.holding_days + '\u5929</span>';
                 if (r.active_position_date)
                     html += ' | <span style="color:#8b949e;">\u5f00\u4ed3 ' + r.active_position_date + '</span>';
                 if (r.hold_plan)
-                    html += ' | <span style="color:#58a6ff;">\u6811/\u88f8\u2192' + r.hold_plan.tree_naked_close + ' ETF\u2192' + r.hold_plan.etf_1x_close + '</span>';
+                    html += ' | <span style="color:#58a6ff;">\u5168\u90e8\u2192' + r.hold_plan.tree_naked_close + '\u5e73</span>';
                 if (r.stop_loss && r.stop_loss.length)
                     html += ' | <span style="color:#f0883e;">\ud83d\uded1 ' + r.stop_loss.join(', ') + '</span>';
                 html += '</div>';
