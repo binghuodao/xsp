@@ -554,14 +554,12 @@ def send_market_report(report_type, force=False):
             'etf_1x_close': d5_str,
         }
         lines.append(f"持仓计划: 全部→{d5_str}平 (3x全程)")
-        # 止损行（ETF基价）
+        # 统一跟踪（固定止损兜底 + 从最高点回落4%ETF）
         if tool_recommend:
             global _entry_price, _peak_price
-            sl_lines = []
             etf_ticker = tool_recommend['etf']
             etf_price = _get_etf_price(etf_ticker)
             is_nearbb = reason and ('贴BB' in reason)
-            stop_pct = 0.01 if is_nearbb else 0.03
 
             if etf_price and etf_price > 0:
                 if holding_days == 0:
@@ -570,19 +568,28 @@ def send_market_report(report_type, force=False):
                 elif _peak_price and etf_price > _peak_price:
                     _peak_price = etf_price
 
-                fixed_stop = etf_price * (1 - stop_pct)
-                trail_val = None
-                if _peak_price and _entry_price and _peak_price > _entry_price:
-                    trail_val = _peak_price * (1 - stop_pct * 0.5)
-                effective = min(fixed_stop, trail_val) if trail_val else fixed_stop
+                # 固定止损（兜底，Moomoo止蚀盘）
+                stop_pct = 0.01 if is_nearbb else 0.03
+                fixed_stop = _entry_price * (1 - stop_pct)
+
+                # 统一跟踪（从最高ETF价回落4%）
+                trail_pct = 0.04
+                trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
+
+                # 有效止损 = 两者较紧的那个（正常情况跟踪更紧）
+                effective = min(fixed_stop, trail_stop) if trail_stop and trail_stop > 0 else fixed_stop
+
                 sl_parts = [f"{etf_ticker} 止损 ${effective:.2f}",
-                            f"固定 ${fixed_stop:.2f}",
-                            f"入场 ${_entry_price:.2f} / -{stop_pct*100:.1f}%"]
-                if trail_val and trail_val > fixed_stop:
-                    sl_parts.insert(1, f"追踪 ${trail_val:.2f} (最高 ${_peak_price:.2f})")
-                sl_lines = sl_parts
-                _latest_report['stop_loss'] = sl_lines
-                lines.append(f"🛑 {' | '.join(sl_lines)}")
+                            f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}%)",
+                            f"最高 ${_peak_price:.2f}"]
+                if trail_stop and trail_stop < fixed_stop:
+                    sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (回落{trail_pct*100:.0f}%)")
+                _latest_report['stop_loss'] = sl_parts
+                lines.append(f"🛑 {' | '.join(sl_parts)}")
+
+                # 跟踪触发提示
+                if trail_stop and etf_price is not None and etf_price <= trail_stop and _peak_price and _peak_price > _entry_price:
+                    close_lines.append(f"  🛑 {etf_ticker} 从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${etf_price:.2f} ≤ 跟踪 ${trail_stop:.2f}，建议平仓")
         _latest_report['hold_plan'] = hold_plan
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
