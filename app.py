@@ -408,30 +408,33 @@ def send_market_report(report_type, force=False):
                 _active_position_date = datetime.now(ET_TZ).date()
                 holding_days = 0
 
+        # Position size by score bucket (Cap5k ×1.5)
+        if score <= 59:
+            etf_amount = 1500
+            naked_buy = 0
+        elif score <= 69:
+            etf_amount = 3000
+            naked_buy = 1
+        elif score <= 74:
+            etf_amount = 4500
+            naked_buy = 1
+        else:
+            etf_amount = 5000
+            naked_buy = 1
+
         if di_strength > 0 and score >= 72 and skew_confirm:
             signal_tier = 'strong'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
-            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
-            tool_recommend = {
-                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 1,
-                'hold_3x_days': 3, 'switch_to_1x': etf1,
-            }
         elif score >= 65:
             signal_tier = 'normal'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
-            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
-            tool_recommend = {
-                'etf': etf3, 'etf_amount': 4000, 'naked_buy': 1,
-                'hold_3x_days': 3, 'switch_to_1x': etf1,
-            }
         else:
             signal_tier = 'weak'
-            etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
-            etf1 = 'SPYM' if direction == 'CALL' else 'SH'
-            tool_recommend = {
-                'etf': etf3, 'etf_amount': 2000, 'naked_buy': 0,
-                'hold_3x_days': 3, 'switch_to_1x': etf1,
-            }
+
+        etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
+        etf1 = 'SPYM' if direction == 'CALL' else 'SH'
+        tool_recommend = {
+            'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
+            'hold_3x_days': 3, 'switch_to_1x': etf1,
+        }
 
     if not direction:
         _latest_report = {
@@ -551,13 +554,12 @@ def send_market_report(report_type, force=False):
 
         # ── 持有计划 ──
         today_et = datetime.now(ET_TZ).date()
-        d3_str = (today_et + timedelta(days=3)).strftime('%m/%d')
         d5_str = (today_et + timedelta(days=5)).strftime('%m/%d')
         hold_plan = {
-            'tree_naked_close': d3_str,
+            'tree_naked_close': d5_str,
             'etf_1x_close': d5_str,
         }
-        lines.append(f"持仓策略: 树/裸→{d3_str}平 | ETF→{d5_str}平")
+        lines.append(f"持仓计划: 全部→{d5_str}平 (3x第3天换1x)")
         # 止损行（ETF基价）
         if tool_recommend:
             global _entry_price, _peak_price
@@ -565,8 +567,8 @@ def send_market_report(report_type, force=False):
             is_3x = holding_days < tool_recommend.get('hold_3x_days', 3)
             etf_ticker = tool_recommend['etf'] if is_3x else tool_recommend['switch_to_1x']
             etf_price = _get_etf_price(etf_ticker)
-            tier_stop = {'strong': 0.015, 'normal': 0.015, 'weak': 0.015}
-            stop_pct = tier_stop.get(signal_tier, 0.015)
+            is_nearbb = reason and ('贴BB' in reason)
+            stop_pct = 0.01 if is_nearbb else 0.03
 
             if etf_price and etf_price > 0:
                 if holding_days == 0:

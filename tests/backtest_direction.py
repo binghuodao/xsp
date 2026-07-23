@@ -215,7 +215,7 @@ def get_direction(row):
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     if atr14 and atr14 > 0 and not np.isnan(atr14):
-        near_threshold = atr14 * 0.30
+        near_threshold = atr14 * 0.60
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
@@ -259,7 +259,7 @@ def get_direction_v2(row):
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
     if atr14 and atr14 > 0 and not np.isnan(atr14):
-        near_threshold = atr14 * 0.30
+        near_threshold = atr14 * 0.60
     else:
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold

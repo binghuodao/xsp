@@ -93,7 +93,7 @@ def get_direction_v2(row):
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
     dup = (bbu - price) / bw * 100; dlow = (price - bbl) / bw * 100
-    near_threshold = atr14 * 0.30 if (atr14 and atr14 > 0 and not np.isnan(atr14)) else bw * 0.10
+    near_threshold = atr14 * 0.60 if (atr14 and atr14 > 0 and not np.isnan(atr14)) else bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
     near_bb_overall = near_top or near_bottom

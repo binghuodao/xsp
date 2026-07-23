@@ -608,7 +608,7 @@ class TestSignalTier:
         assert r.get('direction') == 'CALL'
         assert r.get('signal_tier') == 'strong'
         assert r.get('tool_recommend', {}).get('naked_buy') == 1
-        assert r['tool_recommend']['etf_amount'] == 4000
+        assert r['tool_recommend']['etf_amount'] == 5000
 
     def test_signal_tier_normal(self, reset_globals, mock_sio):
         """normal: trending, skew passes filter (≤155) but fails confirm (≥145)"""
@@ -622,7 +622,7 @@ class TestSignalTier:
         assert r.get('direction') == 'CALL'
         assert r.get('signal_tier') == 'normal'
         assert r.get('tool_recommend', {}).get('naked_buy') == 1
-        assert r['tool_recommend']['etf_amount'] == 4000
+        assert r['tool_recommend']['etf_amount'] == 5000
 
     def test_signal_tier_weak(self, reset_globals, mock_sio):
         """weak: direction exists but score<65 (near-BB with score≈63)"""
@@ -635,8 +635,8 @@ class TestSignalTier:
         r = app._latest_report
         assert r.get('direction') is not None
         assert r.get('signal_tier') == 'weak'
-        assert r.get('tool_recommend', {}).get('naked_buy') == 0
-        assert r['tool_recommend']['etf_amount'] == 2000
+        assert r.get('tool_recommend', {}).get('naked_buy') == 1
+        assert r['tool_recommend']['etf_amount'] == 3000
 
     def test_signal_tier_skew_downgrade(self, reset_globals, mock_sio):
         """SKEW confirm fail (skew≥145 for CALL) → strong→normal"""
