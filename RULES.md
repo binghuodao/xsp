@@ -16,7 +16,7 @@
 ### 关键阈值
 | 参数 | 值 |
 |------|----|
-| is_trend | score ≥ 55 |
+| is_trend | score ≥ 50 |
 | 显示标签 Trending | score ≥ 65 |
 | 近轨 ATR 乘数 | ATR14 × 0.60 |
 | 近轨 BW 回退 | BW × 0.10（ATR14 不可用时） |
@@ -31,7 +31,7 @@
 
 ### Level 1 — 趋势（非近轨 + is_trend）
 ```
-非近轨 + score ≥ 55 → 趋势方向
+非近轨 + score ≥ 50 → 趋势方向
   DI diff > 0  → CALL
   DI diff < 0  → PUT
   DI diff = 0  → 不开仓
@@ -127,7 +127,7 @@ CALL 树: 组合值 = S_mid + 2 × L_mid - 3 × M_mid  （算法相同）
 
 ## 6. 裸买（单腿）
 
-- 仅当 `is_trend = True`（score ≥ 55）
+- 仅当 `is_trend = True`（score ≥ 50）
 - 7 DTE，Δ ≈ 0.35（CALL）或 Δ ≈ -0.35（PUT）
 - 仅出现在 strong（最多 2 张）或 normal（1 张）等级
 
