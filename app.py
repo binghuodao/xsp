@@ -265,9 +265,9 @@ def send_market_report(report_type, force=False):
         else:
             direction, reason = None, 'BB 中段'
     # Level 2: 近轨 + VIX高 → 确认反转
-    elif near_top and score >= 50 and vix_pct > 75:
+    elif near_top and score >= 60 and vix_pct > 75:
         direction, reason = 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)'
-    elif near_bottom and score >= 50 and vix_pct > 75:
+    elif near_bottom and score >= 60 and vix_pct > 75:
         direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
     # Level 3: 矛盾过滤
     elif near_top and di_diff > 0:
@@ -275,9 +275,9 @@ def send_market_report(report_type, force=False):
     elif near_bottom and di_diff < 0:
         direction, reason = None, 'BB 中段'
     # Level 4: 近轨 (原有)
-    elif near_top and score >= 50:
+    elif near_top and score >= 60:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 50:
+    elif near_bottom and score >= 60:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
         direction, reason = None, 'BB 中段'

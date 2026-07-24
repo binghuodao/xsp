@@ -543,8 +543,8 @@ class TestOutputFormat:
         assert r['hold_plan'].get('etf_1x_close') is not None
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
-        """case 60: 近BB上轨→有方向"""
-        app.historical_stats.update(std_hs(adx=20, er=0.40, atr_14=8.0, bbw=3.5))
+        """case 60: 近BB上轨→有方向 (score≥60)"""
+        app.historical_stats.update(std_hs(adx=25, er=0.55, bbw=18, atr_14=8.0))
         app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*60%=4.8)
         app.send_market_report('morning', force=True)
         r = app._latest_report
