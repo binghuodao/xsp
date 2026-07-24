@@ -207,7 +207,7 @@ def get_direction(row):
     di_diff = row['di_diff']
     atr14 = row['atr_14']
     score = row['score']
-    is_trend = score >= 55
+    is_trend = score >= 50
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
@@ -265,7 +265,7 @@ def get_direction_v2(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    is_trend = score >= 55
+    is_trend = score >= 50
     near_bb_overall = near_top or near_bottom
 
     # Level 1: 趋势 (原有的非近轨趋势)

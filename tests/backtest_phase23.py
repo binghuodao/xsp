@@ -97,7 +97,7 @@ def get_direction_v2(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
     near_bb_overall = near_top or near_bottom
-    is_trend = score >= 55
+    is_trend = score >= 50
     # Level 1: trend (not near-BB)
     if not near_bb_overall and is_trend:
         if di_diff > 0: return 'CALL', 'trend'

@@ -240,7 +240,7 @@ def send_market_report(report_type, force=False):
     score = round(total)
     icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
-    is_trend = score >= 55
+    is_trend = score >= 50
 
     # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100

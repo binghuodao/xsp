@@ -169,7 +169,7 @@ def get_direction_v2(row):
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
-    is_trend = score >= 55
+    is_trend = score >= 50
     near_bb_overall = near_top or near_bottom
     # L1: trend
     if not near_bb_overall and is_trend:

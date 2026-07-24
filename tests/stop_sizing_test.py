@@ -82,7 +82,7 @@ def get_signal(row):
     dd = row['di_diff']; at = row['atr_14']; sc = row['score']; vp = row['vix_percentile']
     if u == l or bw <= 0 or np.isnan(bw): return None, None, None
     near_th = at * 0.60 if (at and at > 0 and not np.isnan(at)) else bw * 0.1
-    nt = (u - p) < near_th; nb = (p - l) < near_th; is_t = sc >= 55
+    nt = (u - p) < near_th; nb = (p - l) < near_th;     is_t = sc >= 50
     if not nt and not nb and is_t:
         return ('CALL', 'trend') if dd > 0 else ('PUT', 'trend') if dd < 0 else (None, None)
     if nt and sc >= 50 and vp > 75: return 'PUT', 'nearbb_vix'
