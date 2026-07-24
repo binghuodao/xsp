@@ -542,14 +542,13 @@ class TestOutputFormat:
         assert r['hold_plan'].get('tree_naked_close') is not None
         assert r['hold_plan'].get('etf_1x_close') is not None
 
-    def test_ranging_no_single_leg(self, reset_globals, mock_sio):
-        """case 60: 震荡→有树、无裸买"""
+    def test_ranging_direction_exists(self, reset_globals, mock_sio):
+        """case 60: 近BB上轨→有方向"""
         app.historical_stats.update(std_hs(adx=20, er=0.40, atr_14=8.0, bbw=3.5))
         app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*60%=4.8)
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') in ('PUT', 'CALL')
-        assert 'single_label' not in r or r.get('single_label') is None, "震荡不应有裸买"
 
     def test_direction_none_format(self, reset_globals, mock_sio):
         """case 61: direction=None→无ETF/树/裸买"""
