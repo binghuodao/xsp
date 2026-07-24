@@ -169,7 +169,7 @@ def get_direction_v2(row):
         near_threshold = bw * 0.10
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
-    is_trend = score >= 50
+    is_trend = score >= 60
     near_bb_overall = near_top or near_bottom
     # L1: trend
     if not near_bb_overall and is_trend:
@@ -177,16 +177,16 @@ def get_direction_v2(row):
         elif di_diff < 0: return 'PUT', 'trend', 'trend'
         else: return None, 'trend_neutral', None
     # L2: nearBB + VIX
-    if near_top and score >= 50 and vix_pct > 75:
+    if near_top and score >= 60 and vix_pct > 75:
         return 'PUT', 'nearbb_vix', 'nearbb_vix'
-    if near_bottom and score >= 50 and vix_pct > 75:
+    if near_bottom and score >= 60 and vix_pct > 75:
         return 'CALL', 'nearbb_vix', 'nearbb_vix'
     # L3: conflict
     if near_top and di_diff > 0: return None, 'filtered', 'filtered'
     if near_bottom and di_diff < 0: return None, 'filtered', 'filtered'
     # L4: nearBB
-    if near_top and score >= 50: return 'PUT', 'nearbb', 'nearbb'
-    if near_bottom and score >= 50: return 'CALL', 'nearbb', 'nearbb'
+    if near_top and score >= 60: return 'PUT', 'nearbb', 'nearbb'
+    if near_bottom and score >= 60: return 'CALL', 'nearbb', 'nearbb'
     if near_top or near_bottom: return None, 'BB_center', None
     return None, 'BB_center', None
 

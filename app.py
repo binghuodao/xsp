@@ -240,7 +240,7 @@ def send_market_report(report_type, force=False):
     score = round(total)
     icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
-    is_trend = score >= 50
+    is_trend = score >= 60
 
     # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100
@@ -408,19 +408,9 @@ def send_market_report(report_type, force=False):
                 _active_position_date = datetime.now(ET_TZ).date()
                 holding_days = 0
 
-        # Position size by score bucket (Cap5k ×1.5)
-        if score <= 59:
-            etf_amount = 1500
-            naked_buy = 0
-        elif score <= 69:
-            etf_amount = 3000
-            naked_buy = 1
-        elif score <= 74:
-            etf_amount = 4500
-            naked_buy = 1
-        else:
-            etf_amount = 5000
-            naked_buy = 1
+        # Position size — Fixed $5k per trade (Cap5k ×1.5)
+        etf_amount = 5000
+        naked_buy = 1 if score >= 65 else 0
 
         if di_strength > 0 and score >= 72 and skew_confirm:
             signal_tier = 'strong'
@@ -432,7 +422,7 @@ def send_market_report(report_type, force=False):
         etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
         tool_recommend = {
             'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
-            'hold_3x_days': 5,
+            'hold_3x_days': 7,
         }
 
     if not direction:
@@ -572,8 +562,8 @@ def send_market_report(report_type, force=False):
                 stop_pct = 0.01 if is_nearbb else 0.03
                 fixed_stop = _entry_price * (1 - stop_pct)
 
-                # 统一跟踪（从最高ETF价回落4%）
-                trail_pct = 0.04
+                # 统一跟踪（从最高ETF价回落5%）
+                trail_pct = 0.05
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
                 # 有效止损 = 两者较紧的那个（正常情况跟踪更紧）

@@ -634,8 +634,8 @@ class TestSignalTier:
         r = app._latest_report
         assert r.get('direction') is not None
         assert r.get('signal_tier') == 'weak'
-        assert r.get('tool_recommend', {}).get('naked_buy') == 1
-        assert r['tool_recommend']['etf_amount'] == 3000
+        assert r.get('tool_recommend', {}).get('naked_buy') == 0
+        assert r['tool_recommend']['etf_amount'] == 5000
 
     def test_signal_tier_skew_downgrade(self, reset_globals, mock_sio):
         """SKEW confirm fail (skew≥145 for CALL) → strong→normal"""
