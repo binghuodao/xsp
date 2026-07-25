@@ -100,7 +100,7 @@ def get_tier(score, di_diff, skew):
     else: return 'weak'
 
 def simulate_trade(entry_p, direction, i, rows, stop_pct, t_n=3):
-    hit = False; exit_p = None
+    hit = False; exit_p = None; stop_off = None
     stop_frac = stop_pct / 100.0
     for off in range(1, t_n + 1):
         j = i + off
@@ -111,7 +111,7 @@ def simulate_trade(entry_p, direction, i, rows, stop_pct, t_n=3):
         else:
             adverse = (r['high'] - entry_p) / entry_p
         if adverse >= stop_frac:
-            hit = True
+            hit = True; stop_off = off
             exit_p = entry_p * (1 - stop_frac) if direction == 'CALL' else entry_p * (1 + stop_frac)
             break
     if not hit:
@@ -119,9 +119,26 @@ def simulate_trade(entry_p, direction, i, rows, stop_pct, t_n=3):
         if j3 < len(rows):
             exit_p = rows[j3]['price']
     if exit_p is None: return None
-    if direction == 'CALL': pnl = (exit_p - entry_p) / entry_p
-    else: pnl = (entry_p - exit_p) / entry_p
-    return {'pnl_pct': pnl * 100, 'hit_stop': hit}
+
+    # Daily compounding 3x return
+    mult = 1.0
+    for off in range(1, t_n + 1):
+        j = i + off
+        if j >= len(rows): break
+        if hit and off == stop_off:
+            prev = entry_p if off == 1 else rows[i + off - 1]['price']
+            daily_ret = exit_p / prev - 1
+        elif off == 1:
+            daily_ret = rows[j]['price'] / entry_p - 1
+        else:
+            prev = rows[i + off - 1]['price']
+            daily_ret = rows[j]['price'] / prev - 1
+        if direction == 'CALL':
+            mult *= (1 + 3 * daily_ret)
+        else:
+            mult *= (1 - 3 * daily_ret)
+
+    return {'pnl_pct': (mult - 1) * 100, 'hit_stop': hit, 'mult': mult}
 
 # Generate all signals
 print("Generating signals...")
@@ -182,7 +199,7 @@ for label, stop_map in scenarios:
     total_dollar = 0
     for t in results:
         amt = size_cur.get(t['tier'], 2000)
-        total_dollar += amt * 3 * t['pnl_pct'] / 100
+        total_dollar += amt * t['pnl_pct'] / 100
     print(f"    ETF 3年总收益: ${total_dollar:,.0f}  年化: ${total_dollar/3:,.0f}")
 
 # BACKTEST #2: Smooth position sizing
@@ -206,8 +223,8 @@ def size_smooth(sc):
     elif sc <= 74: return 3000
     else: return 4000
 
-total_cur = sum(size_cur[t['tier']] * 3 * t['pnl_pct'] / 100 for t in results)
-total_smo = sum(size_smooth(t['score']) * 3 * t['pnl_pct'] / 100 for t in results)
+total_cur = sum(size_cur[t['tier']] * t['pnl_pct'] / 100 for t in results)
+total_smo = sum(size_smooth(t['score']) * t['pnl_pct'] / 100 for t in results)
 
 total_inv_cur = sum(size_cur[t['tier']] for t in results)
 total_inv_smo = sum(size_smooth(t['score']) for t in results)
@@ -226,8 +243,8 @@ for lo, hi in [(55, 59), (60, 64), (65, 69), (70, 74), (75, 100)]:
     rets = [t['pnl_pct'] for t in sub]
     cur_amt = size_cur.get(sub[0]['tier'], 2000)
     smo_amt = size_smooth(sub[0]['score'])
-    cur_ret = sum(cur_amt * 3 * r / 100 for r in rets)
-    smo_ret = sum(smo_amt * 3 * r / 100 for r in rets)
+    cur_ret = sum(cur_amt * r / 100 for r in rets)
+    smo_ret = sum(smo_amt * r / 100 for r in rets)
     print(f"    {lo}-{hi}:  {len(sub):>3} sig  cur=${cur_amt:>4} smo=${smo_amt:>4}  "
           f"avg_ret={np.mean(rets):+.2f}%  win={sum(1 for r in rets if r > 0)/len(rets)*100:.0f}%  "
           f"cur_ret=${cur_ret:+,.0f}  smo_ret=${smo_ret:+,.0f}")

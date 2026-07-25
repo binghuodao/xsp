@@ -566,13 +566,14 @@ def send_market_report(report_type, force=False):
                 trail_pct = 0.05
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
-                # 有效止损 = 两者较紧的那个（正常情况跟踪更紧）
-                effective = min(fixed_stop, trail_stop) if trail_stop and trail_stop > 0 else fixed_stop
+                # 有效止损 = 两者较紧的那个（仅盈利后跟踪才生效）
+                trail_active = _peak_price is not None and _entry_price is not None and _peak_price > _entry_price
+                effective = min(fixed_stop, trail_stop) if trail_stop and trail_stop > 0 and trail_active else fixed_stop
 
                 sl_parts = [f"{etf_ticker} 止损 ${effective:.2f}",
                             f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}%)",
                             f"最高 ${_peak_price:.2f}"]
-                if trail_stop and trail_stop < fixed_stop:
+                if trail_active and trail_stop and trail_stop < fixed_stop:
                     sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (回落{trail_pct*100:.0f}%)")
                 _latest_report['stop_loss'] = sl_parts
                 lines.append(f"🛑 {' | '.join(sl_parts)}")

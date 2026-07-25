@@ -207,7 +207,7 @@ def get_direction(row):
     di_diff = row['di_diff']
     atr14 = row['atr_14']
     score = row['score']
-    is_trend = score >= 50
+    is_trend = score >= 60
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
@@ -221,9 +221,9 @@ def get_direction(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    if near_top and score >= 50:
+    if near_top and score >= 60:
         return 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 50:
+    elif near_bottom and score >= 60:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top:
         return None, 'BB中段'
@@ -265,7 +265,7 @@ def get_direction_v2(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    is_trend = score >= 50
+    is_trend = score >= 60
     near_bb_overall = near_top or near_bottom
 
     # Level 1: 趋势 (原有的非近轨趋势)
@@ -278,9 +278,9 @@ def get_direction_v2(row):
             return None, 'trend_neutral', None
 
     # Level 2: 近轨 + VIX高 → 确认反转
-    if near_top and score >= 50 and vix_pct > 75:
+    if near_top and score >= 60 and vix_pct > 75:
         return 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
-    if near_bottom and score >= 50 and vix_pct > 75:
+    if near_bottom and score >= 60 and vix_pct > 75:
         return 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)', 'nearbb_vix'
 
     # Level 3: 矛盾过滤 — DI diff 与近轨方向相反 → 不开仓
@@ -290,9 +290,9 @@ def get_direction_v2(row):
         return None, '矛盾:近下+DI-', 'filtered'
 
     # Level 4: 近轨 (原有逻辑) — 非矛盾 + 非VIX极端
-    if near_top and score >= 50:
+    if near_top and score >= 60:
         return 'PUT', f'贴BB上轨({dup:.0f}%)', 'nearbb'
-    if near_bottom and score >= 50:
+    if near_bottom and score >= 60:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)', 'nearbb'
     if near_top or near_bottom:
         return None, 'BB中段', None   # score < 60
@@ -668,7 +668,7 @@ if len(has_signal_new_sorted) > 0:
         if len(sub) > 0:
             ret = (sub[col].values - sub['price_t'].values) / sub['price_t'].values
             direction_val = np.where(sub['direction_v2'].values == 'CALL', 1, -1)
-            daily_pnl = direction_val * ret * 10000
+            daily_pnl = direction_val * ret * 3 * 10000
             cum = np.cumsum(daily_pnl)
             ax4.plot(cum, label=f'v2 {label}', color=color, alpha=0.8)
     # Overlay old t+3 for reference
@@ -678,7 +678,7 @@ if len(has_signal_new_sorted) > 0:
         if len(sub) > 0:
             ret = (sub['t+3'].values - sub['price_t'].values) / sub['price_t'].values
             direction_val = np.where(sub['direction'].values == 'CALL', 1, -1)
-            daily_pnl = direction_val * ret * 10000
+            daily_pnl = direction_val * ret * 3 * 10000
             cum = np.cumsum(daily_pnl)
             ax4.plot(cum, label='old t+3', color='gray', alpha=0.4, linestyle='--')
     ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.3)
@@ -693,3 +693,136 @@ plt.savefig(chart_path, dpi=150, bbox_inches='tight')
 print(f"\n📊 图表已保存: {chart_path}")
 print(f"📄 报告已保存: {os.path.join(OUT_DIR, 'backtest_results.txt')}")
 print("✅ 回测完成")
+
+
+# ────────────────────────────────────────────
+# 9. Trade backtest (self-contained, importable)
+# ────────────────────────────────────────────
+def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
+                 trail_pct=0.05, hold_days=7, etf_amount=5000, score_threshold=60):
+    """
+    Full trade backtest with 3x daily compounding PnL and trail-on-ETF logic.
+    All indicator/direction logic replicated here for importability.
+    Returns list of {'entry_date','exit_date','direction','entry_price',
+                     'exit_price','pnl','exit_type'} dicts.
+    """
+    np.random.seed(0)
+    xsp = yf.download('^XSP', period=period, interval='1d')
+    xsp = xsp.droplevel('Ticker', axis=1) if isinstance(xsp.columns, pd.MultiIndex) else xsp
+    vix = yf.download('^VIX', period=period, interval='1d')
+    vix = vix.droplevel('Ticker', axis=1) if isinstance(vix.columns, pd.MultiIndex) else vix
+    vix_close = vix['Close'].reindex(xsp.index).ffill()
+
+    xsp_c = xsp['Close']; xsp_h = xsp['High']; xsp_l = xsp['Low']
+    df = pd.DataFrame(index=xsp.index)
+    df['price'] = xsp_c; df['high'] = xsp_h; df['low'] = xsp_l
+
+    sma20 = xsp_c.rolling(20).mean(); bb_std = xsp_c.rolling(20).std()
+    df['bbu'] = sma20 + 2*bb_std; df['bbl'] = sma20 - 2*bb_std
+    tr = pd.concat([xsp_h-xsp_l, (xsp_h-xsp_c.shift(1)).abs(), (xsp_l-xsp_c.shift(1)).abs()], axis=1).max(axis=1)
+    df['atr_14'] = tr.rolling(14).mean()
+    up = xsp_c.diff(); down = -up
+    pdm = pd.Series(np.where((up>down)&(up>0), up, 0), index=xsp_c.index)
+    mdm = pd.Series(np.where((down>up)&(down>0), down, 0), index=xsp_c.index)
+    atr14 = tr.rolling(14).mean()
+    pdi = 100 * pdm.rolling(14).mean() / atr14; mdi = 100 * mdm.rolling(14).mean() / atr14
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi)
+    df['adx'] = dx.rolling(14).mean(); df['di_diff'] = (pdi - mdi) / 100
+    chg = xsp_c.diff(10).abs(); vol = xsp_c.diff().abs().rolling(10).sum()
+    df['er'] = (chg / vol).fillna(0)
+    h10 = xsp_c.rolling(10).max(); l10 = xsp_c.rolling(10).min()
+    vr = ((xsp_c - l10) / (h10 - l10).replace(0, np.nan)).fillna(0.5)
+    df['vr'] = vr.clip(0, 1) * 2
+    df['vix_percentile'] = vix_close.rank(pct=True) * 100
+    delta = xsp_c.diff(); gain = delta.clip(lower=0); loss = (-delta).clip(lower=0)
+    ag = gain.rolling(14).mean(); al = loss.rolling(14).mean()
+    df['rsi_14'] = (100 - 100 / (1 + ag / al.replace(0, np.nan))).fillna(50)
+
+    def cs(r):
+        s = 0
+        s += 20 if r['adx'] >= 25 else 10 if r['adx'] >= 20 else 0
+        s += 20 if r['er'] >= 0.60 else 10 if r['er'] >= 0.45 else 0
+        s += 20 if r['vr'] >= 1.2 else 10 if r['vr'] >= 1.0 else 0
+        s += 20 if r['rsi_14'] >= 60 else 10 if r['rsi_14'] >= 55 else 0
+        s = min(s, 100)
+        return round(s * 0.4 + (r['adx'] / 60 if r['adx'] > 0 else 0) * 100 * 0.3 + (s / 100) * 30)
+
+    df['score'] = df.apply(cs, axis=1)
+    df = df.dropna().copy()
+
+    def gd(r):
+        nt = r['price'] >= r['bbu'] - r['atr_14'] * 0.60 if pd.notna(r['bbu']) else False
+        nb = r['price'] <= r['bbl'] + r['atr_14'] * 0.60 if pd.notna(r['bbl']) else False
+        nbo, sc, dd, vp = nt or nb, r['score'], r['di_diff'], r['vix_percentile']
+        if not nbo and sc >= score_threshold:
+            if dd > 0: return 'CALL', 'L1_trend'
+            elif dd < 0: return 'PUT', 'L1_trend'
+            return None, 'L1_BB_mid'
+        if nt and sc >= score_threshold and vp > 75: return 'PUT', 'L2_nearbb_vix'
+        if nb and sc >= score_threshold and vp > 75: return 'CALL', 'L2_nearbb_vix'
+        if nt and dd > 0: return None, 'L3_conflict'
+        if nb and dd < 0: return None, 'L3_conflict'
+        if nt and sc >= score_threshold: return 'PUT', 'L4_nearbb'
+        if nb and sc >= score_threshold: return 'CALL', 'L4_nearbb'
+        return None, 'L0_BB_mid'
+
+    trades = []; pos = None
+    for i in range(len(df)):
+        row = df.iloc[i]; d, r = gd(row); dt = df.index[i]
+        is_nb = r.startswith('L2') or r.startswith('L4')
+
+        # Exit
+        if pos is not None and i > pos['ei']:
+            ex = False; xp = None; xt = ''
+
+            # Update 3x ETF value first (for all exit types)
+            cs = float(row['price'])
+            pos['pc_prev'] = pos['pc']
+            dr = cs / pos['pc'] - 1
+            pos['ev'] *= (1 + 3 * dr) if pos['dir'] == 'CALL' else (1 - 3 * dr)
+            pos['pc'] = cs
+            if pos['ev'] > pos['pk']:
+                pos['pk'] = pos['ev']
+
+            # (a) Trail on 3x ETF value (Close-based, report → hand close)
+            if pos['ev'] <= pos['pk'] * (1 - trail_pct) and pos['pk'] > etf_amount:
+                xp = cs; ex = True; xt = 'trail'
+
+            # (b) Fixed stop (Low-based, Moomoo auto)
+            if not ex:
+                lw = float(row['low'])
+                sp = near_bb_stop_pct if pos['nb'] else stop_loss_pct
+                if pos['dir'] == 'CALL' and lw <= pos['ep'] * (1 - sp):
+                    xp = pos['ep'] * (1 - sp); ex = True; xt = 'fixed_stop'
+                elif pos['dir'] != 'CALL' and lw >= pos['ep'] * (1 + sp):
+                    xp = pos['ep'] * (1 + sp); ex = True; xt = 'fixed_stop'
+
+            # (c) Hold days reached → exit at close
+            if not ex and i - pos['ei'] >= hold_days:
+                xp = cs; ex = True; xt = 't+7'
+
+            if ex:
+                # For fixed stop: recalc last day's return using stop price, not close
+                if xt == 'fixed_stop':
+                    dr_close = cs / pos.get('pc_prev', pos['ep']) - 1
+                    dr_stop = xp / pos.get('pc_prev', pos['ep']) - 1
+                    w = (1 + 3 * dr_stop) if pos['dir'] == 'CALL' else (1 - 3 * dr_stop)
+                    w_close = (1 + 3 * dr_close) if pos['dir'] == 'CALL' else (1 - 3 * dr_close)
+                    pos['ev'] = pos['ev'] / w_close * w if w_close != 0 else pos['ev']
+                trades.append({
+                    'entry_date': pos['ed'], 'exit_date': dt,
+                    'direction': pos['dir'], 'entry_price': pos['ep'],
+                    'exit_price': round(xp, 2), 'pnl': round(pos['ev'] - etf_amount, 2),
+                    'exit_type': xt,
+                })
+                pos = None
+
+        # Entry
+        if pos is None and d is not None:
+            pos = {
+                'dir': d, 'ep': float(row['price']), 'ed': dt, 'ei': i,
+                'ev': float(etf_amount), 'pk': float(etf_amount),
+                'pc': float(row['price']), 'nb': is_nb,
+            }
+
+    return trades

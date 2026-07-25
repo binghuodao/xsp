@@ -285,6 +285,7 @@ def simulate_trade(signal, stop_pct):
     else:
         stop_frac = stop_pct / 100.0
         hit_stop = False
+        stop_off = None
         worst_move = 0
         exit_price = None
 
@@ -303,6 +304,7 @@ def simulate_trade(signal, stop_pct):
 
             if adverse >= stop_frac:
                 hit_stop = True
+                stop_off = off
                 # Exit at stop% loss on the first adverse day
                 exit_price = entry * (1 - stop_frac) if direction == 'CALL' else entry * (1 + stop_frac)
                 break
@@ -316,18 +318,35 @@ def simulate_trade(signal, stop_pct):
     if exit_price is None:
         return None
 
-    # P&L
-    if direction == 'CALL':
-        pnl_pct = (exit_price - entry) / entry
-    else:
-        pnl_pct = (entry - exit_price) / entry
+    # Daily compounding 3x P&L
+    etf_ret_mult = 1.0
+    last_prices = []
+    for off in range(1, 4):
+        f = futures.get(f't+{off}')
+        if f is None:
+            break
+        last_prices.append(f['close'])
+        # Stop was hit on this day
+        if hit_stop and off == stop_off:
+            prev = entry if off == 1 else futures[f't+{off-1}']['close']
+            daily_ret = exit_price / prev - 1
+        elif off == 1:
+            daily_ret = f['close'] / entry - 1
+        else:
+            prev = futures[f't+{off-1}']['close']
+            daily_ret = f['close'] / prev - 1
+        if direction == 'CALL':
+            etf_ret_mult *= (1 + 3 * daily_ret)
+        else:
+            etf_ret_mult *= (1 - 3 * daily_ret)
 
     # ETF $ loss
     etf_amount = ETF_AMOUNTS.get(tier, 2000)
-    etf_loss = etf_amount * LEVERAGE * abs(pnl_pct) if pnl_pct < 0 else etf_amount * LEVERAGE * pnl_pct * 0.3
+    etf_pnl_pct = etf_ret_mult - 1
+    etf_loss = etf_amount * etf_pnl_pct
     # Naked buy $ loss
     naked_count = NAKED_BUY_COUNTS.get(tier, 0)
-    naked_loss = naked_count * 100 if pnl_pct < 0 else 0
+    naked_loss = naked_count * 100 if etf_pnl_pct < 0 else 0
 
     return {
         'date': str(signal['date'].date()),
@@ -337,7 +356,7 @@ def simulate_trade(signal, stop_pct):
         'score': signal['score'],
         'price': entry,
         'exit_price': exit_price,
-        'pnl_pct': round(pnl_pct * 100, 2),
+        'pnl_pct': round(etf_pnl_pct * 100, 2),
         'hit_stop': hit_stop,
         'exit_reason': 'stop' if hit_stop else 't+3',
         'worst_move': round(worst_move * 100, 2),
