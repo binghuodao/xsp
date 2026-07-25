@@ -207,7 +207,7 @@ def get_direction(row):
     di_diff = row['di_diff']
     atr14 = row['atr_14']
     score = row['score']
-    is_trend = score >= 60
+    is_trend = score >= 50
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
@@ -221,9 +221,9 @@ def get_direction(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    if near_top and score >= 60:
-        return 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 60:
+    if near_top and score >= 50:
+        return None, f'贴BB上轨({dup:.0f}%)'
+    elif near_bottom and score >= 50:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top:
         return None, 'BB中段'
@@ -265,7 +265,7 @@ def get_direction_v2(row):
     near_top = (bbu - price) < near_threshold
     near_bottom = (price - bbl) < near_threshold
 
-    is_trend = score >= 60
+    is_trend = score >= 50
     near_bb_overall = near_top or near_bottom
 
     # Level 1: 趋势 (原有的非近轨趋势)
@@ -278,9 +278,9 @@ def get_direction_v2(row):
             return None, 'trend_neutral', None
 
     # Level 2: 近轨 + VIX高 → 确认反转
-    if near_top and score >= 60 and vix_pct > 75:
-        return 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
-    if near_bottom and score >= 60 and vix_pct > 75:
+    if near_top and score >= 50 and vix_pct > 75:
+        return None, f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
+    if near_bottom and score >= 50 and vix_pct > 75:
         return 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)', 'nearbb_vix'
 
     # Level 3: 矛盾过滤 — DI diff 与近轨方向相反 → 不开仓
@@ -290,9 +290,9 @@ def get_direction_v2(row):
         return None, '矛盾:近下+DI-', 'filtered'
 
     # Level 4: 近轨 (原有逻辑) — 非矛盾 + 非VIX极端
-    if near_top and score >= 60:
-        return 'PUT', f'贴BB上轨({dup:.0f}%)', 'nearbb'
-    if near_bottom and score >= 60:
+    if near_top and score >= 50:
+        return None, f'贴BB上轨({dup:.0f}%)', 'nearbb'
+    if near_bottom and score >= 50:
         return 'CALL', f'贴BB下轨({dlow:.0f}%)', 'nearbb'
     if near_top or near_bottom:
         return None, 'BB中段', None   # score < 60
@@ -699,7 +699,7 @@ print("✅ 回测完成")
 # 9. Trade backtest (self-contained, importable)
 # ────────────────────────────────────────────
 def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
-                 trail_pct=0.05, hold_days=7, etf_amount=5000, score_threshold=60):
+                 trail_pct=0.04, hold_days=7, etf_amount=5000, score_threshold=50):
     """
     Full trade backtest with 3x daily compounding PnL and trail-on-ETF logic.
     All indicator/direction logic replicated here for importability.
@@ -756,13 +756,13 @@ def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
         nbo, sc, dd, vp = nt or nb, r['score'], r['di_diff'], r['vix_percentile']
         if not nbo and sc >= score_threshold:
             if dd > 0: return 'CALL', 'L1_trend'
-            elif dd < 0: return 'PUT', 'L1_trend'
+            elif dd < 0: return None, 'L1_trend'
             return None, 'L1_BB_mid'
-        if nt and sc >= score_threshold and vp > 75: return 'PUT', 'L2_nearbb_vix'
+        if nt and sc >= score_threshold and vp > 75: return None, 'L2_nearbb_vix'
         if nb and sc >= score_threshold and vp > 75: return 'CALL', 'L2_nearbb_vix'
         if nt and dd > 0: return None, 'L3_conflict'
         if nb and dd < 0: return None, 'L3_conflict'
-        if nt and sc >= score_threshold: return 'PUT', 'L4_nearbb'
+        if nt and sc >= score_threshold: return None, 'L4_nearbb'
         if nb and sc >= score_threshold: return 'CALL', 'L4_nearbb'
         return None, 'L0_BB_mid'
 

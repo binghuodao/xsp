@@ -240,7 +240,7 @@ def send_market_report(report_type, force=False):
     score = round(total)
     icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
-    is_trend = score >= 60
+    is_trend = score >= 50
 
     # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100
@@ -265,9 +265,9 @@ def send_market_report(report_type, force=False):
         else:
             direction, reason = None, 'BB 中段'
     # Level 2: 近轨 + VIX高 → 确认反转
-    elif near_top and score >= 60 and vix_pct > 75:
+    elif near_top and score >= 50 and vix_pct > 75:
         direction, reason = 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)'
-    elif near_bottom and score >= 60 and vix_pct > 75:
+    elif near_bottom and score >= 50 and vix_pct > 75:
         direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
     # Level 3: 矛盾过滤
     elif near_top and di_diff > 0:
@@ -275,14 +275,18 @@ def send_market_report(report_type, force=False):
     elif near_bottom and di_diff < 0:
         direction, reason = None, 'BB 中段'
     # Level 4: 近轨 (原有)
-    elif near_top and score >= 60:
+    elif near_top and score >= 50:
         direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 60:
+    elif near_bottom and score >= 50:
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
         direction, reason = None, 'BB 中段'
     else:
         direction, reason = None, 'BB 中段'
+
+    # PUT filter: 牛市不做空
+    if direction == 'PUT':
+        direction, reason = None, 'PUT过滤'
 
     # SKEW filter: 尾部风险低不做空, 尾部风险高不做多
     if direction is not None:
@@ -563,7 +567,7 @@ def send_market_report(report_type, force=False):
                 fixed_stop = _entry_price * (1 - stop_pct)
 
                 # 统一跟踪（从最高ETF价回落5%）
-                trail_pct = 0.05
+                trail_pct = 0.04
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
                 # 有效止损 = 两者较紧的那个（仅盈利后跟踪才生效）

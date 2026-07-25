@@ -39,10 +39,10 @@ class TestTrendIdentification:
 
 class TestDirection:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_dir,exp_reason_substr", [
-        # case 4: 震荡 + 近BB上轨 → PUT (score ≥ 50)
-        ("震荡+近BB上轨→PUT",
+        # case 4: 震荡 + 近BB上轨 → PUT过滤
+        ("震荡+近BB上轨→PUT过滤",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
-         758.5, 'PUT', '贴BB上轨'),
+         758.5, None, 'PUT过滤'),
         # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 50)
         ("震荡+近BB下轨→CALL",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
@@ -55,18 +55,18 @@ class TestDirection:
         ("case 8: 单边上升趋势 → CALL",
          {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': 0.12, 'bbl': 740, 'bbu': 760},
          750.0, 'CALL', 'DI+'),
-        # case 9: 单边下降趋势 → PUT (DI- < 0)
-        ("单边下降→PUT",
+        # case 9: 单边下降趋势 → PUT过滤
+        ("单边下降→PUT过滤",
          {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': -0.10, 'bbl': 740, 'bbu': 760},
-         750.0, 'PUT', 'DI-'),
+         750.0, None, 'PUT过滤'),
         # case 10: 近轨阈值 ATR14×30% 可用 (gap=2.0 < 2.4)
-        ("ATR14阈值:价差<ATR14*30%→PUT",
+        ("ATR14阈值:价差<ATR14*30%→PUT过滤",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
-         758.0, 'PUT', '贴BB上轨'),
+         758.0, None, 'PUT过滤'),
         # case 11: 近轨阈值 ATR14 不可用，降级 BW×10%（gap=1.5 < 2.0）
-        ("ATR14不可用→降级BW×10%",
+        ("ATR14不可用→降级BW×10%→PUT过滤",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
-         758.5, 'PUT', '贴BB上轨'),
+         758.5, None, 'PUT过滤'),
         # case 12: ATR14不可用且价差超BW×10% → 不触发近轨
         ("ATR14不可用且价差超BW×10%→不触发",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
@@ -153,7 +153,7 @@ class TestNakedBuy:
 
 class TestETFReference:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_etf_substr", [
-        ("case 19: PUT→做空ETF", {'di_diff': -0.10, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SH'),
+        ("case 19: PUT→无ETF", {'di_diff': -0.10, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, None),
         ("case 20: CALL→做多ETF", {'di_diff': 0.10, 'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50}, 750, 'SPYM'),
         ("case 21: None→无ETF行", {'adx': 15, 'vr': 0.8}, 750, None),
     ])
@@ -516,17 +516,13 @@ class TestEdgeCases:
 # ═══════════════════════════════════════════════════════════
 
 class TestOutputFormat:
-    def test_full_report_trending_put(self, reset_globals, mock_sio):
-        """case 58: 趋势PUT→含ETF+树+裸买+方向行"""
+    def test_full_report_put_filtered(self, reset_globals, mock_sio):
+        """case 58: PUT过滤→direction=None"""
         app.historical_stats.update(std_hs(di_diff=-0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
-        assert r.get('direction') == 'PUT'
-        assert 'SH' in r.get('etf', '')
-        assert 'PUT树' in r.get('tree_label', '')
-        assert r.get('tree_strikes', '')
-        assert '裸P' in r.get('single_label', '') or 'PUT' in r.get('single_label', '')
+        assert r.get('direction') is None
 
     def test_full_report_trending_call(self, reset_globals, mock_sio):
         """case 59: 趋势CALL→含ETF+树+裸买"""
@@ -543,12 +539,12 @@ class TestOutputFormat:
         assert r['hold_plan'].get('etf_1x_close') is not None
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
-        """case 60: 近BB上轨→有方向 (score≥60)"""
+        """case 60: 近BB下轨→有方向 (score≥50)"""
         app.historical_stats.update(std_hs(adx=25, er=0.55, bbw=18, atr_14=8.0))
-        app.latest_data["index"]["price"] = 758.0  # 近BB上轨 (gap=2.0 < ATR14*60%=4.8)
+        app.latest_data["index"]["price"] = 742.0  # 近BB下轨 (gap=2.0 < ATR14*60%=4.8)
         app.send_market_report('morning', force=True)
         r = app._latest_report
-        assert r.get('direction') in ('PUT', 'CALL')
+        assert r.get('direction') == 'CALL'
 
     def test_direction_none_format(self, reset_globals, mock_sio):
         """case 61: direction=None→无ETF/树/裸买"""
@@ -624,12 +620,12 @@ class TestSignalTier:
         assert r['tool_recommend']['etf_amount'] == 5000
 
     def test_signal_tier_weak(self, reset_globals, mock_sio):
-        """weak: direction exists but score<65 (near-BB with score≈63)"""
+        """weak: score<65 near-BB bottom→CALL"""
         app.historical_stats.update(std_hs(
-            di_diff=-0.01, adx=30, er=0.55, bbw=18, dev=0.0, vr=1.0,
+            di_diff=0.01, adx=30, er=0.55, bbw=18, dev=0.0, vr=1.0,
             vix_rank=50, atr_14=8.0, bbl=740, bbu=760,
         ))
-        app.latest_data["index"]["price"] = 758.5  # near BB top → PUT, score≈63
+        app.latest_data["index"]["price"] = 742.0  # near BB bottom → CALL, score≈63
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') is not None
@@ -661,19 +657,19 @@ class TestSignalTier:
         assert r.get('tool_recommend') is None
 
     def test_holding_days_reset_on_direction_change(self, reset_globals, mock_sio):
-        """方向切换→holding_days=0"""
+        """方向变为None→holding_days=0"""
         # First report: CALL
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r1 = app._latest_report
         assert r1.get('holding_days') == 0
-        # Second report: PUT (different direction)
-        app.historical_stats.update(std_hs(di_diff=-0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
+        # Second report: no direction (score dropped)
+        app.historical_stats.update(std_hs(di_diff=0.05, adx=15, er=0.3, vr=0.5, vix_rank=50))
         app.send_market_report('morning', force=True)
         r2 = app._latest_report
-        assert r2.get('direction') == 'PUT'
-        assert r2.get('holding_days') == 0, "direction changed → holding_days should reset"
+        assert r2.get('direction') is None
+        assert r2.get('holding_days') == 0, "direction lost → holding_days should reset"
 
     def test_holding_days_increment(self, reset_globals, mock_sio):
         """同方向两次→holding_days=1"""
