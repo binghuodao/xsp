@@ -110,6 +110,8 @@ def adx_func(high, low, close, period=14):
 adx_series, plus_di_series, minus_di_series = adx_func(xsp_h, xsp_l, xsp_c, 14)
 df['adx'] = adx_series
 df['di_diff'] = (plus_di_series - minus_di_series) / 100
+df['di_diff_prev'] = df['di_diff'].shift(1).fillna(0)
+df['sma50'] = price_series.rolling(50).mean()
 
 # Efficiency Ratio
 def efficiency_ratio(close, period=10):
@@ -161,6 +163,8 @@ def get_direction_v2(row):
     price = row['price']; bbu = row['bbu']; bbl = row['bbl']
     bw = row['bw']; di_diff = row['di_diff']; atr14 = row['atr_14']
     score = row['score']; vix_pct = row.get('vix_percentile', 50)
+    adx = row.get('adx', 0)
+    rsi_14 = row.get('rsi_14', 50)
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, '', None
     if atr14 and atr14 > 0 and not np.isnan(atr14):
@@ -173,20 +177,24 @@ def get_direction_v2(row):
     near_bb_overall = near_top or near_bottom
     # L1: trend
     if not near_bb_overall and is_trend:
-        if di_diff > 0: return 'CALL', 'trend', 'trend'
-        elif di_diff < 0: return 'PUT', 'trend', 'trend'
+        if di_diff > 0 and row.get('di_diff_prev', 0) > 0 and price > row.get('sma50', 0): return 'CALL', 'trend', 'trend'
+        elif di_diff < 0:
+            vix_price = row.get('vix', 15)
+            if vix_pct > 80 or vix_price > 28:
+                return 'PUT', 'trend', 'trend'
+            return None, 'trend_neutral', None
         else: return None, 'trend_neutral', None
-    # L2: nearBB + VIX
+    # L2: nearBB + VIX (only CALL)
     if near_top and score >= 60 and vix_pct > 75:
-        return 'PUT', 'nearbb_vix', 'nearbb_vix'
+        return None, 'nearbb_vix', 'nearbb_vix'
     if near_bottom and score >= 60 and vix_pct > 75:
         return 'CALL', 'nearbb_vix', 'nearbb_vix'
     # L3: conflict
     if near_top and di_diff > 0: return None, 'filtered', 'filtered'
     if near_bottom and di_diff < 0: return None, 'filtered', 'filtered'
-    # L4: nearBB
-    if near_top and score >= 60: return 'PUT', 'nearbb', 'nearbb'
-    if near_bottom and score >= 60: return 'CALL', 'nearbb', 'nearbb'
+    # L4: nearBB (only CALL)
+    if near_top and score >= 60: return None, 'nearbb', 'nearbb'
+    if near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35): return 'CALL', 'nearbb', 'nearbb'
     if near_top or near_bottom: return None, 'BB_center', None
     return None, 'BB_center', None
 

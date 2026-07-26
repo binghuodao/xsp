@@ -39,13 +39,13 @@ class TestTrendIdentification:
 
 class TestDirection:
     @pytest.mark.parametrize("desc,hs_overrides,price,exp_dir,exp_reason_substr", [
-        # case 4: 震荡 + 近BB上轨 → PUT过滤
-        ("震荡+近BB上轨→PUT过滤",
+        # case 4: 震荡 + 近BB上轨 → BB中段（PUT仅VIX>80%时触发）
+        ("震荡+近BB上轨→BB中段",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
-         758.5, None, 'PUT过滤'),
-        # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 50)
+         758.5, None, 'BB 中段'),
+        # case 6: 震荡 + 近BB下轨 → CALL (score ≥ 50, ADX<25)
         ("震荡+近BB下轨→CALL",
-         {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
+         {'adx': 22, 'er': 0.7, 'vr': 1.4, 'rsi_14': 60, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
          741.5, 'CALL', '贴BB下轨'),
         # case 7: 震荡 + BB中段 → None
         ("震荡+BB中段→None",
@@ -55,18 +55,18 @@ class TestDirection:
         ("case 8: 单边上升趋势 → CALL",
          {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': 0.12, 'bbl': 740, 'bbu': 760},
          750.0, 'CALL', 'DI+'),
-        # case 9: 单边下降趋势 → PUT过滤
-        ("单边下降→PUT过滤",
+        # case 9: 单边下降趋势 → BB中段（VIX不足，PUT不触发）
+        ("单边下降→BB中段",
          {'adx': 35, 'er': 0.6, 'vr': 1.8, 'vix_rank': 50, 'di_diff': -0.10, 'bbl': 740, 'bbu': 760},
-         750.0, None, 'PUT过滤'),
-        # case 10: 近轨阈值 ATR14×30% 可用 (gap=2.0 < 2.4)
-        ("ATR14阈值:价差<ATR14*30%→PUT过滤",
+         750.0, None, 'BB 中段'),
+        # case 10: 近轨阈值 ATR14×30% 可用 (gap=2.0 < 2.4) → BB中段
+        ("ATR14阈值:价差<ATR14*30%→BB中段",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 8.0, 'bbl': 740, 'bbu': 760},
-         758.0, None, 'PUT过滤'),
-        # case 11: 近轨阈值 ATR14 不可用，降级 BW×10%（gap=1.5 < 2.0）
-        ("ATR14不可用→降级BW×10%→PUT过滤",
+         758.0, None, 'BB 中段'),
+        # case 11: 近轨阈值 ATR14 不可用，降级 BW×10%（gap=1.5 < 2.0）→ BB中段
+        ("ATR14不可用→降级BW×10%→BB中段",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
-         758.5, None, 'PUT过滤'),
+         758.5, None, 'BB 中段'),
         # case 12: ATR14不可用且价差超BW×10% → 不触发近轨
         ("ATR14不可用且价差超BW×10%→不触发",
          {'adx': 30, 'er': 0.5, 'vr': 1.2, 'atr_14': 0, 'bbl': 740, 'bbu': 760},
@@ -136,9 +136,9 @@ class TestNakedBuy:
             single = r.get('single_label', '')
             assert '裸C' in single or '裸CALL' in single
 
-    def test_single_leg_put_trending(self, reset_globals, mock_sio):
-        """case 18: 单边下降有裸PUT推荐"""
-        app.historical_stats.update(std_hs(skew=-3.0, adx=28))
+    def test_single_leg_put_trending_vix(self, reset_globals, mock_sio):
+        """case 18: 高VIX+单边下降有裸PUT推荐"""
+        app.historical_stats.update(std_hs(skew=-3.0, adx=28, di_diff=-0.10, vix=30.0, vix_percentile=85))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -516,8 +516,8 @@ class TestEdgeCases:
 # ═══════════════════════════════════════════════════════════
 
 class TestOutputFormat:
-    def test_full_report_put_filtered(self, reset_globals, mock_sio):
-        """case 58: PUT过滤→direction=None"""
+    def test_full_report_put_not_triggered(self, reset_globals, mock_sio):
+        """case 58: VIX不足→方向None"""
         app.historical_stats.update(std_hs(di_diff=-0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
@@ -540,7 +540,7 @@ class TestOutputFormat:
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
         """case 60: 近BB下轨→有方向 (score≥50)"""
-        app.historical_stats.update(std_hs(adx=25, er=0.55, bbw=18, atr_14=8.0))
+        app.historical_stats.update(std_hs(adx=22, er=0.7, vr=1.4, rsi_14=60, bbw=18, atr_14=8.0))
         app.latest_data["index"]["price"] = 742.0  # 近BB下轨 (gap=2.0 < ATR14*60%=4.8)
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -622,8 +622,8 @@ class TestSignalTier:
     def test_signal_tier_weak(self, reset_globals, mock_sio):
         """weak: score<65 near-BB bottom→CALL"""
         app.historical_stats.update(std_hs(
-            di_diff=0.01, adx=30, er=0.55, bbw=18, dev=0.0, vr=1.0,
-            vix_rank=50, atr_14=8.0, bbl=740, bbu=760,
+            di_diff=0.01, adx=22, er=0.7, vr=1.4, rsi_14=60,
+            bbw=18, dev=0.0, vix_rank=50, atr_14=8.0, bbl=740, bbu=760,
         ))
         app.latest_data["index"]["price"] = 742.0  # near BB bottom → CALL, score≈63
         app.send_market_report('morning', force=True)

@@ -90,6 +90,8 @@ def get_direction_v2(row):
     price = row['price']; bbu = row['bbu']; bbl = row['bbl']
     bw = row['bw']; di_diff = row['di_diff']; atr14 = row['atr_14']
     score = row['score']; vix_pct = row.get('vix_percentile', 50)
+    adx = row.get('adx', 0)
+    rsi_14 = row.get('rsi_14', 50)
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data'
     dup = (bbu - price) / bw * 100; dlow = (price - bbl) / bw * 100
@@ -100,8 +102,12 @@ def get_direction_v2(row):
     is_trend = score >= 50
     # Level 1: trend (not near-BB)
     if not near_bb_overall and is_trend:
-        if di_diff > 0: return 'CALL', 'trend'
-        elif di_diff < 0: return None, 'trend'
+        if di_diff > 0 and row.get('di_diff_prev', 0) > 0 and price > row.get('sma50', 0): return 'CALL', 'trend'
+        elif di_diff < 0:
+            # PUT only in high VIX
+            if vix_pct > 80 or row.get('vix', 15) > 28:
+                return 'PUT', 'trend'
+            return None, 'trend'
     # Level 2: nearBB + VIX high
     if near_top and score >= 50 and vix_pct > 75: return None, 'nearbb_vix'
     if near_bottom and score >= 50 and vix_pct > 75: return 'CALL', 'nearbb_vix'
@@ -110,7 +116,7 @@ def get_direction_v2(row):
     if near_bottom and di_diff < 0: return None, 'filtered'
     # Level 4: nearBB basic
     if near_top and score >= 50: return None, 'nearbb'
-    if near_bottom and score >= 50: return 'CALL', 'nearbb'
+    if near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35): return 'CALL', 'nearbb'
     if near_top or near_bottom: return None, 'BB_center'
     return None, 'BB_center'
 
@@ -179,6 +185,8 @@ df['atr_14'] = atr(xsp_h, xsp_l, price_series, 14)
 adx_series, plus_di, minus_di = adx_func(xsp_h, xsp_l, price_series, 14)
 df['adx'] = adx_series
 df['di_diff'] = (plus_di - minus_di) / 100
+df['di_diff_prev'] = df['di_diff'].shift(1).fillna(0)
+df['sma50'] = price_series.rolling(50).mean()
 
 # ER, VR
 df['er'] = efficiency_ratio(price_series, 10)

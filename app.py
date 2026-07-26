@@ -247,6 +247,8 @@ def send_market_report(report_type, force=False):
     dlow = (price - bbl) / bw * 100
     di_diff = hs.get('di_diff', 0)
     vix_pct = hs.get('vix_percentile', 50)
+    adx = hs.get('adx', 18)
+    rsi_14 = hs.get('rsi_14', 50)
     atr14 = hs.get("atr_14")
     if atr14 and atr14 > 0:
         near_threshold = atr14 * 0.60
@@ -258,15 +260,21 @@ def send_market_report(report_type, force=False):
 
     # Level 1: 趋势 (非近轨时)
     if not near_bb_overall and is_trend:
-        if di_diff > 0:
+        if di_diff > 0 and hs.get('di_diff_prev', 0) > 0 and price > hs.get('sma50', 0):
             direction, reason = 'CALL', f'DI+({di_diff:.2f})'
+        elif di_diff > 0:
+            direction, reason = None, 'BB 中段'
         elif di_diff < 0:
-            direction, reason = 'PUT', f'DI-({di_diff:.2f})'
+            # PUT only in high VIX environment (bear market panic)
+            if vix_pct > 80 or hs.get('vix', 15) > 28:
+                direction, reason = 'PUT', f'DI-({di_diff:.2f})'
+            else:
+                direction, reason = None, 'BB 中段'
         else:
             direction, reason = None, 'BB 中段'
-    # Level 2: 近轨 + VIX高 → 确认反转
+    # Level 2: 近轨 + VIX高 → 确认反转（只做CALL反转，不做空）
     elif near_top and score >= 50 and vix_pct > 75:
-        direction, reason = 'PUT', f'贴BB上+VIX({vix_pct:.0f}%)'
+        direction, reason = None, 'BB 中段'
     elif near_bottom and score >= 50 and vix_pct > 75:
         direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
     # Level 3: 矛盾过滤
@@ -274,19 +282,15 @@ def send_market_report(report_type, force=False):
         direction, reason = None, 'BB 中段'
     elif near_bottom and di_diff < 0:
         direction, reason = None, 'BB 中段'
-    # Level 4: 近轨 (原有)
+    # Level 4: 近轨（只做CALL，不做空）
     elif near_top and score >= 50:
-        direction, reason = 'PUT', f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 50:
+        direction, reason = None, 'BB 中段'
+    elif near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35):
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
         direction, reason = None, 'BB 中段'
     else:
         direction, reason = None, 'BB 中段'
-
-    # PUT filter: 牛市不做空
-    if direction == 'PUT':
-        direction, reason = None, 'PUT过滤'
 
     # SKEW filter: 尾部风险低不做空, 尾部风险高不做多
     if direction is not None:
@@ -732,6 +736,8 @@ historical_stats = {
     "support": 0.0,
     "resistance": 0.0,
     "skew_index": 146.0,
+    "sma50": 0.0,
+    "di_diff_prev": 0.0,
     "last_updated": 0
 }
 
@@ -915,9 +921,9 @@ def update_historical_data():
             print(f"⚠️  SKEW download failed: {skew_err}")
             historical_stats["skew_index"] = 146.0  # fallback to mean
 
-        # XSP ATR 14 & EMA 20
+        # XSP ATR 14 & EMA 20 & SMA50
         xsp_ticker = yf.Ticker("^XSP")
-        xsp_hist = xsp_ticker.history(period="2mo")
+        xsp_hist = xsp_ticker.history(period="6mo")
         if len(xsp_hist) >= 15:
             highs = xsp_hist['High']
             lows = xsp_hist['Low']
@@ -935,6 +941,10 @@ def update_historical_data():
             ema_20 = xsp_hist['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
             historical_stats["ema_20"] = float(ema_20)
 
+        if len(xsp_hist) >= 55:
+            sma50 = xsp_hist['Close'].rolling(50).mean().iloc[-1]
+            historical_stats["sma50"] = float(sma50)
+
         # SPY 日线趋势指标 (ADX, ER, BBW, Deviation, Vol Ratio)
         try:
             spy_ticker = yf.Ticker("SPY")
@@ -950,6 +960,7 @@ def update_historical_data():
                 historical_stats["adx"] = float(adx_df['ADX_14'].iloc[-1])
                 dmp = float(adx_df['DMP_14'].iloc[-1]) if 'DMP_14' in adx_df.columns else 0.0
                 dmn = float(adx_df['DMN_14'].iloc[-1]) if 'DMN_14' in adx_df.columns else 0.0
+                historical_stats["di_diff_prev"] = historical_stats.get("di_diff", 0)
                 historical_stats["di_diff"] = round((dmp - dmn) / 100, 3)
 
                 # 2. Efficiency Ratio(10)

@@ -100,6 +100,8 @@ minus_di = 100 * minus_dm.rolling(14).mean() / atr_tr
 dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
 df['adx'] = dx.rolling(14).mean()
 df['di_diff'] = (plus_di - minus_di) / 100
+df['di_diff_prev'] = df['di_diff'].shift(1).fillna(0)
+df['sma50'] = xsp_c.rolling(50).mean()
 
 # ER
 def er_func(close, period=10):
@@ -198,18 +200,20 @@ def evaluate(score_trend_th, score_nearbb_th, atr_mult, vix_pct_thresh, use_conf
 
         # Level 1: Trend
         if not near_bb and is_trend:
-            if di_diff > 0:
+            if di_diff > 0 and row.get('di_diff_prev', 0) > 0 and price > row.get('sma50', 0):
                 direction = 'CALL'
                 reason = 'trend'
             elif di_diff < 0:
-                direction = 'PUT'
-                reason = 'trend'
+                if vix_pct > 80 or row.get('vix', 15) > 28:
+                    direction = 'PUT'
+                    reason = 'trend'
+                else:
+                    continue
             else:
                 continue
-        # Level 2: Near-BB + VIX high
+        # Level 2: Near-BB + VIX high (only CALL)
         elif near_top and score >= score_nearbb_th and vix_pct > vix_pct_thresh:
-            direction = 'PUT'
-            reason = 'nearbb_vix'
+            continue
         elif near_bottom and score >= score_nearbb_th and vix_pct > vix_pct_thresh:
             direction = 'CALL'
             reason = 'nearbb_vix'
@@ -218,11 +222,10 @@ def evaluate(score_trend_th, score_nearbb_th, atr_mult, vix_pct_thresh, use_conf
             continue
         elif use_conflict and near_bottom and di_diff < 0:
             continue
-        # Level 4: Near-BB
+        # Level 4: Near-BB (only CALL)
         elif near_top and score >= score_nearbb_th:
-            direction = 'PUT'
-            reason = 'nearbb'
-        elif near_bottom and score >= score_nearbb_th:
+            continue
+        elif near_bottom and score >= score_nearbb_th and (row.get('adx', 0) < 25 or row.get('rsi_14', 50) < 35):
             direction = 'CALL'
             reason = 'nearbb'
         else:
@@ -299,7 +302,7 @@ def evaluate(score_trend_th, score_nearbb_th, atr_mult, vix_pct_thresh, use_conf
 # ═══════════════════════════════════════════════
 print("⏳ Running grid search...")
 score_trend_values = [55, 60, 65, 70]
-score_nearbb_values = [50, 55, 60, 65]
+score_nearbb_values = [35, 40, 50, 55, 60, 65]
 atr_mult_values = [0.3, 0.4, 0.5, 0.6, 0.7]
 vix_pct_values = [50, 65, 75, 85]
 conflict_values = [True, False]

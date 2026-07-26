@@ -41,6 +41,8 @@ plus_dm = pd.Series(np.where((up > -up) & (up > 0), up, 0), index=price.index)
 minus_dm = pd.Series(np.where((-up > up) & (-up > 0), -up, 0), index=price.index)
 atr14_s = tr.rolling(14).mean()
 df['di_diff'] = (100 * plus_dm.rolling(14).mean() / atr14_s - 100 * minus_dm.rolling(14).mean() / atr14_s) / 100
+df['di_diff_prev'] = df['di_diff'].shift(1).fillna(0)
+df['sma50'] = price.rolling(50).mean()
 df['er'] = (price.diff(10).abs() / price.diff().abs().rolling(10).sum()).fillna(0)
 vr_hi = price.rolling(10).max(); vr_lo = price.rolling(10).min()
 df['vr'] = ((price - vr_lo) / (vr_hi - vr_lo).replace(0, np.nan)).fillna(0.5).clip(0, 1) * 2
@@ -79,18 +81,24 @@ def compute_score(row):
 
 def get_signal(row):
     p = row['price']; u = row['bbu']; l = row['bbl']; bw = row['bw']
-    dd = row['di_diff']; at = row['atr_14']; sc = row['score']; vp = row['vix_percentile']
+    dd = row['di_diff']; at = row['atr_14']; sc = row['score']; vp = row['vix_percentile']; adx = row.get('adx', 0); rs = row.get('rsi_14', 50)
     if u == l or bw <= 0 or np.isnan(bw): return None, None, None
     near_th = at * 0.60 if (at and at > 0 and not np.isnan(at)) else bw * 0.1
     nt = (u - p) < near_th; nb = (p - l) < near_th;     is_t = sc >= 50
     if not nt and not nb and is_t:
-        return ('CALL', 'trend') if dd > 0 else ('PUT', 'trend') if dd < 0 else (None, None)
-    if nt and sc >= 50 and vp > 75: return 'PUT', 'nearbb_vix'
-    if nb and sc >= 50 and vp > 75: return 'CALL', 'nearbb_vix'
-    if nt and dd > 0: return None, None
-    if nb and dd < 0: return None, None
-    if nt and sc >= 50: return 'PUT', 'nearbb'
-    if nb and sc >= 50: return 'CALL', 'nearbb'
+        if dd > 0 and row.get('di_diff_prev', 0) > 0 and p > row.get('sma50', 0):
+            return ('CALL', 'trend')
+        elif dd < 0:
+            if vp > 80 or row.get('vix', 15) > 28:
+                return ('PUT', 'trend')
+            return (None, None)
+        return (None, None)
+    if nt and sc >= 50 and vp > 75: return (None, None)
+    if nb and sc >= 50 and vp > 75: return ('CALL', 'nearbb_vix')
+    if nt and dd > 0: return (None, None)
+    if nb and dd < 0: return (None, None)
+    if nt and sc >= 50: return (None, None)
+    if nb and sc >= 35 and (adx < 25 or rs < 35): return ('CALL', 'nearbb')
     return None, None
 
 def get_tier(score, di_diff, skew):

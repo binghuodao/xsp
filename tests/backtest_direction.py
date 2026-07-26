@@ -207,6 +207,7 @@ def get_direction(row):
     di_diff = row['di_diff']
     atr14 = row['atr_14']
     score = row['score']
+    adx = row.get('adx', 0)
     is_trend = score >= 50
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
@@ -223,7 +224,7 @@ def get_direction(row):
 
     if near_top and score >= 50:
         return None, f'贴BB上轨({dup:.0f}%)'
-    elif near_bottom and score >= 50:
+    elif near_bottom and score >= 35 and (adx < 25 or row.get('rsi_14', 50) < 35):
         return 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top:
         return None, 'BB中段'
@@ -233,7 +234,11 @@ def get_direction(row):
         if di_diff > 0:
             return 'CALL', f'DI+({di_diff:.2f})'
         elif di_diff < 0:
-            return 'PUT', f'DI-({di_diff:.2f})'
+            vix_pct = row.get('vix_percentile', 50)
+            vix_price = row.get('vix', 15)
+            if vix_pct > 80 or vix_price > 28:
+                return 'PUT', f'DI-({di_diff:.2f})'
+            return None, 'BB中段'
         else:
             return None, 'trend_neutral'
     else:
@@ -252,6 +257,8 @@ def get_direction_v2(row):
     atr14 = row['atr_14']
     score = row['score']
     vix_pct = row.get('vix_percentile', 50)
+    adx = row.get('adx', 0)
+    rsi_14 = row.get('rsi_14', 50)
 
     if bbu == bbl or bw <= 0 or np.isnan(bw):
         return None, 'insufficient_data', None
@@ -273,11 +280,15 @@ def get_direction_v2(row):
         if di_diff > 0:
             return 'CALL', f'DI+({di_diff:.2f})', 'trend'
         elif di_diff < 0:
-            return 'PUT', f'DI-({di_diff:.2f})', 'trend'
+            # PUT only in high VIX
+            vix_price = row.get('vix', 15)
+            if vix_pct > 80 or vix_price > 28:
+                return 'PUT', f'DI-({di_diff:.2f})', 'trend'
+            return None, 'trend_neutral', None
         else:
             return None, 'trend_neutral', None
 
-    # Level 2: 近轨 + VIX高 → 确认反转
+    # Level 2: 近轨 + VIX高 → 确认反转（只做CALL反转，不做空）
     if near_top and score >= 50 and vix_pct > 75:
         return None, f'贴BB上+VIX({vix_pct:.0f}%)', 'nearbb_vix'
     if near_bottom and score >= 50 and vix_pct > 75:
@@ -289,13 +300,13 @@ def get_direction_v2(row):
     if near_bottom and di_diff < 0:
         return None, '矛盾:近下+DI-', 'filtered'
 
-    # Level 4: 近轨 (原有逻辑) — 非矛盾 + 非VIX极端
+    # Level 4: 近轨（只做CALL，不做空）
     if near_top and score >= 50:
         return None, f'贴BB上轨({dup:.0f}%)', 'nearbb'
-    if near_bottom and score >= 50:
+    if near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35):
         return 'CALL', f'贴BB下轨({dlow:.0f}%)', 'nearbb'
     if near_top or near_bottom:
-        return None, 'BB中段', None   # score < 60
+        return None, 'BB中段', None   # score < 50
 
     return None, 'BB中段', None
 
@@ -698,8 +709,8 @@ print("✅ 回测完成")
 # ────────────────────────────────────────────
 # 9. Trade backtest (self-contained, importable)
 # ────────────────────────────────────────────
-def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
-                 trail_pct=0.04, hold_days=7, etf_amount=5000, score_threshold=50):
+def run_backtest(period='3y', stop_loss_pct=0.05, near_bb_stop_pct=0.01,
+                 trail_pct=0.08, hold_days=7, etf_amount=5000, score_threshold=50):
     """
     Full trade backtest with 3x daily compounding PnL and trail-on-ETF logic.
     All indicator/direction logic replicated here for importability.
@@ -719,6 +730,7 @@ def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
 
     sma20 = xsp_c.rolling(20).mean(); bb_std = xsp_c.rolling(20).std()
     df['bbu'] = sma20 + 2*bb_std; df['bbl'] = sma20 - 2*bb_std
+    df['sma50'] = xsp_c.rolling(50).mean()
     tr = pd.concat([xsp_h-xsp_l, (xsp_h-xsp_c.shift(1)).abs(), (xsp_l-xsp_c.shift(1)).abs()], axis=1).max(axis=1)
     df['atr_14'] = tr.rolling(14).mean()
     up = xsp_c.diff(); down = -up
@@ -728,12 +740,14 @@ def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
     pdi = 100 * pdm.rolling(14).mean() / atr14; mdi = 100 * mdm.rolling(14).mean() / atr14
     dx = 100 * (pdi - mdi).abs() / (pdi + mdi)
     df['adx'] = dx.rolling(14).mean(); df['di_diff'] = (pdi - mdi) / 100
+    df['di_diff_prev'] = df['di_diff'].shift(1).fillna(0)
     chg = xsp_c.diff(10).abs(); vol = xsp_c.diff().abs().rolling(10).sum()
     df['er'] = (chg / vol).fillna(0)
     h10 = xsp_c.rolling(10).max(); l10 = xsp_c.rolling(10).min()
     vr = ((xsp_c - l10) / (h10 - l10).replace(0, np.nan)).fillna(0.5)
     df['vr'] = vr.clip(0, 1) * 2
     df['vix_percentile'] = vix_close.rank(pct=True) * 100
+    df['vix'] = vix_close.values
     delta = xsp_c.diff(); gain = delta.clip(lower=0); loss = (-delta).clip(lower=0)
     ag = gain.rolling(14).mean(); al = loss.rolling(14).mean()
     df['rsi_14'] = (100 - 100 / (1 + ag / al.replace(0, np.nan))).fillna(50)
@@ -755,15 +769,21 @@ def run_backtest(period='3y', stop_loss_pct=0.03, near_bb_stop_pct=0.01,
         nb = r['price'] <= r['bbl'] + r['atr_14'] * 0.60 if pd.notna(r['bbl']) else False
         nbo, sc, dd, vp = nt or nb, r['score'], r['di_diff'], r['vix_percentile']
         if not nbo and sc >= score_threshold:
-            if dd > 0: return 'CALL', 'L1_trend'
-            elif dd < 0: return None, 'L1_trend'
+            if dd > 0 and r['price'] > r['sma50']:
+                if r['di_diff_prev'] <= 0:
+                    return None, 'L1_trend'
+                return 'CALL', 'L1_trend'
+            elif dd < 0:
+                if vp > 80 or r.get('vix', 15) > 28:
+                    return 'PUT', 'L1_trend'
+                return None, 'L1_trend'
             return None, 'L1_BB_mid'
         if nt and sc >= score_threshold and vp > 75: return None, 'L2_nearbb_vix'
         if nb and sc >= score_threshold and vp > 75: return 'CALL', 'L2_nearbb_vix'
         if nt and dd > 0: return None, 'L3_conflict'
         if nb and dd < 0: return None, 'L3_conflict'
         if nt and sc >= score_threshold: return None, 'L4_nearbb'
-        if nb and sc >= score_threshold: return 'CALL', 'L4_nearbb'
+        if nb and sc >= 35 and (r['adx'] < 25 or r['rsi_14'] < 35): return 'CALL', 'L4_nearbb'
         return None, 'L0_BB_mid'
 
     trades = []; pos = None

@@ -32,16 +32,16 @@
 ### Level 1 — 趋势（非近轨 + is_trend）
 ```
 非近轨 + score ≥ 50 → 趋势方向
-  DI diff > 0  → CALL
-  DI diff < 0  → PUT
+  DI diff > 0 + di_diff_prev > 0 + Price > SMA50 → CALL（需 2 天连续 DI+ 确认 + 价格在 50 日均线上方）
+  DI diff > 0 + (di_diff_prev ≤ 0 或 Price ≤ SMA50) → 不开仓（一日游反弹或中期趋势向下的反弹）
+  DI diff < 0  → PUT（仅在 VIX>80% 或 VIX>28 时）
   DI diff = 0  → 不开仓
 ```
 
-### Level 2 — 近轨 + VIX 高 → 反转确认（覆盖趋势方向）
+### Level 2 — 近轨 + VIX 高 → 反转确认（覆盖趋势方向，只做CALL）
 ```
 近轨 + score ≥ 50 + VIX% > 75
-  贴 BB 上轨 → PUT
-  贴 BB 下轨 → CALL
+   贴 BB 下轨 → CALL
 ```
 
 ### Level 3 — 矛盾过滤
@@ -50,12 +50,12 @@
 近 BB 下轨 + DI diff < 0 → 不开仓（趋势看空但价格在底）
 ```
 
-### Level 4 — 近轨（原始）
+### Level 4 — 近轨（只做CALL，score≥35 + ADX<25 或 RSI<35）
 ```
-近 BB 上轨 + score ≥ 50 → PUT
-近 BB 下轨 + score ≥ 50 → CALL
-近 BB 但 score < 50     → 不开仓
-BB 中段                  → 不开仓
+近 BB 下轨 + score ≥ 35 + (ADX<25 或 RSI<35) → CALL
+近 BB 下轨 + (ADX≥25 且 RSI≥35)             → 不开仓（强趋势不抄底）
+近 BB 但 score < 35                           → 不开仓
+BB 中段                                        → 不开仓
 ```
 
 ### 近轨判定
@@ -67,12 +67,11 @@ near_bottom   = (price - BBL) < near_threshold
 
 ---
 
-## 3. SKEW 过滤
+## 3. VIX 做空条件
 
-| 方向 | 条件 | 结果 |
+| 方向 | 条件 | 说明 |
 |------|------|------|
-| PUT | SKEW < 140 | 不开仓（尾部风险低，不做空） |
-| CALL | SKEW > 155 | 不开仓（尾部风险高，不做多） |
+| PUT | VIX百分位 > 80 **或** VIX价格 > 28 | 仅Level 1趋势做空，Level 2/4近轨不做空 |
 
 SKEW 来源：`^SKEW` via yfinance。
 
