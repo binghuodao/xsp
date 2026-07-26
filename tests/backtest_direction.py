@@ -710,9 +710,11 @@ print("✅ 回测完成")
 # 9. Trade backtest (self-contained, importable)
 # ────────────────────────────────────────────
 def run_backtest(period='3y', stop_loss_pct=0.05, near_bb_stop_pct=0.01,
-                 trail_pct=0.08, hold_days=7, etf_amount=5000, score_threshold=50):
+                 trail_pct=0.03, hold_days=30, etf_amount=5000,
+                 score_threshold=50, max_positions=1):
     """
-    Full trade backtest with 3x daily compounding PnL and trail-on-ETF logic.
+    Full trade backtest with 3x daily compounding PnL and price-based trailing stop.
+    Supports dual positions (max_positions=2) with split capital.
     All indicator/direction logic replicated here for importability.
     Returns list of {'entry_date','exit_date','direction','entry_price',
                      'exit_price','pnl','exit_type'} dicts.
@@ -781,31 +783,32 @@ def run_backtest(period='3y', stop_loss_pct=0.05, near_bb_stop_pct=0.01,
         if nt and sc >= score_threshold and vp > 75: return None, 'L2_nearbb_vix'
         if nb and sc >= score_threshold and vp > 75: return 'CALL', 'L2_nearbb_vix'
         if nt and dd > 0: return None, 'L3_conflict'
-        if nb and dd < 0: return None, 'L3_conflict'
+        # (L3 near-bottom removed: let L4 handle nb+DI-)
         if nt and sc >= score_threshold: return None, 'L4_nearbb'
         if nb and sc >= 35 and (r['adx'] < 25 or r['rsi_14'] < 35): return 'CALL', 'L4_nearbb'
         return None, 'L0_BB_mid'
 
-    trades = []; pos = None
+    cap_per_pos = etf_amount / max_positions
+    trades = []; positions = []
     for i in range(len(df)):
         row = df.iloc[i]; d, r = gd(row); dt = df.index[i]
         is_nb = r.startswith('L2') or r.startswith('L4')
 
-        # Exit
-        if pos is not None and i > pos['ei']:
+        # Exit: check all open positions
+        for pos in list(positions):
+            if not (i > pos['ei']):
+                continue
             ex = False; xp = None; xt = ''
 
-            # Update 3x ETF value first (for all exit types)
             cs = float(row['price'])
             pos['pc_prev'] = pos['pc']
             dr = cs / pos['pc'] - 1
             pos['ev'] *= (1 + 3 * dr) if pos['dir'] == 'CALL' else (1 - 3 * dr)
             pos['pc'] = cs
-            if pos['ev'] > pos['pk']:
-                pos['pk'] = pos['ev']
+            pos['pp'] = max(pos['pp'], cs)
 
-            # (a) Trail on 3x ETF value (Close-based, report → hand close)
-            if pos['ev'] <= pos['pk'] * (1 - trail_pct) and pos['pk'] > etf_amount:
+            # (a) Price-based trailing stop: exit when price drops trail_pct from peak
+            if cs <= pos['pp'] * (1 - trail_pct):
                 xp = cs; ex = True; xt = 'trail'
 
             # (b) Fixed stop (Low-based, Moomoo auto)
@@ -822,7 +825,6 @@ def run_backtest(period='3y', stop_loss_pct=0.05, near_bb_stop_pct=0.01,
                 xp = cs; ex = True; xt = 't+7'
 
             if ex:
-                # For fixed stop: recalc last day's return using stop price, not close
                 if xt == 'fixed_stop':
                     dr_close = cs / pos.get('pc_prev', pos['ep']) - 1
                     dr_stop = xp / pos.get('pc_prev', pos['ep']) - 1
@@ -832,17 +834,18 @@ def run_backtest(period='3y', stop_loss_pct=0.05, near_bb_stop_pct=0.01,
                 trades.append({
                     'entry_date': pos['ed'], 'exit_date': dt,
                     'direction': pos['dir'], 'entry_price': pos['ep'],
-                    'exit_price': round(xp, 2), 'pnl': round(pos['ev'] - etf_amount, 2),
-                    'exit_type': xt,
+                    'exit_price': round(xp, 2), 'pnl': round(pos['ev'] - cap_per_pos, 2),
+                    'exit_type': xt, 'entry_reason': pos.get('reason', ''),
                 })
-                pos = None
+                positions.remove(pos)
 
-        # Entry
-        if pos is None and d is not None:
-            pos = {
+        # Entry: open new position if signal and slot available
+        if d is not None and len(positions) < max_positions:
+            positions.append({
                 'dir': d, 'ep': float(row['price']), 'ed': dt, 'ei': i,
-                'ev': float(etf_amount), 'pk': float(etf_amount),
-                'pc': float(row['price']), 'nb': is_nb,
-            }
+                'ev': float(cap_per_pos), 'pk': float(cap_per_pos),
+                'pc': float(row['price']), 'pp': float(row['price']), 'nb': is_nb,
+                'reason': r,
+            })
 
     return trades

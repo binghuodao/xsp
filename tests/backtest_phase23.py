@@ -113,7 +113,7 @@ def get_direction_v2(row):
     if near_bottom and score >= 50 and vix_pct > 75: return 'CALL', 'nearbb_vix'
     # Level 3: conflict filter
     if near_top and di_diff > 0: return None, 'filtered'
-    if near_bottom and di_diff < 0: return None, 'filtered'
+    # (L3 near-bottom removed: let L4 handle nb+DI-)
     # Level 4: nearBB basic
     if near_top and score >= 50: return None, 'nearbb'
     if near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35): return 'CALL', 'nearbb'

@@ -96,7 +96,7 @@ def get_signal(row):
     if nt and sc >= 50 and vp > 75: return (None, None)
     if nb and sc >= 50 and vp > 75: return ('CALL', 'nearbb_vix')
     if nt and dd > 0: return (None, None)
-    if nb and dd < 0: return (None, None)
+    # (L3 near-bottom removed: let L4 handle nb+DI-)
     if nt and sc >= 50: return (None, None)
     if nb and sc >= 35 and (adx < 25 or rs < 35): return ('CALL', 'nearbb')
     return None, None

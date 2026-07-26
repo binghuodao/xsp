@@ -280,8 +280,9 @@ def send_market_report(report_type, force=False):
     # Level 3: 矛盾过滤
     elif near_top and di_diff > 0:
         direction, reason = None, 'BB 中段'
-    elif near_bottom and di_diff < 0:
-        direction, reason = None, 'BB 中段'
+    # (L3 near-bottom removed: let L4 handle nb+DI-)
+    elif near_bottom and False:
+        pass
     # Level 4: 近轨（只做CALL，不做空）
     elif near_top and score >= 50:
         direction, reason = None, 'BB 中段'
@@ -430,7 +431,7 @@ def send_market_report(report_type, force=False):
         etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
         tool_recommend = {
             'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
-            'hold_3x_days': 7,
+            'hold_3x_days': 30,
         }
 
     if not direction:
@@ -546,13 +547,13 @@ def send_market_report(report_type, force=False):
             lines.append(f"📋 强度: {signal_tier} | 工具: {etf_info}")
         # ── 持有计划 ──
         today_et = datetime.now(ET_TZ).date()
-        d5_str = (today_et + timedelta(days=5)).strftime('%m/%d')
+        d30_str = (today_et + timedelta(days=30)).strftime('%m/%d')
         hold_plan = {
-            'tree_naked_close': d5_str,
-            'etf_1x_close': d5_str,
+            'tree_naked_close': d30_str,
+            'etf_1x_close': d30_str,
         }
-        lines.append(f"持仓计划: 全部→{d5_str}平 (3x全程)")
-        # 统一跟踪（固定止损兜底 + 从最高点回落4%ETF）
+        lines.append(f"持仓计划: 全部→{d30_str}平 (3x全程, 最长30天)")
+        # 统一跟踪（固定止损兜底 + 从最高价回落3%）
         if tool_recommend:
             global _entry_price, _peak_price
             etf_ticker = tool_recommend['etf']
@@ -570,8 +571,8 @@ def send_market_report(report_type, force=False):
                 stop_pct = 0.01 if is_nearbb else 0.03
                 fixed_stop = _entry_price * (1 - stop_pct)
 
-                # 统一跟踪（从最高ETF价回落5%）
-                trail_pct = 0.04
+                # 价格追踪（从最高价回落3%）
+                trail_pct = 0.03
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
                 # 有效止损 = 两者较紧的那个（仅盈利后跟踪才生效）

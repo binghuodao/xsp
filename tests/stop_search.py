@@ -191,7 +191,7 @@ def get_direction_v2(row):
         return 'CALL', 'nearbb_vix', 'nearbb_vix'
     # L3: conflict
     if near_top and di_diff > 0: return None, 'filtered', 'filtered'
-    if near_bottom and di_diff < 0: return None, 'filtered', 'filtered'
+    # (L3 near-bottom removed: let L4 handle nb+DI-)
     # L4: nearBB (only CALL)
     if near_top and score >= 60: return None, 'nearbb', 'nearbb'
     if near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35): return 'CALL', 'nearbb', 'nearbb'
