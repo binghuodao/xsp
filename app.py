@@ -301,6 +301,38 @@ def send_market_report(report_type, force=False):
         elif direction == 'CALL' and skew_val > 155:
             direction, reason = None, 'BB 中段'
 
+    # Swing signal (B+C, for filling gaps when no trend position exists)
+    swing_signal = None
+    swing_reason = ''
+    dd_s = hs.get('di_diff', 0)
+    ddp_s = hs.get('di_diff_prev', 0)
+    nt_s = near_top
+    nb_s = near_bottom
+    rsi_s = hs.get('rsi_14', 50)
+    adx_s = hs.get('adx', 18)
+    # B: DI cross → SHORT when DI turns negative, LONG when DI turns positive
+    if dd_s < 0 and ddp_s >= 0:
+        swing_signal = 'SHORT'
+        swing_reason = 'B_di'
+    elif dd_s > 0 and ddp_s <= 0:
+        swing_signal = 'LONG'
+        swing_reason = 'B_di'
+    # C: BB edge + RSI extreme (override B, or set if B didn't fire)
+    if nt_s and rsi_s > 65:
+        swing_signal = 'SHORT'
+        swing_reason = 'C_edge'
+    if nb_s and rsi_s < 35:
+        swing_signal = 'LONG'
+        swing_reason = 'C_edge'
+    # ADX20 filter: block counter-trend signals when ADX > 20
+    if swing_signal is not None and adx_s > 20:
+        if swing_signal == 'SHORT' and dd_s > 0:
+            swing_signal = None
+            swing_reason = ''
+        elif swing_signal == 'LONG' and dd_s < 0:
+            swing_signal = None
+            swing_reason = ''
+
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
              "━━━━━━━━━━━━━━━━━━━━━",
@@ -309,7 +341,8 @@ def send_market_report(report_type, force=False):
              f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | DI {hs.get('di_diff',0):+.2f}",
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
               f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
-             "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确",
+              f"→ 摆动: {swing_signal} ({swing_reason})" if swing_signal else "→ 摆动: 无", ""]
 
     # ── 平仓提示 ──
     try:
@@ -433,13 +466,25 @@ def send_market_report(report_type, force=False):
             'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
             'hold_3x_days': 30,
         }
+        swing_etf = 'SPXL' if swing_signal == 'LONG' else 'SPXU' if swing_signal == 'SHORT' else None
+        swing_tool_recommend = {
+            'etf': swing_etf, 'etf_amount': etf_amount, 'naked_buy': 0,
+            'hold_days': 5, 'trail_pct': 0.01, 'stop_pct': 0.03,
+        } if swing_signal else None
 
     if not direction:
+        swing_tool_rec = None
+        if swing_signal:
+            s_etf = 'SPXL' if swing_signal == 'LONG' else 'SPXU'
+            swing_tool_rec = {'etf': s_etf, 'etf_amount': 5000, 'naked_buy': 0,
+                              'hold_days': 5, 'trail_pct': 0.01, 'stop_pct': 0.03}
         _latest_report = {
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
             'signal_tier': None, 'tool_recommend': None,
+            'swing_signal': swing_signal, 'swing_reason': swing_reason,
+            'swing_tool_recommend': swing_tool_rec,
             'holding_days': 0, 'active_position_date': None,
         }
     else:
@@ -535,6 +580,9 @@ def send_market_report(report_type, force=False):
             _latest_report['single_mid'] = f"${mid:.2f}"
         _latest_report['signal_tier'] = signal_tier
         _latest_report['tool_recommend'] = tool_recommend
+        _latest_report['swing_signal'] = swing_signal
+        _latest_report['swing_reason'] = swing_reason
+        _latest_report['swing_tool_recommend'] = swing_tool_recommend
         _latest_report['holding_days'] = holding_days
         _latest_report['active_position_date'] = str(_active_position_date) if _active_position_date else None
 
