@@ -559,21 +559,34 @@ def send_market_report(report_type, force=False):
                 trail_pct = 0.03
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
-                # 有效止损 = 两者较紧的那个（仅盈利后跟踪才生效）
+                # 入场硬止损（从未涨超0.5%→跌2% XSP≈跌6% ETF 退）
+                entry_trail_active = _peak_price is not None and _entry_price is not None and _peak_price < _entry_price * 1.015
+                entry_trail_stop = _entry_price * 0.94 if entry_trail_active else None
+
+                # 有效止损 = 最紧的那个
                 trail_active = _peak_price is not None and _entry_price is not None and _peak_price > _entry_price
-                effective = min(fixed_stop, trail_stop) if trail_stop and trail_stop > 0 and trail_active else fixed_stop
+                effective = fixed_stop
+                if trail_active and trail_stop and trail_stop > 0:
+                    effective = min(effective, trail_stop)
+                if entry_trail_stop:
+                    effective = min(effective, entry_trail_stop)
 
                 sl_parts = [f"{etf_ticker} 止损 ${effective:.2f}",
                             f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}%)",
                             f"最高 ${_peak_price:.2f}"]
-                if trail_active and trail_stop and trail_stop < fixed_stop:
+                if trail_active and trail_stop and trail_stop < effective:
                     sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (回落{trail_pct*100:.0f}%)")
+                if entry_trail_stop and entry_trail_stop < effective:
+                    sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (跌6%)")
                 _latest_report['stop_loss'] = sl_parts
                 lines.append(f"🛑 {' | '.join(sl_parts)}")
 
                 # 跟踪触发提示
                 if trail_stop and etf_price is not None and etf_price <= trail_stop and _peak_price and _peak_price > _entry_price:
                     close_lines.append(f"  🛑 {etf_ticker} 从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${etf_price:.2f} ≤ 跟踪 ${trail_stop:.2f}，建议平仓")
+                # 入场硬止损触发
+                if entry_trail_stop and etf_price is not None and etf_price <= entry_trail_stop:
+                    close_lines.append(f"  🛑 {etf_ticker} 入场未涨超0.5%，现价 ${etf_price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (跌6%)，建议平仓")
         _latest_report['hold_plan'] = hold_plan
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）

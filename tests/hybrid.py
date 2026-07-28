@@ -7,7 +7,7 @@ import numpy as np, pandas as pd, yfinance as yf
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 
-def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.035):
+def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03):
     np.random.seed(0)
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
@@ -104,6 +104,10 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.035):
                 lw = float(row['low'])
                 if lw <= trend_pos['ep'] * (1 - 0.05):
                     xp = trend_pos['ep']*(1-0.05); ex = True; xt = 'fixed_stop'
+            if not ex:
+                if trend_pos['pp'] < trend_pos['ep'] * 1.005:
+                    if cs <= trend_pos['ep'] * (1 - 0.02):
+                        xp = cs; ex = True; xt = 'entry_trail'
             if not ex and i - trend_pos['ei'] >= trend_hold:
                 xp = cs; ex = True; xt = 't+30'
 
