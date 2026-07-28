@@ -261,15 +261,14 @@ def send_market_report(report_type, force=False):
     # Level 1: 趋势 (非近轨时)
     if not near_bb_overall and is_trend:
         if di_diff > 0 and hs.get('di_diff_prev', 0) > 0 and price > hs.get('sma50', 0):
-            direction, reason = 'CALL', f'DI+({di_diff:.2f})'
+            if hs.get('sma50', 0) < hs.get('sma200', 0) and price > hs.get('sma200', 0) and hs.get('sma50_slope', 999) < 2:
+                direction, reason = None, 'BB 中段'
+            else:
+                direction, reason = 'CALL', f'DI+({di_diff:.2f})'
         elif di_diff > 0:
             direction, reason = None, 'BB 中段'
         elif di_diff < 0:
-            # PUT only in high VIX environment (bear market panic)
-            if vix_pct > 80 or hs.get('vix', 15) > 28:
-                direction, reason = 'PUT', f'DI-({di_diff:.2f})'
-            else:
-                direction, reason = None, 'BB 中段'
+            direction, reason = None, 'BB 中段'
         else:
             direction, reason = None, 'BB 中段'
     # Level 2: 近轨 + VIX高 → 确认反转（只做CALL反转，不做空）
@@ -286,52 +285,12 @@ def send_market_report(report_type, force=False):
     # Level 4: 近轨（只做CALL，不做空）
     elif near_top and score >= 50:
         direction, reason = None, 'BB 中段'
-    elif near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35):
+    elif near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35) and not (adx >= 25 and price < hs.get('sma50', 0)):
         direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
     elif near_top or near_bottom:
         direction, reason = None, 'BB 中段'
     else:
         direction, reason = None, 'BB 中段'
-
-    # SKEW filter: 尾部风险低不做空, 尾部风险高不做多
-    if direction is not None:
-        skew_val = hs.get('skew_index', 146)
-        if direction == 'PUT' and skew_val < 140:
-            direction, reason = None, 'BB 中段'
-        elif direction == 'CALL' and skew_val > 155:
-            direction, reason = None, 'BB 中段'
-
-    # Swing signal (B+C, for filling gaps when no trend position exists)
-    swing_signal = None
-    swing_reason = ''
-    dd_s = hs.get('di_diff', 0)
-    ddp_s = hs.get('di_diff_prev', 0)
-    nt_s = near_top
-    nb_s = near_bottom
-    rsi_s = hs.get('rsi_14', 50)
-    adx_s = hs.get('adx', 18)
-    # B: DI cross → SHORT when DI turns negative, LONG when DI turns positive
-    if dd_s < 0 and ddp_s >= 0:
-        swing_signal = 'SHORT'
-        swing_reason = 'B_di'
-    elif dd_s > 0 and ddp_s <= 0:
-        swing_signal = 'LONG'
-        swing_reason = 'B_di'
-    # C: BB edge + RSI extreme (override B, or set if B didn't fire)
-    if nt_s and rsi_s > 65:
-        swing_signal = 'SHORT'
-        swing_reason = 'C_edge'
-    if nb_s and rsi_s < 35:
-        swing_signal = 'LONG'
-        swing_reason = 'C_edge'
-    # ADX20 filter: block counter-trend signals when ADX > 20
-    if swing_signal is not None and adx_s > 20:
-        if swing_signal == 'SHORT' and dd_s > 0:
-            swing_signal = None
-            swing_reason = ''
-        elif swing_signal == 'LONG' and dd_s < 0:
-            swing_signal = None
-            swing_reason = ''
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -341,8 +300,7 @@ def send_market_report(report_type, force=False):
              f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | DI {hs.get('di_diff',0):+.2f}",
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
               f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
-              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确",
-              f"→ 摆动: {swing_signal} ({swing_reason})" if swing_signal else "→ 摆动: 无", ""]
+               "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
 
     # ── 平仓提示 ──
     try:
@@ -431,8 +389,6 @@ def send_market_report(report_type, force=False):
     # ── 信号强度 + 持有天数 ──
     hs = historical_stats
     di_strength = abs(hs.get('di_diff', 0))
-    skew_val = hs.get('skew_index', 146)
-    skew_confirm = (direction == 'CALL' and skew_val < 145) or (direction == 'PUT' and skew_val > 145)
 
     if not direction:
         signal_tier = None
@@ -454,53 +410,38 @@ def send_market_report(report_type, force=False):
         etf_amount = 5000
         naked_buy = 1 if score >= 65 else 0
 
-        if di_strength > 0 and score >= 72 and skew_confirm:
+        if di_strength > 0 and score >= 72:
             signal_tier = 'strong'
         elif score >= 65:
             signal_tier = 'normal'
         else:
             signal_tier = 'weak'
 
-        etf3 = 'SPXL' if direction == 'CALL' else 'SPXU'
+        etf3 = 'SPXL'
         tool_recommend = {
             'etf': etf3, 'etf_amount': etf_amount, 'naked_buy': naked_buy,
             'hold_3x_days': 30,
         }
-        swing_etf = 'SPXL' if swing_signal == 'LONG' else 'SPXU' if swing_signal == 'SHORT' else None
-        swing_tool_recommend = {
-            'etf': swing_etf, 'etf_amount': etf_amount, 'naked_buy': 0,
-            'hold_days': 5, 'trail_pct': 0.01, 'stop_pct': 0.03,
-        } if swing_signal else None
 
     if not direction:
-        swing_tool_rec = None
-        if swing_signal:
-            s_etf = 'SPXL' if swing_signal == 'LONG' else 'SPXU'
-            swing_tool_rec = {'etf': s_etf, 'etf_amount': 5000, 'naked_buy': 0,
-                              'hold_days': 5, 'trail_pct': 0.01, 'stop_pct': 0.03}
         _latest_report = {
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
             'signal_tier': None, 'tool_recommend': None,
-            'swing_signal': swing_signal, 'swing_reason': swing_reason,
-            'swing_tool_recommend': swing_tool_rec,
             'holding_days': 0, 'active_position_date': None,
         }
     else:
         # ETF reference
-        if direction == 'CALL':
-            lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
-        elif direction == 'PUT':
-            lines.append("★ 做空 ETF: SH(1x) / SDS(2x) / SPXU(3x)")
+        lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
 
         # Mid leg
-        off = -5 if (is_trend and direction == 'PUT') else 5 if (is_trend and direction == 'CALL') else 0
+        off = 5 if is_trend else 0
         m = _s5(ema20 + off)
 
-        # Tree strikes
-        s = m + 10 if direction == 'PUT' else m - 10
-        l = m - 5 if direction == 'PUT' else m + 5
+        # Tree strikes (CALL only)
+        s = m - 10
+        l = m + 5
 
         expiry_tree = _find_n_dte_expiry(7 + dte_adj)
         ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
@@ -508,7 +449,7 @@ def send_market_report(report_type, force=False):
         def sym_str(sk, ot):
             return f"US.XSP{ds_tree}{ot}{int(sk * 1000)}" if ds_tree else None
 
-        ot_type = 'P' if direction == 'PUT' else 'C'
+        ot_type = 'C'
 
         # Trending: 7DTE single long option (initialized before expiry check)
         strike, delta, mid_single = None, None, None
@@ -565,8 +506,6 @@ def send_market_report(report_type, force=False):
         }
         if direction == 'CALL':
             _latest_report['etf'] = "★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)"
-        else:
-            _latest_report['etf'] = "★ 做空 ETF: SH(1x) / SDS(2x) / SPXU(3x)"
         if expiry_tree:
             _latest_report['tree_label'] = f"7DTE {direction}树 ({expiry_tree})"
             _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
@@ -580,9 +519,6 @@ def send_market_report(report_type, force=False):
             _latest_report['single_mid'] = f"${mid:.2f}"
         _latest_report['signal_tier'] = signal_tier
         _latest_report['tool_recommend'] = tool_recommend
-        _latest_report['swing_signal'] = swing_signal
-        _latest_report['swing_reason'] = swing_reason
-        _latest_report['swing_tool_recommend'] = swing_tool_recommend
         _latest_report['holding_days'] = holding_days
         _latest_report['active_position_date'] = str(_active_position_date) if _active_position_date else None
 
@@ -786,6 +722,7 @@ historical_stats = {
     "resistance": 0.0,
     "skew_index": 146.0,
     "sma50": 0.0,
+    "sma200": 0.0,
     "di_diff_prev": 0.0,
     "last_updated": 0
 }
@@ -993,6 +930,12 @@ def update_historical_data():
         if len(xsp_hist) >= 55:
             sma50 = xsp_hist['Close'].rolling(50).mean().iloc[-1]
             historical_stats["sma50"] = float(sma50)
+            s50_series = xsp_hist['Close'].rolling(50).mean()
+            historical_stats["sma50_slope"] = float(s50_series.iloc[-1] - s50_series.iloc[-6]) if len(s50_series.dropna()) >= 6 else 0
+
+        if len(xsp_hist) >= 200:
+            sma200 = xsp_hist['Close'].rolling(200).mean().iloc[-1]
+            historical_stats["sma200"] = float(sma200)
 
         # SPY 日线趋势指标 (ADX, ER, BBW, Deviation, Vol Ratio)
         try:

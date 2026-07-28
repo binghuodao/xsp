@@ -595,8 +595,8 @@ class TestOutputFormat:
 class TestSignalTier:
 
     def test_signal_tier_strong(self, reset_globals, mock_sio):
-        """strong: di_diff>0, score≥72, skew_confirm"""
-        app.historical_stats.update(std_hs(di_diff=0.15, adx=35, er=0.7, vr=2.0, vix_rank=50, skew_index=143))
+        """strong: di_diff>0, score≥72"""
+        app.historical_stats.update(std_hs(di_diff=0.15, adx=35, er=0.7, vr=2.0, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
@@ -606,10 +606,10 @@ class TestSignalTier:
         assert r['tool_recommend']['etf_amount'] == 5000
 
     def test_signal_tier_normal(self, reset_globals, mock_sio):
-        """normal: trending, skew passes filter (≤155) but fails confirm (≥145)"""
+        """normal: score 65-71"""
         app.historical_stats.update(std_hs(
-            di_diff=0.10, adx=35, er=0.7, bbw=18, vr=2.0,
-            vix_rank=50, skew_index=150,
+            di_diff=0.05, adx=24, er=0.6, bbw=30, dev=1.5, vr=1.5,
+            vix_rank=50,
         ))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
@@ -632,19 +632,6 @@ class TestSignalTier:
         assert r.get('signal_tier') == 'weak'
         assert r.get('tool_recommend', {}).get('naked_buy') == 0
         assert r['tool_recommend']['etf_amount'] == 5000
-
-    def test_signal_tier_skew_downgrade(self, reset_globals, mock_sio):
-        """SKEW confirm fail (skew≥145 for CALL) → strong→normal"""
-        app.historical_stats.update(std_hs(
-            di_diff=0.15, adx=35, er=0.7, bbw=18, vr=2.0,
-            vix_rank=50, skew_index=150,
-        ))
-        app.latest_data["index"]["price"] = 750.0
-        app.send_market_report('morning', force=True)
-        r = app._latest_report
-        assert r.get('direction') == 'CALL'
-        assert r.get('signal_tier') == 'normal', f"expected normal, got {r.get('signal_tier')}"
-        assert r.get('tool_recommend', {}).get('naked_buy') == 1
 
     def test_signal_tier_direction_none(self, reset_globals, mock_sio):
         """direction=None → no signal_tier/tool_recommend"""
