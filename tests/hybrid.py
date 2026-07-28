@@ -132,6 +132,77 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03):
     return trades
 
 
+def mr_bt(period='10y', entry_cost=3.50):
+    """Mean reversion CALL: nb + RSI<30 + VIX>20, hold max 3d.
+    Entry: $entry_cost/contract (ATM 7DTE CALL).
+    Exit: first day XSP closes above entry, force exit day 3.
+    P&L: gamma-theta model (delta capped at 1.0, max loss = entry cost)."""
+    xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
+    if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
+    vix = yf.download('^VIX', period=period, interval='1d', progress=False)
+    if isinstance(vix.columns, pd.MultiIndex): vix = vix.droplevel('Ticker', axis=1)
+    xc = xsp['Close']; xh = xsp['High']; xl = xsp['Low']
+    vc = vix['Close'].reindex(xc.index).ffill()
+
+    df = pd.DataFrame(index=xc.index)
+    df['price'] = xc
+    s20 = xc.rolling(20).mean(); bs = xc.rolling(20).std()
+    df['bbu'] = s20+2*bs; df['bbl'] = s20-2*bs
+    tr = pd.concat([xh-xl, (xh-xc.shift(1)).abs(), (xl-xc.shift(1)).abs()], axis=1).max(axis=1)
+    df['atr_14'] = tr.rolling(14).mean()
+    df['nb'] = df['price'] <= df['bbl'] + df['atr_14']*0.60
+    dlt = xc.diff(); gn = dlt.clip(lower=0); ls = (-dlt).clip(lower=0)
+    ag = gn.rolling(14).mean(); al = ls.rolling(14).mean()
+    df['rsi_14'] = (100-100/(1+ag/al.replace(0, np.nan))).fillna(50)
+    df['vix'] = vc.values
+    df = df.dropna().copy(); df = df[df.index >= pd.Timestamp('2021-03-01')]
+
+    mc = entry_cost * 100  # max loss per contract
+    trades = []; pos = None; max_days = 3
+
+    for i in range(len(df)):
+        row = df.iloc[i]; dt = df.index[i]; cs = float(row['price'])
+
+        # MR exit
+        if pos is not None:
+            la = i - pos['ei']
+            if la > 0:
+                ex = False; xp = None
+                if cs > pos['ep'] and la <= max_days:
+                    xp = cs; ex = True  # first green day → profit
+                elif la >= max_days:
+                    xp = cs; ex = True  # force exit day 3
+
+                if ex:
+                    pt = xp - pos['ep']
+                    ed = min(0.5 + 0.08 * abs(pt), 1.0)
+                    ad = (0.5 + ed) / 2
+                    dp = ad * pt * 100
+                    gp = 0
+                    if pt > 0:
+                        sp = (1.0 - 0.5) / 0.08
+                        ep_g = min(abs(pt), sp)
+                        gp = 0.5 * 0.08 * (ep_g ** 2) * 100
+                    tp = 0.35 * la * 100
+                    pnl = round(max(dp + gp - tp, -mc), 2)
+
+                    trades.append({
+                        'entry_date': pos['ed'], 'exit_date': dt,
+                        'dir': 'CALL', 'type': 'mr',
+                        'entry_price': pos['ep'], 'exit_price': round(xp, 2),
+                        'pnl': pnl, 'exit_type': 'mr_profit' if cs > pos['ep'] else 'mr_time',
+                        'entry_reason': 'MR_nb_rsi_vix',
+                    })
+                    pos = None
+
+        # MR entry (only when no position, signal day, not consecutive)
+        if pos is None and row['nb'] and row['rsi_14'] < 30 and row['vix'] > 20:
+            if i == 0 or not (df.iloc[i-1]['nb'] and df.iloc[i-1]['rsi_14'] < 30 and df.iloc[i-1]['vix'] > 20):
+                pos = {'ep': cs, 'ed': dt, 'ei': i}
+
+    return trades
+
+
 def summ(trades):
     n = len(trades)
     if n == 0: return {'n':0,'wr':0,'pnl':0}
@@ -166,8 +237,12 @@ if __name__ == '__main__':
 
     sys.stdout, sys.stderr = devnull, devnull
     tr = hybrid_bt(period='10y')
+    mr = mr_bt(period='10y')
     sys.stdout, sys.stderr = old_out, old_err
     print('=== 趋势CALL（纯策略）===')
     print_yr_table(tr)
-    print('\n✅ 完成')
+    print()
+    print('=== 均值回归CALL（nb+RSI<30+VIX>20）===')
+    print_yr_table(mr)
+    print(f'\n✅ 完成  趋势PnL${sum(t["pnl"] for t in tr):+>7.0f}  MR PnL${sum(t["pnl"] for t in mr):+>7.0f}')
     devnull.close()

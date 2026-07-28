@@ -83,6 +83,8 @@ _latest_report = {}
 _active_position_date = None
 _entry_price = None
 _peak_price = None
+_mr_entry_date = None
+_mr_entry_price = None
 try:
     with open(POSITION_FILE) as f:
         _pd = json.load(f)
@@ -90,6 +92,9 @@ try:
         _active_position_date = datetime.datetime.strptime(_pd['active_position_date'], '%Y-%m-%d').date()
     _entry_price = _pd.get('entry_price')
     _peak_price = _pd.get('peak_price')
+    if _pd.get('mr_entry_date'):
+        _mr_entry_date = datetime.datetime.strptime(_pd['mr_entry_date'], '%Y-%m-%d').date()
+    _mr_entry_price = _pd.get('mr_entry_price')
 except:
     pass
 S_TZ = pytz.timezone('Australia/Sydney')
@@ -182,7 +187,7 @@ def _get_etf_price(ticker):
 
 def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
-    global _prev_report_score, _prev_report_direction, _active_position_date
+    global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -291,6 +296,12 @@ def send_market_report(report_type, force=False):
         direction, reason = None, 'BB 中段'
     else:
         direction, reason = None, 'BB 中段'
+
+    # ── Mean Reversion 裸买CALL (nb + RSI<30 + VIX>20, 不干扰趋势) ──
+    is_mr_signal = near_bottom and hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
+    if is_mr_signal and _mr_entry_date is None:
+        _mr_entry_date = datetime.now(ET_TZ).date()
+        _mr_entry_price = price
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -589,6 +600,29 @@ def send_market_report(report_type, force=False):
                     close_lines.append(f"  🛑 {etf_ticker} 入场未涨超0.5%，现价 ${etf_price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (跌6%)，建议平仓")
         _latest_report['hold_plan'] = hold_plan
 
+        # ── Mean Reversion 裸买CALL 展示 ──
+        if _mr_entry_date:
+            mr_days = (datetime.now(ET_TZ).date() - _mr_entry_date).days
+            mr_exit_price = price
+            lines.append(f"")
+            lines.append(f"═══ 裸买MR ({_mr_entry_date}) ═══")
+            lines.append(f"入场 ${_mr_entry_price:.2f} | 持有 {mr_days}d | 现价 ${mr_exit_price:.2f}")
+            if mr_exit_price > _mr_entry_price:
+                lines.append(f"💰 MR已盈利 (>{_mr_entry_price:.2f}), 建议平仓")
+                close_lines.append(f"  💰 MR已盈利 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
+                _mr_entry_date = None
+                _mr_entry_price = None
+            elif mr_days >= 3:
+                lines.append(f"💸 MR已持{3}天, 建议平仓")
+                close_lines.append(f"  💸 MR已持{3}天 (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
+                _mr_entry_date = None
+                _mr_entry_price = None
+            else:
+                lines.append(f"⏳ MR等待中 ({3 - mr_days}d最多)")
+            _latest_report['mr_entry_date'] = str(_mr_entry_date) if _mr_entry_date else None
+            _latest_report['mr_entry_price'] = _mr_entry_price
+            _latest_report['mr_days'] = mr_days
+
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
         if direction and expiry_tree and ds_tree:
             g_date = ds_tree
@@ -631,6 +665,8 @@ def send_market_report(report_type, force=False):
                 'prev_report_score': _prev_report_score,
                 'entry_price': _entry_price,
                 'peak_price': _peak_price,
+                'mr_entry_date': str(_mr_entry_date) if _mr_entry_date else None,
+                'mr_entry_price': _mr_entry_price,
             }, f)
     except Exception as e:
         print(f"⚠️ Position tracker save failed: {e}")
