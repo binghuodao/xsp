@@ -2,10 +2,36 @@
    6y backtest: 33 swing trades net −$266. Signal B (DI cross) never
    fired with double_day. Signal C (BB edge+RSI) net −$266 total.
    Swing added complexity with zero net benefit vs pure trend."""
-import sys, os, collections
+import sys, os, collections, math
 import numpy as np, pandas as pd, yfinance as yf
 
 OUT = os.path.dirname(os.path.abspath(__file__))
+
+def _s5(v):
+    return round(v / 5) * 5
+
+def norm_cdf(x):
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+def bs_call_price(S, K, T, sigma, r=0.05):
+    d1 = (math.log(S / K) + (r + sigma**2 / 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+
+def bs_call_delta(S, K, T, sigma, r=0.05):
+    d1 = (math.log(S / K) + (r + sigma**2 / 2) * T) / (sigma * math.sqrt(T))
+    return norm_cdf(d1)
+
+def find_strike_for_delta(S, target_delta, T, sigma, r=0.05):
+    lo, hi = S * 0.6, S * 1.1
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        d = bs_call_delta(S, mid, T, sigma, r)
+        if d > target_delta:
+            lo = mid
+        else:
+            hi = mid
+    return _s5((lo + hi) / 2)
 
 def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03):
     np.random.seed(0)
@@ -132,11 +158,16 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03):
     return trades
 
 
-def mr_bt(period='10y', entry_cost=3.50):
+def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.003, stop_pct=0.02):
     """Mean reversion CALL: nb + RSI<30 + VIX>20, hold max 3d.
-    Entry: $entry_cost/contract (ATM 7DTE CALL).
-    Exit: first day XSP closes above entry, force exit day 3.
-    P&L: gamma-theta model (delta capped at 1.0, max loss = entry cost)."""
+    green_buffer=0.003: exit when XSP > entry×1.003 (skip barely-green losses)
+    stop_pct=0.02: exit when XSP ≤ entry×0.98 (cap single loss)
+    
+    pricing:
+      'gamma_theta' — gamma-theta P&L model, entry=$entry_cost
+      'bs_atm'      — Black-Scholes pricing, ATM strike (round to 5)
+      'bs_otm'      — Black-Scholes, delta ~0.35 strike
+    Exit: first day XSP closes above entry, force exit day 3."""
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
     vix = yf.download('^VIX', period=period, interval='1d', progress=False)
@@ -157,7 +188,9 @@ def mr_bt(period='10y', entry_cost=3.50):
     df['vix'] = vc.values
     df = df.dropna().copy(); df = df[df.index >= pd.Timestamp('2021-03-01')]
 
-    mc = entry_cost * 100  # max loss per contract
+    is_bs = pricing.startswith('bs_')
+    mc = entry_cost * 100 if not is_bs else 0
+    T = 7 / 365
     trades = []; pos = None; max_days = 3
 
     for i in range(len(df)):
@@ -167,38 +200,58 @@ def mr_bt(period='10y', entry_cost=3.50):
         if pos is not None:
             la = i - pos['ei']
             if la > 0:
-                ex = False; xp = None
-                if cs > pos['ep'] and la <= max_days:
-                    xp = cs; ex = True  # first green day → profit
+                ex = False; xp = None; xt = ''
+                if stop_pct and cs <= pos['ep'] * (1 - stop_pct):
+                    xp = cs; ex = True; xt = 'mr_stop'
+                elif green_buffer and cs > pos['ep'] * (1 + green_buffer) and la <= max_days:
+                    xp = cs; ex = True; xt = 'mr_green'
                 elif la >= max_days:
-                    xp = cs; ex = True  # force exit day 3
+                    xp = cs; ex = True; xt = 'mr_time'
 
                 if ex:
-                    pt = xp - pos['ep']
-                    ed = min(0.5 + 0.08 * abs(pt), 1.0)
-                    ad = (0.5 + ed) / 2
-                    dp = ad * pt * 100
-                    gp = 0
-                    if pt > 0:
-                        sp = (1.0 - 0.5) / 0.08
-                        ep_g = min(abs(pt), sp)
-                        gp = 0.5 * 0.08 * (ep_g ** 2) * 100
-                    tp = 0.35 * la * 100
-                    pnl = round(max(dp + gp - tp, -mc), 2)
+                    if is_bs:
+                        T_rem = max(T - la / 365, 1 / 365)
+                        exit_opt = bs_call_price(xp, pos['K'], T_rem, pos['sigma'])
+                        pnl = round(max((exit_opt - pos['entry_opt']) * 100, -pos['entry_opt'] * 100), 2)
+                    else:
+                        pt = xp - pos['ep']
+                        ed = min(0.5 + 0.08 * abs(pt), 1.0)
+                        ad = (0.5 + ed) / 2
+                        dp = ad * pt * 100
+                        gp = 0
+                        if pt > 0:
+                            sp = (1.0 - 0.5) / 0.08
+                            ep_g = min(abs(pt), sp)
+                            gp = 0.5 * 0.08 * (ep_g ** 2) * 100
+                        tp = 0.35 * la * 100
+                        pnl = round(max(dp + gp - tp, -mc), 2)
 
+                    if not xt:
+                        xt = 'mr_green' if cs > pos['ep'] else 'mr_time'
                     trades.append({
                         'entry_date': pos['ed'], 'exit_date': dt,
                         'dir': 'CALL', 'type': 'mr',
                         'entry_price': pos['ep'], 'exit_price': round(xp, 2),
-                        'pnl': pnl, 'exit_type': 'mr_profit' if cs > pos['ep'] else 'mr_time',
+                        'pnl': pnl, 'exit_type': xt,
                         'entry_reason': 'MR_nb_rsi_vix',
+                        'entry_opt_cost': pos.get('entry_opt', entry_cost) * (1 if is_bs else 1),
                     })
                     pos = None
 
         # MR entry (only when no position, signal day, not consecutive)
         if pos is None and row['nb'] and row['rsi_14'] < 30 and row['vix'] > 20:
             if i == 0 or not (df.iloc[i-1]['nb'] and df.iloc[i-1]['rsi_14'] < 30 and df.iloc[i-1]['vix'] > 20):
-                pos = {'ep': cs, 'ed': dt, 'ei': i}
+                if is_bs:
+                    sigma = float(row['vix']) / 100
+                    if pricing == 'bs_otm':
+                        strike = find_strike_for_delta(cs, 0.35, T, sigma)
+                    else:
+                        strike = _s5(cs)
+                    opt_price = bs_call_price(cs, strike, T, sigma)
+                    pos = {'ep': cs, 'ed': dt, 'ei': i,
+                           'K': strike, 'entry_opt': opt_price, 'sigma': sigma}
+                else:
+                    pos = {'ep': cs, 'ed': dt, 'ei': i}
 
     return trades
 
@@ -237,12 +290,27 @@ if __name__ == '__main__':
 
     sys.stdout, sys.stderr = devnull, devnull
     tr = hybrid_bt(period='10y')
-    mr = mr_bt(period='10y')
+    mr_gt = mr_bt(period='10y', pricing='gamma_theta')
+    mr_atm = mr_bt(period='10y', pricing='bs_atm')
+    mr_otm = mr_bt(period='10y', pricing='bs_otm')
     sys.stdout, sys.stderr = old_out, old_err
+
     print('=== 趋势CALL（纯策略）===')
     print_yr_table(tr)
     print()
-    print('=== 均值回归CALL（nb+RSI<30+VIX>20）===')
-    print_yr_table(mr)
-    print(f'\n✅ 完成  趋势PnL${sum(t["pnl"] for t in tr):+>7.0f}  MR PnL${sum(t["pnl"] for t in mr):+>7.0f}')
+
+    for label, mr in [('原始gamma-theta ($3.50)', mr_gt),
+                      ('BS ATM (VIX入场价)', mr_atm),
+                      ('BS OTM Δ0.35 (VIX入场价)', mr_otm)]:
+        print(f'=== 均值回归CALL — {label} ===')
+        print_yr_table(mr)
+        avg_pnl = sum(t['pnl'] for t in mr) / len(mr) if mr else 0
+        avg_cost = sum(t.get('entry_opt_cost', 0) for t in mr) / len(mr) if mr else 0
+        print(f'  均单PnL ${avg_pnl:+.0f}  均成本 ${avg_cost*100:.0f}/口')
+        print()
+
+    print(f'\n✅ 完成  趋势${sum(t["pnl"] for t in tr):+>7.0f}  '
+          f'MR_GT${sum(t["pnl"] for t in mr_gt):+>7.0f}  '
+          f'MR_ATM${sum(t["pnl"] for t in mr_atm):+>7.0f}  '
+          f'MR_OTM${sum(t["pnl"] for t in mr_otm):+>7.0f}')
     devnull.close()

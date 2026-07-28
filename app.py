@@ -607,18 +607,30 @@ def send_market_report(report_type, force=False):
             lines.append(f"")
             lines.append(f"═══ 裸买MR ({_mr_entry_date}) ═══")
             lines.append(f"入场 ${_mr_entry_price:.2f} | 持有 {mr_days}d | 现价 ${mr_exit_price:.2f}")
-            if mr_exit_price > _mr_entry_price:
-                lines.append(f"💰 MR已盈利 (>{_mr_entry_price:.2f}), 建议平仓")
-                close_lines.append(f"  💰 MR已盈利 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
+            _atm_strike = round(_mr_entry_price / 5) * 5
+            _vix = hs.get('vix', 20)
+            _est_cost = round(0.4 * (_vix/100) * (7/365)**0.5 * _mr_entry_price, 2)
+            lines.append(f"ATM ${_atm_strike} 7DTE  成本≈${_est_cost}/股 (${_est_cost*100:.0f}/口)")
+            _stop_price = _mr_entry_price * 0.98
+            _green_price = _mr_entry_price * 1.003
+            lines.append(f"止损 ${_stop_price:.2f} (-2%) | 首阳 ${_green_price:.2f} (+0.3%)")
+            if mr_exit_price <= _stop_price:
+                lines.append(f"🛑 MR跌穿-2%止损 ({_mr_entry_price:.2f}→{mr_exit_price:.2f}), 建议平仓")
+                close_lines.append(f"  🛑 MR跌穿-2%止损 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
+                _mr_entry_date = None
+                _mr_entry_price = None
+            elif mr_exit_price > _green_price:
+                lines.append(f"💰 MR首阳(+0.3%) 建议平仓")
+                close_lines.append(f"  💰 MR首阳 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
                 _mr_entry_date = None
                 _mr_entry_price = None
             elif mr_days >= 3:
-                lines.append(f"💸 MR已持{3}天, 建议平仓")
+                lines.append(f"💸 MR已持{3}天, 强制平仓")
                 close_lines.append(f"  💸 MR已持{3}天 (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
                 _mr_entry_date = None
                 _mr_entry_price = None
             else:
-                lines.append(f"⏳ MR等待中 ({3 - mr_days}d最多)")
+                lines.append(f"⏳ MR等待中 ({3 - mr_days}d最多 | 止损-2% | 首阳+0.3%)")
             _latest_report['mr_entry_date'] = str(_mr_entry_date) if _mr_entry_date else None
             _latest_report['mr_entry_price'] = _mr_entry_price
             _latest_report['mr_days'] = mr_days
