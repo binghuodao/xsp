@@ -86,6 +86,13 @@ _peak_price = None
 _mr_entry_date = None
 _mr_entry_price = None
 _mr_etf_entry_price = None
+_crash_entry_date = None
+_crash_entry_price = None
+_crash_k1 = None
+_crash_k2 = None
+_crash_debit = None
+_crash_sigma = None
+_crash_etf_entry = None
 try:
     with open(POSITION_FILE) as f:
         _pd = json.load(f)
@@ -97,6 +104,14 @@ try:
         _mr_entry_date = datetime.datetime.strptime(_pd['mr_entry_date'], '%Y-%m-%d').date()
     _mr_entry_price = _pd.get('mr_entry_price')
     _mr_etf_entry_price = _pd.get('mr_etf_entry_price')
+    if _pd.get('crash_entry_date'):
+        _crash_entry_date = datetime.datetime.strptime(_pd['crash_entry_date'], '%Y-%m-%d').date()
+    _crash_entry_price = _pd.get('crash_entry_price')
+    _crash_k1 = _pd.get('crash_k1')
+    _crash_k2 = _pd.get('crash_k2')
+    _crash_debit = _pd.get('crash_debit')
+    _crash_sigma = _pd.get('crash_sigma')
+    _crash_etf_entry = _pd.get('crash_etf_entry')
 except:
     pass
 S_TZ = pytz.timezone('Australia/Sydney')
@@ -187,9 +202,25 @@ def _get_etf_price(ticker):
     return None
 
 
+def _get_xsp_prev_close():
+    """Return yesterday's XSP close price."""
+    try:
+        xsp = yf.download('^XSP', period='5d', interval='1d', progress=False)
+        if isinstance(xsp.columns, pd.MultiIndex):
+            xsp = xsp.droplevel('Ticker', axis=1)
+        if len(xsp) >= 2:
+            return float(xsp['Close'].iloc[-2])
+        elif len(xsp) >= 1:
+            return float(xsp['Close'].iloc[-1])
+    except:
+        pass
+    return None
+
+
 def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
     global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price, _mr_etf_entry_price
+    global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -305,6 +336,24 @@ def send_market_report(report_type, force=False):
         _mr_entry_date = datetime.now(ET_TZ).date()
         _mr_entry_price = price
         _mr_etf_entry_price = _get_etf_price('SPXL')
+
+    # ── Crash bounce: CALL价差5点 + $2k SPXL (VIX>20 + XSP跌>1%) ──
+    _xsp_prev_close = _get_xsp_prev_close()
+    xsp_chg_pct = (price - _xsp_prev_close) / _xsp_prev_close if _xsp_prev_close else 0
+    is_crash_signal = hs.get('vix', 0) > 20 and _xsp_prev_close and xsp_chg_pct < -0.01
+    if is_crash_signal and _crash_entry_date is None:
+        _crash_entry_date = datetime.now(ET_TZ).date()
+        _crash_entry_price = price
+        _crash_k1 = _s5(price)
+        _crash_k2 = _crash_k1 + 5
+        _crash_sigma = hs.get('vix', 20) / 100.0
+        if _crash_sigma > 0.01:
+            T = 7 / 365.0
+            r = 0.05
+            e1 = pricing.black_scholes(price, _crash_k1, T, r, _crash_sigma, 'C')
+            e2 = pricing.black_scholes(price, _crash_k2, T, r, _crash_sigma, 'C')
+            _crash_debit = e1 - e2
+        _crash_etf_entry = _get_etf_price('SPXL')
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -643,6 +692,51 @@ def send_market_report(report_type, force=False):
             _latest_report['mr_entry_price'] = _mr_entry_price
             _latest_report['mr_days'] = mr_days
 
+        # ── Crash bounce 崩盘反弹 展示 ──
+        if _crash_entry_date:
+            crash_days = (datetime.now(ET_TZ).date() - _crash_entry_date).days
+            lines.append(f"")
+            lines.append(f"═══ 崩盘反弹 CALL价差5点 ({_crash_entry_date}) ═══")
+            lines.append(f"入场 ${_crash_entry_price:.2f} | 持有 {crash_days}d | 现价 ${price:.2f}")
+            lines.append(f"价差 ${_crash_k1}C / ${_crash_k2}C  成本${_crash_debit*100:.0f}/口")
+            if _crash_etf_entry:
+                lines.append(f"📋 工具: CALL价差 + SPXL $2k (入场${_crash_etf_entry:.2f})")
+            _crash_stop = _crash_entry_price * 0.98
+            _crash_green = _crash_entry_price * 1.003
+            lines.append(f"止损 ${_crash_stop:.2f} (-2%) | 首阳 ${_crash_green:.2f} (+0.3%)")
+
+            opt_value = 0
+            if _crash_sigma and _crash_debit:
+                T = 7 / 365.0
+                T_rem = max(T - crash_days / 365.0, 1 / 365.0)
+                e1 = pricing.black_scholes(price, _crash_k1, T_rem, 0.05, _crash_sigma, 'C')
+                e2 = pricing.black_scholes(price, _crash_k2, T_rem, 0.05, _crash_sigma, 'C')
+                opt_value = max((e1 - e2 - _crash_debit) * 100, -_crash_debit * 100)
+
+            if price <= _crash_stop:
+                lines.append(f"🛑 崩盘跌穿-2%止损 ({_crash_entry_price:.2f}→{price:.2f}), 建议平仓")
+                close_lines.append(f"  🛑 崩盘跌穿-2%止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None
+            elif price > _crash_green and crash_days <= 3:
+                lines.append(f"💰 崩盘首阳(+0.3%) 建议平仓")
+                close_lines.append(f"  💰 崩盘首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None
+            elif crash_days >= 3:
+                lines.append(f"💸 崩盘已持3天, 强制平仓")
+                close_lines.append(f"  💸 崩盘已持3天 (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None
+            else:
+                lines.append(f"⏳ 崩盘等待中 ({3 - crash_days}d最多 | 止损-2% | 首阳+0.3%)")
+            _latest_report['crash_entry_date'] = str(_crash_entry_date) if _crash_entry_date else None
+            _latest_report['crash_entry_price'] = _crash_entry_price
+            _latest_report['crash_days'] = crash_days
+
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
         if direction and expiry_tree and ds_tree:
             g_date = ds_tree
@@ -688,6 +782,13 @@ def send_market_report(report_type, force=False):
                 'mr_entry_date': str(_mr_entry_date) if _mr_entry_date else None,
                 'mr_entry_price': _mr_entry_price,
                 'mr_etf_entry_price': _mr_etf_entry_price,
+                'crash_entry_date': str(_crash_entry_date) if _crash_entry_date else None,
+                'crash_entry_price': _crash_entry_price,
+                'crash_k1': _crash_k1,
+                'crash_k2': _crash_k2,
+                'crash_debit': _crash_debit,
+                'crash_sigma': _crash_sigma,
+                'crash_etf_entry': _crash_etf_entry,
             }, f)
     except Exception as e:
         print(f"⚠️ Position tracker save failed: {e}")

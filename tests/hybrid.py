@@ -267,6 +267,88 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
     return trades
 
 
+def crash_bt(period='10y', vix_req=True, drop_thresh=0.01, etf_size=2000, spread_width=5):
+    """Crash bounce: VIX>20 + XSP drop>drop_thresh → 1 CALL spread (ATM+ATM+5) + $2k SPXL.
+    Exit: 0.3% green buffer / -2% stop / T+3.
+    Max loss = net debit paid. Max gain = (spread_width×100) - debit."""
+    xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
+    if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
+    vix = yf.download('^VIX', period=period, interval='1d', progress=False)
+    if isinstance(vix.columns, pd.MultiIndex): vix = vix.droplevel('Ticker', axis=1)
+    xc = xsp['Close']; xh = xsp['High']; xl = xsp['Low']
+    vc = vix['Close'].reindex(xc.index).ffill()
+    spxl = yf.download('SPXL', period=period, interval='1d', progress=False)
+    if isinstance(spxl.columns, pd.MultiIndex): spxl = spxl.droplevel('Ticker', axis=1)
+    spxl_c = spxl['Close'].reindex(xc.index).ffill()
+
+    df = pd.DataFrame(index=xc.index)
+    df['price'] = xc
+    tr = pd.concat([xh-xl, (xh-xc.shift(1)).abs(), (xl-xc.shift(1)).abs()], axis=1).max(axis=1)
+    df['atr_14'] = tr.rolling(14).mean()
+    dlt = xc.diff(); gn = dlt.clip(lower=0); ls = (-dlt).clip(lower=0)
+    ag = gn.rolling(14).mean(); al = ls.rolling(14).mean()
+    df['rsi_14'] = (100-100/(1+ag/al.replace(0, np.nan))).fillna(50)
+    df['vix'] = vc.values; df['chg1'] = xc.pct_change()
+    df = df.dropna().copy(); df = df[df.index >= pd.Timestamp('2021-03-01')]
+
+    T = 7 / 365
+    trades = []; pos = None
+
+    for i in range(len(df)):
+        row = df.iloc[i]; dt = df.index[i]; cs = float(row['price'])
+
+        # ── Crash bounce exit ──
+        if pos is not None:
+            la = i - pos['ei']
+            if la > 0:
+                ex = False; xp = None; xt = ''
+                if cs <= pos['ep'] * 0.98:
+                    xp = cs; ex = True; xt = 'stop'
+                elif cs > pos['ep'] * 1.003 and la <= 3:
+                    xp = cs; ex = True; xt = 'green'
+                elif la >= 3:
+                    xp = cs; ex = True; xt = 'time'
+
+                if ex:
+                    T_rem = max(T - la / 365, 1 / 365)
+                    e1 = bs_call_price(xp, pos['K1'], T_rem, pos['sigma'])
+                    e2 = bs_call_price(xp, pos['K2'], T_rem, pos['sigma'])
+                    opt_pnl = round(max((e1 - e2 - pos['debit']) * 100, -pos['debit'] * 100), 2)
+                    etf_pnl = 0
+                    if etf_size > 0 and 'etf_entry' in pos:
+                        spxl_exit = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
+                        etf_pnl = round(etf_size * (spxl_exit / pos['etf_entry'] - 1), 2)
+                    trades.append({
+                        'entry_date': pos['ed'], 'exit_date': dt,
+                        'dir': 'CALL_spread', 'type': 'crash',
+                        'entry_price': pos['ep'], 'exit_price': round(xp, 2),
+                        'pnl': opt_pnl, 'exit_type': xt,
+                        'entry_reason': 'crash_vix_drop',
+                        'entry_opt_cost': pos['debit'],
+                        'etf_pnl': etf_pnl,
+                    })
+                    pos = None
+
+        # ── Crash bounce entry ──
+        entry_ok = (i > 0 and row['chg1'] < -drop_thresh and (not vix_req or row['vix'] > 20))
+        if pos is None and entry_ok:
+            if i == 0 or not (df.iloc[i-1]['chg1'] < -drop_thresh):
+                sigma = float(row['vix']) / 100 if row['vix'] > 5 else 0.20
+                if sigma > 0.01:
+                    K1 = _s5(cs)
+                    K2 = K1 + spread_width
+                    e1 = bs_call_price(cs, K1, T, sigma)
+                    e2 = bs_call_price(cs, K2, T, sigma)
+                    debit = e1 - e2
+                    if debit > 0.01:
+                        pos = {'ep': cs, 'ed': dt, 'ei': i,
+                               'K1': K1, 'K2': K2, 'debit': debit, 'sigma': sigma}
+                        if etf_size > 0:
+                            pos['etf_entry'] = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
+
+    return trades
+
+
 def summ(trades):
     n = len(trades)
     if n == 0: return {'n':0,'wr':0,'pnl':0}
@@ -305,6 +387,7 @@ if __name__ == '__main__':
     mr_atm = mr_bt(period='10y', pricing='bs_atm')
     mr_otm = mr_bt(period='10y', pricing='bs_otm')
     mr_combo = mr_bt(period='10y', pricing='bs_atm', etf_size=2000)
+    crash = crash_bt(period='10y', etf_size=2000)
     sys.stdout, sys.stderr = old_out, old_err
 
     print('=== 趋势CALL（纯策略）===')
@@ -348,6 +431,49 @@ if __name__ == '__main__':
           f'MR_GT${sum(t["pnl"] for t in mr_gt):+>7.0f}  '
           f'MR_ATM${sum(t["pnl"] for t in mr_atm):+>7.0f}  '
           f'MR_OTM${sum(t["pnl"] for t in mr_otm):+>7.0f}')
-    print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}  '
-          f'总策略${tpnl+mc_tot:+>7.0f}')
+    print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}')
+
+    print()
+    print('=== 崩盘反弹CALL价差5点 + $2k SPXL ===')
+    crash_by_yr = by_year(crash)
+    for yr in sorted(crash_by_yr.keys()):
+        yt = crash_by_yr[yr]
+        n = len(yt)
+        pnl = sum(t['pnl'] + t.get('etf_pnl', 0) for t in yt)
+        w = sum(1 for t in yt if t['pnl'] + t.get('etf_pnl', 0) > 0)
+        print(f'  {yr}  {n:2d}tr  PnL${pnl:>+7.0f}  WR{w/n*100:.0f}%')
+    cn = len(crash)
+    cp = sum(t['pnl'] + t.get('etf_pnl', 0) for t in crash)
+    cw = sum(1 for t in crash if t['pnl'] + t.get('etf_pnl', 0) > 0)
+    print(f'  合计  {cn:2d}tr  PnL${cp:>+7.0f}  WR{cw/cn*100:.0f}%')
+    cavg_opt = sum(t['pnl'] for t in crash) / cn if crash else 0
+    cavg_etf = sum(t.get('etf_pnl', 0) for t in crash) / cn if crash else 0
+    max_loss = min(t['pnl'] + t.get('etf_pnl', 0) for t in crash)
+    max_opt_loss = min(t['pnl'] for t in crash)
+    avg_cost = sum(t.get('entry_opt_cost', 0) for t in crash) / cn if crash else 0
+    print(f'  均单: CALL价差${cavg_opt:+.0f} + ETF${cavg_etf:+.0f} = ${cavg_opt+cavg_etf:+.0f}')
+    print(f'  最大亏 ${max_loss:+.0f} (OPT${max_opt_loss:+.0f})  均成本 ${avg_cost:.0f}/口')
+    print()
+
+    # Combined 3-strategy comparison
+    tpnl = sum(t['pnl'] for t in tr)
+    mc_opt = sum(t['pnl'] for t in mr_combo)
+    mc_etf = sum(t.get('etf_pnl', 0) for t in mr_combo)
+    mc_tot = mc_opt + mc_etf
+    total_pnl = tpnl + mc_tot + cp
+    tn = len(tr); mn = len(mr_combo); ccn = cn
+    tw = sum(1 for t in tr if t['pnl'] > 0)
+    mw = sum(1 for t in mr_combo if t['pnl'] + t.get('etf_pnl', 0) > 0)
+    print('=== 三策略对比 ===')
+    print(f'  {"策略":<22} {"笔数":>4} {"总PnL":>10} {"WR":>5}')
+    print(f'  趋势($5k SPXL)                     {tn:4d} ${tpnl:>+8,.0f} {tw/tn*100:>4.0f}%')
+    print(f'  MR(CALL+$2k ETF)             {mn:4d} ${mc_tot:>+8,.0f} {mw/mn*100:>4.0f}%')
+    print(f'  崩盘(CALL价差5点+$2k) {ccn:4d} ${cp:>+8,.0f} {cw/ccn*100:>4.0f}%')
+    print(f'  {"合计":<22} {tn+mn+ccn:4d} ${total_pnl:>+8,.0f}')
+
+    print(f'\n✅ 完成  趋势${tpnl:+>7.0f}  '
+          f'MR_GT${sum(t["pnl"] for t in mr_gt):+>7.0f}  '
+          f'MR_ATM${sum(t["pnl"] for t in mr_atm):+>7.0f}  '
+          f'MR_OTM${sum(t["pnl"] for t in mr_otm):+>7.0f}')
+    print(f'  MR组合${mc_tot:+>7.0f}  崩盘${cp:+>7.0f}  总策略${total_pnl:+>7.0f}')
     devnull.close()
