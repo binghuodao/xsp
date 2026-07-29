@@ -158,10 +158,11 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03):
     return trades
 
 
-def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.003, stop_pct=0.02):
+def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.003, stop_pct=0.02, etf_size=0):
     """Mean reversion CALL: nb + RSI<30 + VIX>20, hold max 3d.
     green_buffer=0.003: exit when XSP > entry×1.003 (skip barely-green losses)
     stop_pct=0.02: exit when XSP ≤ entry×0.98 (cap single loss)
+    etf_size > 0: also buy $etf_size SPXL 3x ETF, track combined PnL
     
     pricing:
       'gamma_theta' — gamma-theta P&L model, entry=$entry_cost
@@ -174,6 +175,9 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
     if isinstance(vix.columns, pd.MultiIndex): vix = vix.droplevel('Ticker', axis=1)
     xc = xsp['Close']; xh = xsp['High']; xl = xsp['Low']
     vc = vix['Close'].reindex(xc.index).ffill()
+    spxl = yf.download('SPXL', period=period, interval='1d', progress=False)
+    if isinstance(spxl.columns, pd.MultiIndex): spxl = spxl.droplevel('Ticker', axis=1)
+    spxl_c = spxl['Close'].reindex(xc.index).ffill()
 
     df = pd.DataFrame(index=xc.index)
     df['price'] = xc
@@ -228,6 +232,10 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
 
                     if not xt:
                         xt = 'mr_green' if cs > pos['ep'] else 'mr_time'
+                    etf_pnl = 0
+                    if etf_size > 0 and 'etf_entry' in pos:
+                        spxl_exit = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
+                        etf_pnl = round(etf_size * (spxl_exit / pos['etf_entry'] - 1), 2)
                     trades.append({
                         'entry_date': pos['ed'], 'exit_date': dt,
                         'dir': 'CALL', 'type': 'mr',
@@ -235,12 +243,13 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
                         'pnl': pnl, 'exit_type': xt,
                         'entry_reason': 'MR_nb_rsi_vix',
                         'entry_opt_cost': pos.get('entry_opt', entry_cost) * (1 if is_bs else 1),
+                        'etf_pnl': etf_pnl,
                     })
                     pos = None
 
         # MR entry (only when no position, signal day, not consecutive)
-        if pos is None and row['nb'] and row['rsi_14'] < 30 and row['vix'] > 20:
-            if i == 0 or not (df.iloc[i-1]['nb'] and df.iloc[i-1]['rsi_14'] < 30 and df.iloc[i-1]['vix'] > 20):
+        if pos is None and row['rsi_14'] < 30 and row['vix'] > 20:
+            if i == 0 or not (df.iloc[i-1]['rsi_14'] < 30 and df.iloc[i-1]['vix'] > 20):
                 if is_bs:
                     sigma = float(row['vix']) / 100
                     if pricing == 'bs_otm':
@@ -252,6 +261,8 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
                            'K': strike, 'entry_opt': opt_price, 'sigma': sigma}
                 else:
                     pos = {'ep': cs, 'ed': dt, 'ei': i}
+                if etf_size > 0:
+                    pos['etf_entry'] = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
 
     return trades
 
@@ -293,6 +304,7 @@ if __name__ == '__main__':
     mr_gt = mr_bt(period='10y', pricing='gamma_theta')
     mr_atm = mr_bt(period='10y', pricing='bs_atm')
     mr_otm = mr_bt(period='10y', pricing='bs_otm')
+    mr_combo = mr_bt(period='10y', pricing='bs_atm', etf_size=2000)
     sys.stdout, sys.stderr = old_out, old_err
 
     print('=== 趋势CALL（纯策略）===')
@@ -309,8 +321,33 @@ if __name__ == '__main__':
         print(f'  均单PnL ${avg_pnl:+.0f}  均成本 ${avg_cost*100:.0f}/口')
         print()
 
-    print(f'\n✅ 完成  趋势${sum(t["pnl"] for t in tr):+>7.0f}  '
+    print('=== 均值回归CALL + $2k SPXL（BS ATM）===')
+    # Show combined PnL (CALL + ETF) per year
+    combo_by_yr = by_year(mr_combo)
+    for yr in sorted(combo_by_yr.keys()):
+        yt = combo_by_yr[yr]
+        n = len(yt)
+        pnl = sum(t['pnl'] + t.get('etf_pnl', 0) for t in yt)
+        w = sum(1 for t in yt if t['pnl'] + t.get('etf_pnl', 0) > 0)
+        print(f'  {yr}  {n:2d}tr  PnL${pnl:>+7.0f}  WR{w/n*100:.0f}%')
+    total_n = len(mr_combo)
+    total_pnl = sum(t['pnl'] + t.get('etf_pnl', 0) for t in mr_combo)
+    total_w = sum(1 for t in mr_combo if t['pnl'] + t.get('etf_pnl', 0) > 0)
+    print(f'  合计  {total_n:2d}tr  PnL${total_pnl:>+7.0f}  WR{total_w/total_n*100:.0f}%')
+    avg_opt = sum(t['pnl'] for t in mr_combo) / len(mr_combo) if mr_combo else 0
+    avg_etf = sum(t.get('etf_pnl', 0) for t in mr_combo) / len(mr_combo) if mr_combo else 0
+    avg_tot = avg_opt + avg_etf
+    print(f'  均单: CALL${avg_opt:+.0f} + ETF${avg_etf:+.0f} = ${avg_tot:+.0f}')
+    print()
+
+    tpnl = sum(t['pnl'] for t in tr)
+    mc_opt = sum(t['pnl'] for t in mr_combo)
+    mc_etf = sum(t.get('etf_pnl', 0) for t in mr_combo)
+    mc_tot = mc_opt + mc_etf
+    print(f'\n✅ 完成  趋势${tpnl:+>7.0f}  '
           f'MR_GT${sum(t["pnl"] for t in mr_gt):+>7.0f}  '
           f'MR_ATM${sum(t["pnl"] for t in mr_atm):+>7.0f}  '
           f'MR_OTM${sum(t["pnl"] for t in mr_otm):+>7.0f}')
+    print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}  '
+          f'总策略${tpnl+mc_tot:+>7.0f}')
     devnull.close()
