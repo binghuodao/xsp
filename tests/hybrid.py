@@ -267,7 +267,8 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
     return trades
 
 
-def crash_bt(period='10y', vix_req=True, drop_thresh=0.01, etf_size=2000, spread_width=5):
+def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spread_width=5,
+             stop_pct=0.03, green_buffer=0.0, max_hold=4):
     """Crash bounce: VIX>20 + XSP drop>drop_thresh → 1 CALL spread (ATM+ATM+5) + $2k SPXL.
     Exit: 0.3% green buffer / -2% stop / T+3.
     Max loss = net debit paid. Max gain = (spread_width×100) - debit."""
@@ -302,11 +303,11 @@ def crash_bt(period='10y', vix_req=True, drop_thresh=0.01, etf_size=2000, spread
             la = i - pos['ei']
             if la > 0:
                 ex = False; xp = None; xt = ''
-                if cs <= pos['ep'] * 0.98:
+                if cs <= pos['ep'] * (1 - stop_pct):
                     xp = cs; ex = True; xt = 'stop'
-                elif cs > pos['ep'] * 1.003 and la <= 3:
+                elif cs > pos['ep'] * (1 + green_buffer) and la <= max_hold:
                     xp = cs; ex = True; xt = 'green'
-                elif la >= 3:
+                elif la >= max_hold:
                     xp = cs; ex = True; xt = 'time'
 
                 if ex:
@@ -434,7 +435,7 @@ if __name__ == '__main__':
     print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}')
 
     print()
-    print('=== 崩盘反弹CALL价差5点 + $2k SPXL ===')
+    print('=== 崩盘反弹CALL价差5点 + $2k SPXL (0.5%drop, 无VIX, 3%stop, 首阳即出, T+4) ===')
     crash_by_yr = by_year(crash)
     for yr in sorted(crash_by_yr.keys()):
         yt = crash_by_yr[yr]
