@@ -336,6 +336,18 @@ def send_market_report(report_type, force=False):
         _mr_entry_date = datetime.now(ET_TZ).date()
         _mr_entry_price = price
         _mr_etf_entry_price = _get_etf_price('SPXL')
+        mr_strike = _s5(price)
+        ws = {"date": _mr_entry_date.strftime("%y%m%d"),
+              "short": str(mr_strike), "mid": "", "long": "",
+              "opt_type": "C", "strategy": "naked", "entry": ""}
+        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
+            user_watchlist.append(ws)
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
 
     # ── Crash bounce: CALL价差5点 + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
     _xsp_prev_close = _get_xsp_prev_close()
@@ -354,6 +366,17 @@ def send_market_report(report_type, force=False):
             e2 = pricing.black_scholes(price, _crash_k2, T, r, _crash_sigma, 'C')
             _crash_debit = e1 - e2
         _crash_etf_entry = _get_etf_price('SPXL')
+        ws = {"date": _crash_entry_date.strftime("%y%m%d"),
+              "short": str(_crash_k1), "mid": "", "long": str(_crash_k2),
+              "opt_type": "C", "strategy": "spread", "entry": ""}
+        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
+            user_watchlist.append(ws)
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",
@@ -491,8 +514,6 @@ def send_market_report(report_type, force=False):
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
-            'signal_tier': None, 'tool_recommend': None,
-            'holding_days': 0, 'active_position_date': None,
         }
     else:
         # ETF reference
@@ -567,8 +588,6 @@ def send_market_report(report_type, force=False):
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': direction, 'reason': reason,
         }
-        if direction == 'CALL':
-            _latest_report['etf'] = "★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)"
         if expiry_tree:
             _latest_report['tree_label'] = f"7DTE {direction}树 ({expiry_tree})"
             _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
@@ -580,26 +599,7 @@ def send_market_report(report_type, force=False):
             _latest_report['single_label'] = f"7DTE 裸{ot_type}"
             _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
             _latest_report['single_mid'] = f"${mid:.2f}"
-        _latest_report['signal_tier'] = signal_tier
-        _latest_report['tool_recommend'] = tool_recommend
-        _latest_report['holding_days'] = holding_days
-        _latest_report['active_position_date'] = str(_active_position_date) if _active_position_date else None
 
-        # Telegram 工具行
-        if tool_recommend:
-            lines.append("")
-            etf_info = f"{tool_recommend['etf']} ${tool_recommend['etf_amount']}"
-            if tool_recommend.get('naked_buy', 0) > 0:
-                etf_info += f" + 裸买 ×{tool_recommend['naked_buy']}"
-            lines.append(f"📋 强度: {signal_tier} | 工具: {etf_info}")
-        # ── 持有计划 ──
-        today_et = datetime.now(ET_TZ).date()
-        d30_str = (today_et + timedelta(days=30)).strftime('%m/%d')
-        hold_plan = {
-            'tree_naked_close': d30_str,
-            'etf_1x_close': d30_str,
-        }
-        lines.append(f"持仓计划: 全部→{d30_str}平 (3x全程, 最长30天)")
         # 统一跟踪（固定止损兜底 + 从最高价回落3%）
         if tool_recommend:
             global _entry_price, _peak_price
@@ -650,7 +650,7 @@ def send_market_report(report_type, force=False):
                 # 入场硬止损触发
                 if entry_trail_stop and etf_price is not None and etf_price <= entry_trail_stop:
                     close_lines.append(f"  🛑 {etf_ticker} 入场未涨超0.5%，现价 ${etf_price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (跌6%)，建议平仓")
-        _latest_report['hold_plan'] = hold_plan
+
 
         # ── Mean Reversion 裸买CALL 展示 ──
         if _mr_entry_date:
@@ -691,6 +691,11 @@ def send_market_report(report_type, force=False):
             _latest_report['mr_entry_date'] = str(_mr_entry_date) if _mr_entry_date else None
             _latest_report['mr_entry_price'] = _mr_entry_price
             _latest_report['mr_days'] = mr_days
+            _latest_report['mr_stop'] = _stop_price
+            _latest_report['mr_green'] = _green_price
+            _latest_report['mr_strike'] = _atm_strike
+            _latest_report['mr_est_cost'] = _est_cost
+            _latest_report['mr_etf_entry_price'] = _mr_etf_entry_price
 
         # ── Crash bounce 崩盘反弹 展示 ──
         if _crash_entry_date:
@@ -736,6 +741,13 @@ def send_market_report(report_type, force=False):
             _latest_report['crash_entry_date'] = str(_crash_entry_date) if _crash_entry_date else None
             _latest_report['crash_entry_price'] = _crash_entry_price
             _latest_report['crash_days'] = crash_days
+            _latest_report['crash_k1'] = _crash_k1
+            _latest_report['crash_k2'] = _crash_k2
+            _latest_report['crash_debit'] = _crash_debit
+            _latest_report['crash_stop'] = _crash_stop
+            _latest_report['crash_green'] = _crash_green
+            _latest_report['crash_etf_entry'] = _crash_etf_entry
+            _latest_report['crash_opt_value'] = opt_value
 
         # 自动将 XSP 树组合加入 watchlist（SPYM/SH 除外）
         if direction and expiry_tree and ds_tree:

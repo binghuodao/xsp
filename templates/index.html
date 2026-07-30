@@ -1865,18 +1865,30 @@
                 html += '<div style="margin-top:8px;"><b>' + r.single_label + '</b></div>'
                     + '<div>' + r.single_strike + '  mid ' + r.single_mid + '</div>';
             }
-            if (r.signal_tier && r.tool_recommend) {
+            // 崩盘反弹
+            if (r.crash_entry_date) {
                 html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
-                html += '<b>📋 ' + r.signal_tier + '</b>';
-                html += ' | 工具: <b>' + r.tool_recommend.etf + '</b> $' + r.tool_recommend.etf_amount;
-                if (r.tool_recommend.naked_buy > 0)
-                    html += ' + 裸买 \u00d7' + r.tool_recommend.naked_buy;
-                if (r.active_position_date)
-                    html += ' | <span style="color:#8b949e;">\u5f00\u4ed3 ' + r.active_position_date + '</span>';
-                if (r.hold_plan)
-                    html += ' | <span style="color:#58a6ff;">\u5168\u90e8\u2192' + r.hold_plan.tree_naked_close + '\u5e73</span>';
-                if (r.stop_loss && r.stop_loss.length)
-                    html += ' | <span style="color:#f0883e;">\ud83d\uded1 ' + r.stop_loss.join(', ') + '</span>';
+                html += '<b>💥 崩盘反弹 CALL价差5点</b> (' + r.crash_entry_date + ')<br>';
+                html += '入场 <b>$' + r.crash_entry_price.toFixed(2) + '</b> | 持有 <b>' + r.crash_days + 'd</b><br>';
+                html += '价差 $' + r.crash_k1 + 'C / $' + r.crash_k2 + 'C  成本<b>$' + (r.crash_debit ? (r.crash_debit * 100).toFixed(0) : '?') + '</b>/口<br>';
+                if (r.crash_etf_entry) html += '工具: CALL价差 + SPXL $2k (入场$' + r.crash_etf_entry.toFixed(2) + ')<br>';
+                html += '止损 <span style="color:#f0883e;">$' + r.crash_stop.toFixed(2) + ' (-3%)</span> | 首阳 <span style="color:#3fb950;">$' + r.crash_green.toFixed(2) + '</span>';
+                html += '</div>';
+            }
+            // MR
+            if (r.mr_entry_date) {
+                html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
+                html += '<b>🔁 裸买MR</b> (' + r.mr_entry_date + ')<br>';
+                html += '入场 <b>$' + r.mr_entry_price.toFixed(2) + '</b> | 持有 <b>' + r.mr_days + 'd</b><br>';
+                html += 'ATM $' + r.mr_strike + ' 7DTE  成本≈$' + (r.mr_est_cost ? r.mr_est_cost.toFixed(2) : '?') + '/股 ($' + (r.mr_est_cost ? (r.mr_est_cost * 100).toFixed(0) : '?') + '/口)<br>';
+                if (r.mr_etf_entry_price) html += '工具: CALL + SPXL $2k (入场$' + r.mr_etf_entry_price.toFixed(2) + ')<br>';
+                html += '止损 <span style="color:#f0883e;">$' + r.mr_stop.toFixed(2) + ' (-2%)</span> | 首阳 <span style="color:#3fb950;">$' + r.mr_green.toFixed(2) + ' (+0.3%)</span>';
+                html += '</div>';
+            }
+            // 趋势止损跟踪
+            if (r.stop_loss && r.stop_loss.length) {
+                html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
+                html += '<span style="color:#f0883e;">\ud83d\uded1 ' + r.stop_loss.join(' | ') + '</span>';
                 html += '</div>';
             }
             if (r.close_alerts && r.close_alerts.length) {
