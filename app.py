@@ -706,31 +706,33 @@ def send_market_report(report_type, force=False):
                 _trend_opt_entry_date = None
                 _trend_opt_sigma = None
 
-        # 统一跟踪（固定止损兜底 + 从最高价回落3%）
+        # 统一跟踪（XSP基准，对齐回测）
         if tool_recommend:
             global _entry_price, _peak_price
             etf_ticker = tool_recommend['etf']
             etf_price = _get_etf_price(etf_ticker)
             is_nearbb = reason and ('贴BB' in reason)
+            ratio = (etf_price / price) if price > 0 and etf_price else 3.0
 
-            if etf_price and etf_price > 0:
+            if price and price > 0:
                 if holding_days == 0:
-                    _entry_price = etf_price
-                    _peak_price = etf_price
-                elif _peak_price and etf_price > _peak_price:
-                    _peak_price = etf_price
+                    _entry_price = price
+                    _peak_price = price
+                elif _peak_price and price > _peak_price:
+                    _peak_price = price
 
-                # 固定止损（兜底，Moomoo止蚀盘）
-                stop_pct = 0.01 if is_nearbb else 0.03
+                # 固定止损（XSP基准，Moomoo止蚀盘对应ETF）
+                stop_pct = 0.01 if is_nearbb else 0.05
                 fixed_stop = _entry_price * (1 - stop_pct)
+                fixed_etf = fixed_stop * ratio
 
-                # 价格追踪（从最高价回落3%）
+                # 价格追踪（XSP从最高价回落3%）
                 trail_pct = 0.03
                 trail_stop = _peak_price * (1 - trail_pct) if _peak_price else None
 
-                # 入场硬止损（从未涨超0.5%→跌2% XSP≈跌6% ETF 退）
-                entry_trail_active = _peak_price is not None and _entry_price is not None and _peak_price < _entry_price * 1.015
-                entry_trail_stop = _entry_price * 0.94 if entry_trail_active else None
+                # 入场硬止损（从未涨超0.5%→XSP跌2%退）
+                entry_trail_active = _peak_price is not None and _entry_price is not None and _peak_price < _entry_price * 1.005
+                entry_trail_stop = _entry_price * 0.98 if entry_trail_active else None
 
                 # 有效止损 = 最紧的那个
                 trail_active = _peak_price is not None and _entry_price is not None and _peak_price > _entry_price
@@ -740,22 +742,23 @@ def send_market_report(report_type, force=False):
                 if entry_trail_stop:
                     effective = min(effective, entry_trail_stop)
 
-                sl_parts = [f"{etf_ticker} 止损 ${effective:.2f}",
-                            f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}%)",
-                            f"最高 ${_peak_price:.2f}"]
+                sl_title = f"止损(基准) ${effective:.2f} (≈ETF ${effective*ratio:.2f})"
+                sl_parts = [sl_title, f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}% XSP, ≈${fixed_etf:.2f} ETF)",
+                            f"最高XSP ${_peak_price:.2f}"]
                 if trail_active and trail_stop and trail_stop < effective:
-                    sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (回落{trail_pct*100:.0f}%)")
+                    sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (XSP回落{trail_pct*100:.0f}%)")
                 if entry_trail_stop and entry_trail_stop < effective:
-                    sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (跌6%)")
+                    ete = entry_trail_stop * ratio
+                    sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, ≈${ete:.2f} ETF)")
                 _latest_report['stop_loss'] = sl_parts
                 lines.append(f"🛑 {' | '.join(sl_parts)}")
 
-                # 跟踪触发提示
-                if trail_stop and etf_price is not None and etf_price <= trail_stop and _peak_price and _peak_price > _entry_price:
-                    close_lines.append(f"  🛑 {etf_ticker} 从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${etf_price:.2f} ≤ 跟踪 ${trail_stop:.2f}，建议平仓")
+                # 跟踪触发提示（XSP基准）
+                if trail_stop and price is not None and price <= trail_stop and _peak_price and _peak_price > _entry_price:
+                    close_lines.append(f"  🛑 XSP从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${price:.2f} ≤ 跟踪 ${trail_stop:.2f} (≈ETF${price*ratio:.2f})，建议平仓")
                 # 入场硬止损触发
-                if entry_trail_stop and etf_price is not None and etf_price <= entry_trail_stop:
-                    close_lines.append(f"  🛑 {etf_ticker} 入场未涨超0.5%，现价 ${etf_price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (跌6%)，建议平仓")
+                if entry_trail_stop and price is not None and price <= entry_trail_stop:
+                    close_lines.append(f"  🛑 XSP入场未涨超0.5%，现价 ${price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, ≈ETF${price*ratio:.2f})，建议平仓")
 
 
         # ── Mean Reversion 裸买CALL 展示 ──
