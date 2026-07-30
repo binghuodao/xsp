@@ -32,7 +32,7 @@
 ### 关键阈值
 | 参数 | 值 |
 |------|----|
-| is_trend | score ≥ 60 |
+| is_trend | score ≥ 50 |
 | 显示标签 Trending | score ≥ 65 |
 | 近轨 ATR 乘数 | ATR14 × 0.60 |
 | 近轨 BW 回退 | BW × 0.10（ATR14 不可用时） |
