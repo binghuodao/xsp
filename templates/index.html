@@ -990,6 +990,8 @@
             const chartId = `po-${cardId}`;
             const payoffOpen = document.getElementById(`pw-${chartId}`)?.style.display !== 'none' && document.getElementById(`pw-${chartId}`) !== null;
             if (payoffCharts[chartId]) { payoffCharts[chartId].destroy(); delete payoffCharts[chartId]; }
+            const legDetailsOpen = document.getElementById(`ld-${cardId}`)?.open || false;
+            const scOpen = document.getElementById(`sc-${cardId}`)?.open || false;
 
             // 动态应用卡片类别
             card.className = `spread-card ${d.opt_type === 'P' ? 'put-spread' : 'call-spread'}`;
@@ -1230,6 +1232,62 @@
                     <div class="greek-item">Theta: <b style="color: var(--green)">${d.short_theta > 0 ? '+' : ''}${d.short_theta.toFixed(3)}</b> <span style="font-size: 10px; color: #8b949e;">(${d.theta >= 0 ? '+' : ''}${d.theta.toFixed(3)})</span></div>
                 </div>
 
+                ${d.theory !== null && d.theory !== undefined ? `
+                <div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-top:1px solid rgba(48,54,77,0.3);margin:2px 0;">
+                    <span><span class="label">Theo (BS)</span> <b>$${d.theory.toFixed(2)}</b></span>
+                    <span><span class="label">Edge</span> <b style="color:${d.edge >= 0 ? 'var(--green)' : 'var(--red)'}">${d.edge >= 0 ? '+' : ''}$${d.edge.toFixed(2)}</b></span>
+                </div>
+                ` : ''}
+
+                ${d.legs && d.legs.length > 0 ? `
+                <details id="ld-${cardId}" style="margin:4px 0;font-size:11px;">
+                    <summary style="cursor:pointer;color:#8b949e;font-weight:bold;">Leg Details ▼</summary>
+                    <div style="margin-top:4px;display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                        ${d.legs.map(l => `
+                        <div style="background:rgba(48,54,77,0.2);border-radius:4px;padding:4px 6px;text-align:center;">
+                            <div style="font-weight:bold;color:#c9d1d9;">${l.leg}</div>
+                            <div>${l.strike.toFixed(0)} ${l.type}</div>
+                            <div style="font-size:10px;color:#8b949e;">B: $${l.bid.toFixed(2)} / A: $${l.ask.toFixed(2)}</div>
+                            <div style="font-size:10px;color:#8b949e;">Δ ${l.delta.toFixed(3)} | IV ${(l.iv*100).toFixed(1)}%</div>
+                        </div>
+                        `).join('')}
+                    </div>
+                </details>
+                ` : ''}
+
+                ${d.scenarios ? `
+                <details id="sc-${cardId}" style="margin:4px 0;font-size:11px;">
+                    <summary style="cursor:pointer;color:#8b949e;font-weight:bold;">Scenario Analysis (BS Theo) ▼</summary>
+                    <div style="margin-top:4px;background:rgba(48,54,77,0.2);border-radius:4px;padding:4px 6px;">
+                        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+                            <tr style="border-bottom:1px solid rgba(48,54,77,0.5);">
+                                <th style="text-align:left;padding:2px 4px;color:#8b949e;">Scenario</th>
+                                <th style="text-align:right;padding:2px 4px;color:#8b949e;">Theo</th>
+                                <th style="text-align:right;padding:2px 4px;color:#8b949e;">Δ</th>
+                            </tr>
+                            ${Object.entries(d.scenarios).map(([key, val]) => key === 'current' ? `
+                            <tr style="border-bottom:1px solid rgba(48,54,77,0.3);">
+                                <td style="padding:2px 4px;font-weight:bold;">Market Mid</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;color:var(--blue)">$${val.mid.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:${val.edge > 0 ? 'var(--green)' : val.edge < 0 ? 'var(--red)' : '#8b949e'};font-weight:bold;">Edge: ${val.edge > 0 ? '+' : ''}${val.edge.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:2px 4px;">BS Fair</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;">$${val.price.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:#8b949e;">–</td>
+                            </tr>
+                            ` : `
+                            <tr>
+                                <td style="padding:2px 4px;">${key.replace(/_/g,' ')}</td>
+                                <td style="text-align:right;padding:2px 4px;font-weight:bold;">$${val.price.toFixed(2)}</td>
+                                <td style="text-align:right;padding:2px 4px;color:${val.change > 0 ? 'var(--green)' : val.change < 0 ? 'var(--red)' : '#8b949e'};">${val.change > 0 ? '+' : ''}${val.change.toFixed(2)}</td>
+                            </tr>
+                            `).join('')}
+                        </table>
+                    </div>
+                </details>
+                ` : ''}
+
                 <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
                     <span class="pct-badge" id="pct-${cardId}"></span>
                     <button class="payoff-btn" onclick='togglePayoffChart("${chartId}", ${JSON.stringify(d).replace(/'/g,"&#39;")}, "spread")'>📊 Payoff</button>
@@ -1254,6 +1312,15 @@
                 const pw = document.getElementById(`pw-${chartId}`);
                 if (pw) { pw.style.display = 'block'; }
                 setTimeout(() => renderPayoffChart(chartId, d, 'spread'), 30);
+            }
+
+            if (legDetailsOpen) {
+                const ld = document.getElementById(`ld-${cardId}`);
+                if (ld) ld.open = true;
+            }
+            if (scOpen) {
+                const sc = document.getElementById(`sc-${cardId}`);
+                if (sc) sc.open = true;
             }
 
             updateActiveSpreadCount();

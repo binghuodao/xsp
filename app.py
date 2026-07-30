@@ -1937,6 +1937,41 @@ def start_moomoo():
                                     except Exception as es_err:
                                         print(f"⚠️ 计算 Entry Score 异常: {es_err}")
                                     
+                                    # BS theory for vertical spread
+                                    _spread_theory = None
+                                    _spread_edge = None
+                                    try:
+                                        T = dte_val / 365.0
+                                        if T > 0 and current_price > 0:
+                                            iv_short = short_opt.get('iv', 0.0)
+                                            iv_long = long_opt.get('iv', 0.0)
+                                            if iv_short > 0.01 and iv_long > 0.01:
+                                                bs_sh = pricing.black_scholes(current_price, s_val, T, pricing.RISK_FREE_RATE, iv_short, opt_type)
+                                                bs_lo = pricing.black_scholes(current_price, l_val, T, pricing.RISK_FREE_RATE, iv_long, opt_type)
+                                                _spread_theory = bs_sh - bs_lo
+                                                _spread_edge = round(spread_mid - _spread_theory, 2)
+                                    except Exception:
+                                        pass
+                                    
+                                    _spread_legs = [
+                                        {'leg': 'Short', 'strike': s_val, 'type': opt_type,
+                                         'bid': short_opt['bid'], 'ask': short_opt['ask'],
+                                         'mid': short_opt['mid'], 'delta': short_opt['delta'],
+                                         'iv': short_opt.get('iv', 0)},
+                                        {'leg': 'Long', 'strike': l_val, 'type': opt_type,
+                                         'bid': long_opt['bid'], 'ask': long_opt['ask'],
+                                         'mid': long_opt['mid'], 'delta': long_opt['delta'],
+                                         'iv': long_opt.get('iv', 0)},
+                                    ]
+                                    _spread_scenarios = None
+                                    try:
+                                        if _spread_theory is not None and T > 0:
+                                            _spread_scenarios = pricing.spread_scenarios(
+                                                current_price, s_val, l_val, T, pricing.RISK_FREE_RATE,
+                                                iv_short, iv_long, opt_type, spread_mid)
+                                    except Exception:
+                                        pass
+                                    
                                     spread_info = {
                                         "group_index": idx + 1,
                                         "date": ds,
@@ -1971,7 +2006,11 @@ def start_moomoo():
                                         "atr_buffers": atr_buffers,
                                         "dte": dte_val,
                                         "put_wall": put_walls.get(expiry_date_str, {}).get('strike'),
-                                        "combo_symbol": f"{s_sym}|{l_sym}"
+                                        "combo_symbol": f"{s_sym}|{l_sym}",
+                                        "theory": _spread_theory,
+                                        "edge": _spread_edge,
+                                        "legs": _spread_legs,
+                                        "scenarios": _spread_scenarios,
                                     }
                                     socketio.emit('spread_update', spread_info)
                                     

@@ -127,6 +127,37 @@ def single_option_scenarios(S, K, T, r, iv, opt_type, mid):
     return out
 
 
+def spread_theory_price(S, k_short, k_long, T, r, iv_short, iv_long, opt_type):
+    bs_short = black_scholes(S, k_short, T, r, iv_short, opt_type)
+    bs_long = black_scholes(S, k_long, T, r, iv_long, opt_type)
+    return bs_short - bs_long
+
+
+def spread_scenarios(S, k_short, k_long, T, r, iv_short, iv_long, opt_type, combo_mid):
+    base = spread_theory_price(S, k_short, k_long, T, r, iv_short, iv_long, opt_type)
+    out = {
+        'current': {
+            'price': round(base, 2), 'change': 0.0,
+            'mid': round(combo_mid, 2),
+            'edge': round(combo_mid - base, 2),
+        }
+    }
+    for pct in [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]:
+        s2 = S * (1 + pct / 100.0)
+        t = spread_theory_price(s2, k_short, k_long, T, r, iv_short, iv_long, opt_type)
+        out[f'price_{pct:+.1f}pct'] = {'price': round(t, 2), 'change': round(t - combo_mid, 2)}
+    for dd in [-5, -3, -1]:
+        t2 = max(T + dd / 365.0, 0.001)
+        t = spread_theory_price(S, k_short, k_long, t2, r, iv_short, iv_long, opt_type)
+        out[f'dte_{dd}d'] = {'price': round(t, 2), 'change': round(t - combo_mid, 2)}
+    for d_iv in [-5, -2, -1, 1, 2, 5]:
+        iv_s = max(0.05, iv_short + d_iv / 100.0)
+        iv_l = max(0.05, iv_long + d_iv / 100.0)
+        t = spread_theory_price(S, k_short, k_long, T, r, iv_s, iv_l, opt_type)
+        out[f'iv_{d_iv:+.0f}pct'] = {'price': round(t, 2), 'change': round(t - combo_mid, 2)}
+    return out
+
+
 def xmas_scenarios(S, k_short, k_mid, k_long, T, r, iv_short, iv_mid, iv_long, opt_type, combo_mid):
     """Scenario analysis returning {key: {price, change}}."""
     base_theory = xmas_theory_price(
