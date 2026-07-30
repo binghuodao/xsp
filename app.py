@@ -2362,13 +2362,26 @@ def api_history_groups():
             })
             continue
 
-        try:
+        if has_long and not has_mid:
+            # Two-leg spread (e.g. crash bounce)
             l_val = float(l)
-            m_val = float(m)
-        except:
+            opt_type = group.get('opt_type', '') or ('P' if s_val > l_val else 'C')
+            ordered = sorted([s_val, l_val])
+            syms = [f"US.XSP{ds}{opt_type}{int(x * 1000)}" for x in ordered]
+            combo_sym = '|'.join(syms)
+            short_strike, long_strike = (ordered[1], ordered[0]) if opt_type == 'P' else (ordered[0], ordered[1])
+            result.append({
+                'group_idx': idx + 1, 'expiry': expiry, 'opt_type': opt_type,
+                'short_strike': short_strike, 'mid_strike': None, 'long_strike': long_strike,
+                'has_bfly': False, 'has_xmas': False, 'strategy': 'spread',
+                'combo_symbol': combo_sym, 'day_count': 0,
+            })
             continue
+
+        # Three-leg combo (xmas / butterfly)
+        l_val = float(l)
+        m_val = float(m)
         opt_type = group.get('opt_type', '') or ('P' if s_val > l_val else 'C')
-        # Sort strikes: low, mid, high
         ordered = sorted([s_val, m_val, l_val])
         syms = [f"US.XSP{ds}{opt_type}{int(x * 1000)}" for x in ordered]
         combo_sym = '|'.join(syms)
@@ -2379,17 +2392,10 @@ def api_history_groups():
             short_strike, mid_strike, long_strike = ordered[0], ordered[1], ordered[2]
 
         result.append({
-            'group_idx': idx + 1,
-            'expiry': expiry,
-            'opt_type': opt_type,
-            'short_strike': short_strike,
-            'mid_strike': mid_strike,
-            'long_strike': long_strike,
-            'has_bfly': strategy == 'bfly',
-            'has_xmas': strategy == 'xmas',
-            'strategy': strategy,
-            'combo_symbol': combo_sym,
-            'day_count': 0,
+            'group_idx': idx + 1, 'expiry': expiry, 'opt_type': opt_type,
+            'short_strike': short_strike, 'mid_strike': mid_strike, 'long_strike': long_strike,
+            'has_bfly': strategy == 'bfly', 'has_xmas': strategy == 'xmas',
+            'strategy': strategy, 'combo_symbol': combo_sym, 'day_count': 0,
         })
 
     # Fill day_count from DB (new + old format)

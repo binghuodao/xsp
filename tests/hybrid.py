@@ -214,7 +214,8 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
 
                 if ex:
                     if is_bs:
-                        T_rem = max(T - la / 365, 1 / 365)
+                        cal_days = (dt - pos['ed']).days
+                        T_rem = max(T - cal_days / 365, 1 / 365)
                         exit_opt = bs_call_price(xp, pos['K'], T_rem, pos['sigma'])
                         pnl = round(max((exit_opt - pos['entry_opt']) * 100, -pos['entry_opt'] * 100), 2)
                     else:
@@ -311,7 +312,8 @@ def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spre
                     xp = cs; ex = True; xt = 'time'
 
                 if ex:
-                    T_rem = max(T - la / 365, 1 / 365)
+                    cal_days = (dt - pos['ed']).days
+                    T_rem = max(T - cal_days / 365, 1 / 365)
                     e1 = bs_call_price(xp, pos['K1'], T_rem, pos['sigma'])
                     e2 = bs_call_price(xp, pos['K2'], T_rem, pos['sigma'])
                     opt_pnl = round(max((e1 - e2 - pos['debit']) * 100, -pos['debit'] * 100), 2)
