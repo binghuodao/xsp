@@ -1932,6 +1932,14 @@
                 html += '<div style="margin-top:8px;"><b>' + r.single_label + '</b></div>'
                     + '<div>' + r.single_strike + '  mid ' + r.single_mid + '</div>';
             }
+            if (r.trend_opt_expiry) {
+                html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
+                html += '<b>📈 趋势滚动裸CALL</b> (' + r.trend_opt_expiry + ')<br>';
+                html += 'Strike <b>$' + r.trend_opt_strike + 'C</b> | 入场 <b>$' + r.trend_opt_entry.toFixed(2) + '</b><br>';
+                if (r.trend_opt_dte !== null) html += 'DTE <b>' + r.trend_opt_dte + 'd</b>';
+                if (r.trend_opt_pnl !== null) html += ' | PnL <b>$' + r.trend_opt_pnl.toFixed(0) + '</b>';
+                html += '</div>';
+            }
             // 崩盘反弹
             if (r.crash_entry_date) {
                 html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
