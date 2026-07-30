@@ -760,7 +760,7 @@ def send_market_report(report_type, force=False):
 
         # ── Mean Reversion 裸买CALL 展示 ──
         if _mr_entry_date:
-            mr_days = (datetime.now(ET_TZ).date() - _mr_entry_date).days
+            mr_days = len(pd.bdate_range(_mr_entry_date, datetime.now(ET_TZ).date())) - 1
             mr_exit_price = price
             lines.append(f"")
             lines.append(f"═══ 裸买MR ({_mr_entry_date}) ═══")
@@ -805,7 +805,9 @@ def send_market_report(report_type, force=False):
 
         # ── Crash bounce 崩盘反弹 展示 ──
         if _crash_entry_date:
-            crash_days = (datetime.now(ET_TZ).date() - _crash_entry_date).days
+            _today = datetime.now(ET_TZ).date()
+            crash_cal_days = (_today - _crash_entry_date).days
+            crash_days = len(pd.bdate_range(_crash_entry_date, _today)) - 1
             lines.append(f"")
             lines.append(f"═══ 崩盘反弹 CALL价差5点 ({_crash_entry_date}) ═══")
             lines.append(f"入场 ${_crash_entry_price:.2f} | 持有 {crash_days}d | 现价 ${price:.2f}")
@@ -819,7 +821,7 @@ def send_market_report(report_type, force=False):
             opt_value = 0
             if _crash_sigma and _crash_debit:
                 T = 7 / 365.0
-                T_rem = max(T - crash_days / 365.0, 1 / 365.0)
+                T_rem = max(T - crash_cal_days / 365.0, 1 / 365.0)
                 e1 = pricing.black_scholes(price, _crash_k1, T_rem, 0.05, _crash_sigma, 'C')
                 e2 = pricing.black_scholes(price, _crash_k2, T_rem, 0.05, _crash_sigma, 'C')
                 opt_value = max((e1 - e2 - _crash_debit) * 100, -_crash_debit * 100)
