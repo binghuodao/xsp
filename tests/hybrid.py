@@ -312,9 +312,10 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
 
 
 def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spread_width=5,
-             stop_pct=0.03, green_buffer=0.0, max_hold=4):
-    """Crash bounce: VIX>20 + XSP drop>drop_thresh → 1 CALL spread (ATM+ATM+5) + $2k SPXL.
-    Exit: 0.3% green buffer / -2% stop / T+3.
+             stop_pct=0.025, trail_pct=0, green_buffer=0.0, max_hold=4):
+    """Crash bounce: XSP drop>drop_thresh → 1 CALL spread (ATM+ATM+5) + $2k SPXL.
+    Stop exits: fixed stop (stop_pct) and/or trailing stop (trail_pct from peak).
+    Green exit: entry × (1+green_buffer). Time exit: T+max_hold.
     Max loss = net debit paid. Max gain = (spread_width×100) - debit."""
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
@@ -347,8 +348,13 @@ def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spre
             la = i - pos['ei']
             if la > 0:
                 ex = False; xp = None; xt = ''
-                if cs <= pos['ep'] * (1 - stop_pct):
-                    xp = cs; ex = True; xt = 'stop'
+                pos['pp'] = max(pos.get('pp', cs), cs)
+                trail_active = trail_pct > 0 and pos['pp'] > pos['ep']
+                trail_stop = pos['pp'] * (1 - trail_pct) if trail_active else None
+                fixed_stop = pos['ep'] * (1 - stop_pct)
+                effective_stop = max(fixed_stop, trail_stop) if trail_stop else fixed_stop
+                if cs <= effective_stop:
+                    xp = cs; ex = True; xt = 'trail' if (trail_stop and cs <= trail_stop and trail_active and cs > fixed_stop) else 'stop'
                 elif cs > pos['ep'] * (1 + green_buffer) and la <= max_hold:
                     xp = cs; ex = True; xt = 'green'
                 elif la >= max_hold:
@@ -499,7 +505,7 @@ if __name__ == '__main__':
     print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}')
 
     print()
-    print('=== 崩盘反弹CALL价差5点 + $2k SPXL (0.5%drop, 无VIX, 3%stop, 首阳即出, T+4) ===')
+    print('=== 崩盘反弹CALL价差5点 + $2k SPXL (0.5%drop, 无VIX, 2.5%stop, 首阳即出, T+4) ===')
     crash_by_yr = by_year(crash)
     for yr in sorted(crash_by_yr.keys()):
         yt = crash_by_yr[yr]

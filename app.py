@@ -817,9 +817,9 @@ def send_market_report(report_type, force=False):
             lines.append(f"价差 ${_crash_k1}C / ${_crash_k2}C  成本${_crash_debit*100:.0f}/口")
             if _crash_etf_entry:
                 lines.append(f"📋 工具: CALL价差 + SPXL $2k (入场${_crash_etf_entry:.2f})")
-            _crash_stop = _crash_entry_price * 0.97
+            _crash_stop = _crash_entry_price * 0.975
             _crash_green = _crash_entry_price * 1.0
-            lines.append(f"止损 ${_crash_stop:.2f} (-3%) | 首阳 ${_crash_green:.2f}")
+            lines.append(f"止损 ${_crash_stop:.2f} (-2.5%) | 首阳 ${_crash_green:.2f}")
 
             opt_value = 0
             if _crash_sigma and _crash_debit:
@@ -830,8 +830,8 @@ def send_market_report(report_type, force=False):
                 opt_value = max((e1 - e2 - _crash_debit) * 100, -_crash_debit * 100)
 
             if price <= _crash_stop:
-                lines.append(f"🛑 崩盘跌穿-3%止损 ({_crash_entry_price:.2f}→{price:.2f}), 建议平仓")
-                close_lines.append(f"  🛑 崩盘跌穿-3%止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                lines.append(f"🛑 崩盘跌穿-2.5%止损 ({_crash_entry_price:.2f}→{price:.2f}), 建议平仓")
+                close_lines.append(f"  🛑 崩盘跌穿-2.5%止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
                 _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
                 _crash_k2 = None; _crash_debit = None; _crash_sigma = None
                 _crash_etf_entry = None
@@ -848,7 +848,7 @@ def send_market_report(report_type, force=False):
                 _crash_k2 = None; _crash_debit = None; _crash_sigma = None
                 _crash_etf_entry = None
             else:
-                lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损-3%)")
+                lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损-2.5%)")
             _latest_report['crash_entry_date'] = str(_crash_entry_date) if _crash_entry_date else None
             _latest_report['crash_entry_price'] = _crash_entry_price
             _latest_report['crash_days'] = crash_days
