@@ -136,7 +136,7 @@ mock `latest_data["options"]` 返回对应的组合价 / 中间价。
 | 41 | 悉尼时间 `21:30`，`_morning_report_date != today`，工作日 | 生成早报，发 Telegram，设置 dedup |
 | 42 | 悉尼时间 `21:30`，`_morning_report_date == today` | 跳过（第一天已发） |
 | 43 | 悉尼时间 `22:00` | 跳过（不在窗口 21:25-21:35） |
-| 44 | 悉尼时间 `09:30` | 生成晚报 (`dte_adj=1`) |
+| 44 | 美东 `16:30`（收盘+30分钟，悉尼次日 06:30） | 生成晚报 (`dte_adj=1`) |
 | 45 | 悉尼时间周六 | 跳过（`weekday()>=5`） |
 | 46 | 悉尼时间周日 | 跳过（`weekday()>=5`） |
 | 47 | `force=True`, `_latest_report` 为空 | 生成报告，不发 Telegram，设 `_latest_report` |
@@ -156,7 +156,7 @@ mock `latest_data["options"]` 返回对应的组合价 / 中间价。
 | 54 | watchlist 条目缺少 `date` 或 `short` 字段 | `continue` 跳过，不崩溃 |
 | 55 | watchlist 条目 `entry` 字段无法转为 float | `try/except` 跳过 |
 | 56 | 用户北京时区访问（非 ET/S_TZ） | 报告标题显示 ET 时间，定时基于 S_TZ |
-| 57 | 跨日场景：ET 23:00（悉尼次日 13:00） | 晚报已过窗口，早报未到窗口，都不触发 |
+| 57 | 跨日场景：ET 23:00（悉尼次日 13:00） | 晚报已过窗口（16:25-16:35 ET），早报未到窗口（21:25-21:35 悉尼），都不触发 |
 
 ---
 

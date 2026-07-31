@@ -249,7 +249,8 @@ def send_market_report(report_type, force=False):
             title = "📊 XSP 盘前早报"
             dte_adj = 0
         elif report_type == 'evening':
-            if now_syd.weekday() >= 5 or now_syd.hour != 9 or now_syd.minute < 25 or now_syd.minute > 35:
+            now_et = datetime.now(ET_TZ)
+            if now_et.weekday() >= 5 or now_et.hour != 16 or now_et.minute < 25 or now_et.minute > 35:
                 return
             if _evening_report_date == today:
                 return

@@ -408,9 +408,9 @@ class TestSchedule:
         assert app._latest_report == {}, "22:00 不应生成早报"
 
     def test_evening_window(self, reset_globals, mock_sio, mock_now):
-        """case 44: 悉尼 09:30→生成晚报"""
-        mock_now.set(syd=datetime.datetime(2026, 7, 20, 9, 30, 0),  # Mon 09:30 Sydney
-                     et=datetime.datetime(2026, 7, 19, 19, 30, 0))   # Sun 19:30 ET
+        """case 44: 美东 16:30（收盘+30分钟, 悉尼次日 06:30）→生成晚报"""
+        mock_now.set(syd=datetime.datetime(2026, 7, 21, 6, 30, 0),   # Tue 06:30 Sydney
+                     et=datetime.datetime(2026, 7, 20, 16, 30, 0))   # Mon 16:30 ET
         app.TELEGRAM_TOKEN = "test"
         app.TELEGRAM_CHAT_ID = "test"
         app.historical_stats.update(std_hs(adx=28, skew=3.0))
@@ -419,6 +419,20 @@ class TestSchedule:
             app.send_market_report('evening', force=False)
             assert app._evening_report_date != "", "dedup 应被标记"
             assert mock_tg.called, "晚报应发送 Telegram"
+
+    def test_evening_old_sydney_0930_skips(self, reset_globals, mock_sio, mock_now):
+        """回归: 悉尼 09:30（旧晚报窗口）不再触发"""
+        mock_now.set(syd=datetime.datetime(2026, 7, 20, 9, 30, 0),  # Mon 09:30 Sydney
+                     et=datetime.datetime(2026, 7, 19, 19, 30, 0))  # Sun 19:30 ET
+        app.send_market_report('evening', force=False)
+        assert app._latest_report == {}, "悉尼 09:30 不应生成晚报"
+
+    def test_evening_weekend_et_skips(self, reset_globals, mock_sio, mock_now):
+        """回归: 美东周六 16:30→晚报跳过"""
+        mock_now.set(syd=datetime.datetime(2026, 7, 19, 6, 30, 0),  # Sun 06:30 Sydney
+                     et=datetime.datetime(2026, 7, 18, 16, 30, 0))  # Sat 16:30 ET
+        app.send_market_report('evening', force=False)
+        assert app._latest_report == {}, "美东周末不应生成晚报"
 
     @pytest.mark.parametrize("desc,weekday", [
         ("case 45: 周六跳过", 5),
