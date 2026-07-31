@@ -347,9 +347,9 @@ def send_market_report(report_type, force=False):
     else:
         direction, reason = None, 'BB 中段'
 
-    # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰趋势) ──
+    # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰趋势/崩盘) ──
     is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
-    if is_mr_signal and _mr_entry_date is None and direction is None:
+    if is_mr_signal and _mr_entry_date is None and direction is None and _crash_entry_date is None:
         _mr_entry_date = datetime.now(ET_TZ).date()
         _mr_entry_price = price
         _mr_etf_entry_price = _get_etf_price('SPXL')
