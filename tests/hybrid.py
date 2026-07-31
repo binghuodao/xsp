@@ -33,7 +33,12 @@ def find_strike_for_delta(S, target_delta, T, sigma, r=0.05):
             hi = mid
     return _s5((lo + hi) / 2)
 
-def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked_delta=None):
+def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked_delta=None,
+              opt_dte=14, roll_dte=2, opt_spread=1, spread_width=15):
+    """Trend: $5k SPXL 3x + 1 rolling CALL position.
+    opt_spread=0 → naked CALL (opt_dte DTE).
+    opt_spread=1 → CALL debit spread (opt_dte DTE, long ATM K1, short K1+spread_width).
+    Roll when remaining DTE ≤ roll_dte. Option shares ETF exits (no own stop)."""
     np.random.seed(0)
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
@@ -143,38 +148,52 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked
                 opt_pnl = trend_pos.get('opt_pnl', 0)
                 if naked_size > 0 and 'opt_K' in trend_pos:
                     opt_days = i - trend_pos['opt_entry_idx']
-                    T_rem = max(7 / 365 - opt_days / 365, 1 / 365)
-                    exit_opt = bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
+                    T_rem = max(opt_dte / 365 - opt_days / 365, 1 / 365)
+                    if opt_spread:
+                        exit_opt = (bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
+                                    - bs_call_price(cs, trend_pos['opt_K2'], T_rem, trend_pos['opt_sigma']))
+                    else:
+                        exit_opt = bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
                     opt_pnl += round(max((exit_opt - trend_pos['opt_entry']) * 100 * naked_size,
                                          -trend_pos['opt_entry'] * 100 * naked_size), 2)
                 trades.append({
                     'entry_date': trend_pos['ed'], 'exit_date': dt,
-                    'dir': 'CALL', 'type': 'trend',
+                    'dir': 'CALL_spread' if opt_spread else 'CALL', 'type': 'trend',
                     'entry_price': trend_pos['ep'], 'exit_price': round(xp, 2),
                     'pnl': etf_pnl + opt_pnl,
                     'etf_pnl': etf_pnl, 'opt_pnl': opt_pnl,
+                    'entry_opt_cost': trend_pos.get('opt_entry', 0),
                     'num_rolls': trend_pos.get('num_rolls', 0),
                     'exit_type': xt, 'entry_reason': trend_pos.get('reason', ''),
                 })
                 trend_pos = None
 
-        # ─── Option rolling: close when DTE≤2, open new 7DTE ───
+        # ─── Option rolling: close when DTE≤roll_dte, open new opt_dte spread ───
         if trend_pos is not None and naked_size > 0 and 'opt_K' in trend_pos:
             opt_days = i - trend_pos['opt_entry_idx']
-            if opt_days >= 5:
-                T_rem = max(7 / 365 - opt_days / 365, 1 / 365)
-                roll_close = bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
+            if opt_days >= opt_dte - roll_dte:
+                T_rem = max(opt_dte / 365 - opt_days / 365, 1 / 365)
+                if opt_spread:
+                    roll_close = (bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
+                                  - bs_call_price(cs, trend_pos['opt_K2'], T_rem, trend_pos['opt_sigma']))
+                else:
+                    roll_close = bs_call_price(cs, trend_pos['opt_K'], T_rem, trend_pos['opt_sigma'])
                 roll_pnl = round(max((roll_close - trend_pos['opt_entry']) * 100 * naked_size,
                                      -trend_pos['opt_entry'] * 100 * naked_size), 2)
                 trend_pos['opt_pnl'] += roll_pnl
                 sigma = max(float(row['vix']), 10) / 100
-                T7 = 7 / 365
+                T = opt_dte / 365
                 if naked_delta is not None:
-                    strike = find_strike_for_delta(cs, naked_delta, T7, sigma)
+                    strike = find_strike_for_delta(cs, naked_delta, T, sigma)
                 else:
                     strike = _s5(cs)
                 trend_pos['opt_K'] = strike
-                trend_pos['opt_entry'] = bs_call_price(cs, strike, T7, sigma)
+                if opt_spread:
+                    trend_pos['opt_K2'] = strike + spread_width
+                    trend_pos['opt_entry'] = (bs_call_price(cs, strike, T, sigma)
+                                              - bs_call_price(cs, strike + spread_width, T, sigma))
+                else:
+                    trend_pos['opt_entry'] = bs_call_price(cs, strike, T, sigma)
                 trend_pos['opt_sigma'] = sigma
                 trend_pos['opt_entry_idx'] = i
                 trend_pos['num_rolls'] += 1
@@ -186,13 +205,18 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked
                          'etf_entry': float(spxl_c.loc[df.index[i]])}
             if naked_size > 0:
                 sigma = max(float(row['vix']), 10) / 100
-                T7 = 7 / 365
+                T = opt_dte / 365
                 if naked_delta is not None:
-                    strike = find_strike_for_delta(float(row['price']), naked_delta, T7, sigma)
+                    strike = find_strike_for_delta(float(row['price']), naked_delta, T, sigma)
                 else:
                     strike = _s5(float(row['price']))
                 trend_pos['opt_K'] = strike
-                trend_pos['opt_entry'] = bs_call_price(float(row['price']), strike, T7, sigma)
+                if opt_spread:
+                    trend_pos['opt_K2'] = strike + spread_width
+                    trend_pos['opt_entry'] = (bs_call_price(float(row['price']), strike, T, sigma)
+                                              - bs_call_price(float(row['price']), strike + spread_width, T, sigma))
+                else:
+                    trend_pos['opt_entry'] = bs_call_price(float(row['price']), strike, T, sigma)
                 trend_pos['opt_sigma'] = sigma
                 trend_pos['opt_entry_idx'] = i
                 trend_pos['opt_pnl'] = 0
@@ -311,9 +335,9 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
     return trades
 
 
-def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spread_width=5,
-             stop_pct=0.025, trail_pct=0, green_buffer=0.0, max_hold=4):
-    """Crash bounce: XSP drop>drop_thresh → 1 CALL spread (ATM+ATM+5) + $2k SPXL.
+def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spread_width=15,
+             stop_pct=0.025, trail_pct=0, green_buffer=0.0, max_hold=4, T_dte=21):
+    """Crash bounce: XSP drop>drop_thresh → 1 CALL spread (ATM + ATM+spread_width, T_dte DTE) + $2k SPXL.
     Stop exits: fixed stop (stop_pct) and/or trailing stop (trail_pct from peak).
     Green exit: entry × (1+green_buffer). Time exit: T+max_hold.
     Max loss = net debit paid. Max gain = (spread_width×100) - debit."""
@@ -337,7 +361,7 @@ def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spre
     df['vix'] = vc.values; df['chg1'] = xc.pct_change()
     df = df.dropna().copy(); df = df[df.index >= pd.Timestamp('2021-03-01')]
 
-    T = 7 / 365
+    T = T_dte / 365
     trades = []; pos = None
 
     for i in range(len(df)):
@@ -448,8 +472,8 @@ if __name__ == '__main__':
     print_yr_table(tr)
     print()
 
-    print('=== 趋势CALL: 纯ETF vs ETF+滚动裸买ATM vs ETF+滚动裸买OTM ===')
-    for label, td in [('纯ETF', tr), ('+滚动ATM', tr_atm), ('+滚动OTM', tr_otm)]:
+    print('=== 趋势CALL: 纯ETF vs ETF+滚动价差ATM vs ETF+滚动价差OTM ===')
+    for label, td in [('纯ETF', tr), ('+价差ATM', tr_atm), ('+价差OTM', tr_otm)]:
         n = len(td)
         if n == 0:
             print(f'  {label:<12}  0tr')
@@ -462,7 +486,10 @@ if __name__ == '__main__':
         avg_etf = etf_pnl / n
         avg_opt = opt_pnl / n
         avg_tot = avg_etf + avg_opt
-        print(f'  {label:<12}  {n:2d}tr  ETF${etf_pnl:>+8,.0f}  OPT${opt_pnl:>+8,.0f}  合计${tot_pnl:>+8,.0f}  WR{w/n*100:.0f}%  |  滚{rolls}次  均单ETF${avg_etf:+.0f}  OPT${avg_opt:+.0f}  ${avg_tot:+.0f}')
+        avg_cost = sum(t.get('entry_opt_cost', 0) for t in td) / n
+        max_loss = min(t.get('etf_pnl', t['pnl']) + t.get('opt_pnl', 0) for t in td)
+        extra = f'  均成本${avg_cost*100:.0f}/口  最大亏${max_loss:+.0f}' if td[0].get('opt_pnl', 0) is not None and any('opt_pnl' in t for t in td) else ''
+        print(f'  {label:<12}  {n:2d}tr  ETF${etf_pnl:>+8,.0f}  OPT${opt_pnl:>+8,.0f}  合计${tot_pnl:>+8,.0f}  WR{w/n*100:.0f}%  |  滚{rolls}次  均单ETF${avg_etf:+.0f}  OPT${avg_opt:+.0f}  ${avg_tot:+.0f}{extra}')
     print()
 
     for label, mr in [('原始gamma-theta ($3.50)', mr_gt),
@@ -494,18 +521,18 @@ if __name__ == '__main__':
     print(f'  均单: CALL${avg_opt:+.0f} + ETF${avg_etf:+.0f} = ${avg_tot:+.0f}')
     print()
 
-    tpnl = sum(t['pnl'] for t in tr)
+    tpnl = sum(t['pnl'] for t in tr_atm)
     mc_opt = sum(t['pnl'] for t in mr_combo)
     mc_etf = sum(t.get('etf_pnl', 0) for t in mr_combo)
     mc_tot = mc_opt + mc_etf
-    print(f'\n✅ 完成  趋势${tpnl:+>7.0f}  '
+    print(f'\n✅ 完成  趋势(ETF+价差)${tpnl:+>7.0f}  '
           f'MR_GT${sum(t["pnl"] for t in mr_gt):+>7.0f}  '
           f'MR_ATM${sum(t["pnl"] for t in mr_atm):+>7.0f}  '
           f'MR_OTM${sum(t["pnl"] for t in mr_otm):+>7.0f}')
     print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}')
 
     print()
-    print('=== 崩盘反弹CALL价差5点 + $2k SPXL (0.5%drop, 无VIX, 2.5%stop, 首阳即出, T+4) ===')
+    print('=== 崩盘反弹CALL价差15点 21DTE + $2k SPXL (0.5%drop, 无VIX, 2.5%stop, 首阳即出, T+4) ===')
     crash_by_yr = by_year(crash)
     for yr in sorted(crash_by_yr.keys()):
         yt = crash_by_yr[yr]
@@ -523,23 +550,23 @@ if __name__ == '__main__':
     max_opt_loss = min(t['pnl'] for t in crash)
     avg_cost = sum(t.get('entry_opt_cost', 0) for t in crash) / cn if crash else 0
     print(f'  均单: CALL价差${cavg_opt:+.0f} + ETF${cavg_etf:+.0f} = ${cavg_opt+cavg_etf:+.0f}')
-    print(f'  最大亏 ${max_loss:+.0f} (OPT${max_opt_loss:+.0f})  均成本 ${avg_cost:.0f}/口')
+    print(f'  最大亏 ${max_loss:+.0f} (OPT${max_opt_loss:+.0f})  均成本 ${avg_cost*100:.0f}/口')
     print()
 
-    # Combined 3-strategy comparison
-    tpnl = sum(t['pnl'] for t in tr)
+    # Combined 3-strategy comparison (each row = strategy total incl. ETF)
+    tpnl = sum(t['pnl'] for t in tr_atm)
     mc_opt = sum(t['pnl'] for t in mr_combo)
     mc_etf = sum(t.get('etf_pnl', 0) for t in mr_combo)
     mc_tot = mc_opt + mc_etf
     total_pnl = tpnl + mc_tot + cp
-    tn = len(tr); mn = len(mr_combo); ccn = cn
-    tw = sum(1 for t in tr if t['pnl'] > 0)
+    tn = len(tr_atm); mn = len(mr_combo); ccn = cn
+    tw = sum(1 for t in tr_atm if t['pnl'] > 0)
     mw = sum(1 for t in mr_combo if t['pnl'] + t.get('etf_pnl', 0) > 0)
     print('=== 三策略对比 ===')
     print(f'  {"策略":<22} {"笔数":>4} {"总PnL":>10} {"WR":>5}')
-    print(f'  趋势($5k SPXL)                     {tn:4d} ${tpnl:>+8,.0f} {tw/tn*100:>4.0f}%')
+    print(f'  趋势($5k SPXL+价差)                {tn:4d} ${tpnl:>+8,.0f} {tw/tn*100:>4.0f}%')
     print(f'  MR(CALL+$2k ETF)             {mn:4d} ${mc_tot:>+8,.0f} {mw/mn*100:>4.0f}%')
-    print(f'  崩盘(CALL价差5点+$2k) {ccn:4d} ${cp:>+8,.0f} {cw/ccn*100:>4.0f}%')
+    print(f'  崩盘(CALL价差15点+$2k) {ccn:4d} ${cp:>+8,.0f} {cw/ccn*100:>4.0f}%')
     print(f'  {"合计":<22} {tn+mn+ccn:4d} ${total_pnl:>+8,.0f}')
 
     print(f'\n✅ 完成  趋势${tpnl:+>7.0f}  '

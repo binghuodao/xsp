@@ -127,14 +127,14 @@ class TestTreeStrikes:
 
 class TestNakedBuy:
     def test_single_leg_call_trending(self, reset_globals, mock_sio):
-        """case 17: 单边上升有裸CALL推荐"""
+        """case 17: 单边上升有14DTE CALL价差推荐"""
         app.historical_stats.update(std_hs(skew=3.0, adx=28))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
         if r.get('direction') == 'CALL':
             single = r.get('single_label', '')
-            assert '裸C' in single or '裸CALL' in single
+            assert '价差' in single or 'CALL' in single
 
     def test_single_leg_put_trending_vix(self, reset_globals, mock_sio):
         """case 18: 高VIX+单边下降有裸PUT推荐"""
@@ -521,14 +521,14 @@ class TestOutputFormat:
         assert r.get('direction') is None
 
     def test_full_report_trending_call(self, reset_globals, mock_sio):
-        """case 59: 趋势CALL→含ETF+树+裸买"""
+        """case 59: 趋势CALL→含ETF+树+价差推荐"""
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') == 'CALL'
         assert 'CALL树' in r.get('tree_label', '')
-        assert '裸C' in r.get('single_label', '') or 'CALL' in r.get('single_label', '')
+        assert '价差' in r.get('single_label', '') or 'CALL' in r.get('single_label', '')
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
         """case 60: 近BB下轨→有方向 (score≥50)"""

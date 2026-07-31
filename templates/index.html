@@ -1934,8 +1934,8 @@
             }
             if (r.trend_opt_expiry) {
                 html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
-                html += '<b>📈 趋势滚动裸CALL</b> (' + r.trend_opt_expiry + ')<br>';
-                html += 'Strike <b>$' + r.trend_opt_strike + 'C</b> | 入场 <b>$' + r.trend_opt_entry.toFixed(2) + '</b><br>';
+                html += '<b>📈 趋势滚动CALL价差</b> (' + r.trend_opt_expiry + ')<br>';
+                html += 'Strike <b>$' + r.trend_opt_strike + 'C / $' + r.trend_opt_strike2 + 'C</b> | 净借 <b>$' + r.trend_opt_entry.toFixed(2) + '</b><br>';
                 if (r.trend_opt_dte !== null) html += 'DTE <b>' + r.trend_opt_dte + 'd</b>';
                 if (r.trend_opt_pnl !== null) html += ' | PnL <b>$' + r.trend_opt_pnl.toFixed(0) + '</b>';
                 html += '</div>';
@@ -1943,7 +1943,7 @@
             // 崩盘反弹
             if (r.crash_entry_date) {
                 html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:13px;">';
-                html += '<b>💥 崩盘反弹 CALL价差5点</b> (' + r.crash_entry_date + ')<br>';
+                html += '<b>💥 崩盘反弹 CALL价差15点 21DTE</b> (' + r.crash_entry_date + ')<br>';
                 html += '入场 <b>$' + r.crash_entry_price.toFixed(2) + '</b> | 持有 <b>' + r.crash_days + 'd</b><br>';
                 html += '价差 $' + r.crash_k1 + 'C / $' + r.crash_k2 + 'C  成本<b>$' + (r.crash_debit ? (r.crash_debit * 100).toFixed(0) : '?') + '</b>/口<br>';
                 if (r.crash_etf_entry) html += '工具: CALL价差 + SPXL $2k (入场$' + r.crash_etf_entry.toFixed(2) + ')<br>';

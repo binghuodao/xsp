@@ -95,6 +95,7 @@ _crash_sigma = None
 _crash_etf_entry = None
 _trend_opt_expiry = None
 _trend_opt_strike = None
+_trend_opt_strike2 = None
 _trend_opt_entry = None
 _trend_opt_entry_date = None
 _trend_opt_sigma = None
@@ -121,6 +122,7 @@ try:
     if _pd.get('trend_opt_expiry'):
         _trend_opt_expiry = _pd['trend_opt_expiry']
         _trend_opt_strike = _pd.get('trend_opt_strike')
+        _trend_opt_strike2 = _pd.get('trend_opt_strike2')
         _trend_opt_entry = _pd.get('trend_opt_entry')
         _trend_opt_entry_date = datetime.strptime(_pd['trend_opt_entry_date'], '%Y-%m-%d').date() if _pd.get('trend_opt_entry_date') else None
         _trend_opt_sigma = _pd.get('trend_opt_sigma')
@@ -234,7 +236,7 @@ def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
     global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price, _mr_etf_entry_price
     global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry
-    global _trend_opt_expiry, _trend_opt_strike, _trend_opt_entry, _trend_opt_entry_date, _trend_opt_sigma, _trend_opt_pnl
+    global _trend_opt_expiry, _trend_opt_strike, _trend_opt_strike2, _trend_opt_entry, _trend_opt_entry_date, _trend_opt_sigma, _trend_opt_pnl
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
 
@@ -363,7 +365,7 @@ def send_market_report(report_type, force=False):
                 print(f"\u26a0\ufe0f Watchlist save failed: {e}")
             socketio.emit('sync_watchlist', user_watchlist)
 
-    # ── Crash bounce: CALL价差5点 + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
+    # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
     _xsp_prev_close = _get_xsp_prev_close()
     xsp_chg_pct = (price - _xsp_prev_close) / _xsp_prev_close if _xsp_prev_close else 0
     is_crash_signal = _xsp_prev_close and xsp_chg_pct < -0.005
@@ -371,10 +373,10 @@ def send_market_report(report_type, force=False):
         _crash_entry_date = datetime.now(ET_TZ).date()
         _crash_entry_price = price
         _crash_k1 = _s5(price)
-        _crash_k2 = _crash_k1 + 5
+        _crash_k2 = _crash_k1 + 15
         _crash_sigma = hs.get('vix', 20) / 100.0
         if _crash_sigma > 0.01:
-            T = 7 / 365.0
+            T = 21 / 365.0
             r = 0.05
             e1 = pricing.black_scholes(price, _crash_k1, T, r, _crash_sigma, 'C')
             e2 = pricing.black_scholes(price, _crash_k2, T, r, _crash_sigma, 'C')
@@ -538,9 +540,10 @@ def send_market_report(report_type, force=False):
 
         ot_type = 'C'
 
-        # Trending: 7DTE single long option (initialized before expiry check)
+        # Trending: 14DTE CALL价差 (initialized before expiry check)
         strike, delta, mid_single = None, None, None
         mid = None
+        single_label_s = single_strike_s = single_mid_s = None
 
         if expiry_tree:
             sym_s = sym_str(s, ot_type)
@@ -567,23 +570,27 @@ def send_market_report(report_type, force=False):
                 lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
             lines.append("")
 
-            if is_trend:
-                expiry7 = _find_n_dte_expiry(7 + dte_adj)
-                ds7 = expiry7[2:4] + expiry7[5:7] + expiry7[8:10] if expiry7 else None
-                if ds7:
-                    td = 0.35 if direction == 'CALL' else -0.35
-                    strike, delta = _find_delta_strike(expiry7, td, ot_type)
+            if is_trend and direction == 'CALL':
+                expiry14 = _find_n_dte_expiry(14 + dte_adj)
+                ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
+                if ds14:
+                    strike, delta = _find_delta_strike(expiry14, 0.50, 'C')
                     if strike:
-                        sym1 = f"US.XSP{ds7}{ot_type}{int(strike * 1000)}"
-                        mid = _opt_mid(sym1)
-                        hist = _get_hist_mid(sym1)
-                        p = f"${mid:.2f}" if mid is not None else "--"
-                        if hist is not None:
-                            p += f" | 历均 ${hist:.2f}"
-                        lines.append(f"═══ 7DTE 裸{ot_type} ═══")
-                        lines.append(f"{strike}{ot_type} (Δ {delta:+.3f})  mid {p}")
+                        k2d = strike + 15
+                        sym1 = f"US.XSP{ds14}C{int(strike * 1000)}"
+                        sym2d = f"US.XSP{ds14}C{int(k2d * 1000)}"
+                        mid1 = _opt_mid(sym1)
+                        mid2 = _opt_mid(sym2d)
+                        debit_d = (mid1 - mid2) if (mid1 is not None and mid2 is not None) else None
+                        single_label_s = "14DTE CALL价差"
+                        single_strike_s = f"{strike}C / {k2d}C (Δ {delta:+.3f})"
+                        single_mid_s = f"净借 ${debit_d:.2f}" if debit_d is not None else "--"
+                        lines.append(f"═══ {single_label_s} ═══")
+                        p1 = f"${mid1:.2f}" if mid1 is not None else "--"
+                        p2 = f"${mid2:.2f}" if mid2 is not None else "--"
+                        lines.append(f"{strike}C {p1} | {k2d}C {p2} | {single_mid_s}")
         else:
-            lines.append("⚠️ 无可用14DTE期权数据")
+            lines.append("⚠️ 无可用7DTE期权数据")
 
         # 更新前端展示
         _latest_report = {
@@ -598,30 +605,35 @@ def send_market_report(report_type, force=False):
                 _latest_report['tree_mids'] = f"${s_mid:.2f} / ${m_mid:.2f} / ${l_mid:.2f}"
                 tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
                 _latest_report['combo'] = f"${abs(combo_val):.2f} {tag}"
-        if is_trend and strike and mid is not None:
-            _latest_report['single_label'] = f"7DTE 裸{ot_type}"
-            _latest_report['single_strike'] = f"{strike}{ot_type} (Δ {delta:+.3f})"
-            _latest_report['single_mid'] = f"${mid:.2f}"
+        if single_label_s:
+            _latest_report['single_label'] = single_label_s
+            _latest_report['single_strike'] = single_strike_s
+            _latest_report['single_mid'] = single_mid_s
 
-        # ── 趋势滚动裸买CALL ──
+        # ── 趋势滚动CALL价差 14DTE w15 ──
         if direction and is_trend:
-            ds7 = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
+            expiry_trend = _find_n_dte_expiry(14 + dte_adj)
+            ds_trend = expiry_trend[2:4] + expiry_trend[5:7] + expiry_trend[8:10] if expiry_trend else None
             atm_strike = _s5(price)
-            if _trend_opt_expiry is None and ds7:
-                # 新开仓: 7DTE ATM CALL
-                strike_opt, delta_opt = _find_delta_strike(expiry_tree, 0.50, 'C')
-                sk = strike_opt if strike_opt else atm_strike
-                sym = f"US.XSP{ds7}C{int(sk * 1000)}"
-                mid_opt = _opt_mid(sym)
-                if mid_opt:
-                    _trend_opt_expiry = expiry_tree
-                    _trend_opt_strike = sk
-                    _trend_opt_entry = mid_opt
+            if _trend_opt_expiry is None and ds_trend:
+                # 新开仓: 14DTE CALL价差 (K1=Δ0.50, K2=K1+15)
+                strike_opt, delta_opt = _find_delta_strike(expiry_trend, 0.50, 'C')
+                k1 = strike_opt if strike_opt else atm_strike
+                k2 = k1 + 15
+                sym1 = f"US.XSP{ds_trend}C{int(k1 * 1000)}"
+                sym2 = f"US.XSP{ds_trend}C{int(k2 * 1000)}"
+                m1 = _opt_mid(sym1)
+                m2 = _opt_mid(sym2)
+                if m1 is not None and m2 is not None:
+                    _trend_opt_expiry = expiry_trend
+                    _trend_opt_strike = k1
+                    _trend_opt_strike2 = k2
+                    _trend_opt_entry = m1 - m2
                     _trend_opt_entry_date = datetime.now(ET_TZ).date()
                     _trend_opt_sigma = hs.get('vix', 20) / 100.0
                     _trend_opt_pnl = 0.0
-                    ws = {"date": ds7, "short": str(int(sk)), "mid": "", "long": "",
-                          "opt_type": "C", "strategy": "naked", "entry": ""}
+                    ws = {"date": ds_trend, "short": str(int(k1)), "mid": "", "long": str(int(k2)),
+                          "opt_type": "C", "strategy": "spread", "entry": ""}
                     if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
                         user_watchlist.append(ws)
                         try:
@@ -631,29 +643,34 @@ def send_market_report(report_type, force=False):
                             print(f"⚠️ Watchlist save failed: {e}")
                         socketio.emit('sync_watchlist', user_watchlist)
             elif _trend_opt_expiry:
-                # 检查到期日: DTE≤2 → 滚至下一周
+                # 检查到期日: DTE≤2 → 滚至下一期14DTE
                 exp_date = datetime.strptime(_trend_opt_expiry, '%Y-%m-%d').date()
                 dte = (exp_date - datetime.now(ET_TZ).date()).days
-                ds7 = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
-                if dte <= 2 and ds7:
-                    strike_opt, delta_opt = _find_delta_strike(expiry_tree, 0.50, 'C')
-                    sk = strike_opt if strike_opt else atm_strike
-                    sym = f"US.XSP{ds7}C{int(sk * 1000)}"
-                    mid_opt = _opt_mid(sym)
-                    if mid_opt:
-                        # 滚仓: 关闭旧仓, 开新仓
-                        if _trend_opt_entry and _trend_opt_pnl is not None:
-                            old_sym = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
-                            old_mid = _opt_mid(old_sym)
-                            if old_mid is not None:
-                                _trend_opt_pnl += (old_mid - _trend_opt_entry) * 100
-                        _trend_opt_expiry = expiry_tree
-                        _trend_opt_strike = sk
-                        _trend_opt_entry = mid_opt
+                if dte <= 2 and ds_trend:
+                    strike_opt, delta_opt = _find_delta_strike(expiry_trend, 0.50, 'C')
+                    k1 = strike_opt if strike_opt else atm_strike
+                    k2 = k1 + 15
+                    sym1 = f"US.XSP{ds_trend}C{int(k1 * 1000)}"
+                    sym2 = f"US.XSP{ds_trend}C{int(k2 * 1000)}"
+                    m1 = _opt_mid(sym1)
+                    m2 = _opt_mid(sym2)
+                    if m1 is not None and m2 is not None:
+                        # 滚仓: 关闭旧价差, 开新价差
+                        if _trend_opt_entry is not None and _trend_opt_pnl is not None and _trend_opt_strike and _trend_opt_strike2:
+                            old_s1 = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
+                            old_s2 = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike2 * 1000)}"
+                            o1 = _opt_mid(old_s1)
+                            o2 = _opt_mid(old_s2)
+                            if o1 is not None and o2 is not None:
+                                _trend_opt_pnl += max(o1 - o2 - _trend_opt_entry, -_trend_opt_entry) * 100
+                        _trend_opt_expiry = expiry_trend
+                        _trend_opt_strike = k1
+                        _trend_opt_strike2 = k2
+                        _trend_opt_entry = m1 - m2
                         _trend_opt_entry_date = datetime.now(ET_TZ).date()
                         _trend_opt_sigma = hs.get('vix', 20) / 100.0
-                        ws = {"date": ds7, "short": str(int(sk)), "mid": "", "long": "",
-                              "opt_type": "C", "strategy": "naked", "entry": ""}
+                        ws = {"date": ds_trend, "short": str(int(k1)), "mid": "", "long": str(int(k2)),
+                              "opt_type": "C", "strategy": "spread", "entry": ""}
                         if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
                             user_watchlist.append(ws)
                             try:
@@ -662,35 +679,41 @@ def send_market_report(report_type, force=False):
                             except Exception as e:
                                 print(f"⚠️ Watchlist save failed: {e}")
                             socketio.emit('sync_watchlist', user_watchlist)
-                        lines.append(f"🔄 裸CALL 滚仓至 {_trend_opt_expiry} {_trend_opt_strike}C")
+                        lines.append(f"🔄 CALL价差 滚仓至 {_trend_opt_expiry} {_trend_opt_strike}C / {_trend_opt_strike2}C")
                 dte = (datetime.strptime(_trend_opt_expiry, '%Y-%m-%d').date() - datetime.now(ET_TZ).date()).days if _trend_opt_expiry else 0
-                # 显示当前滚动裸买仓位
+                # 显示当前滚动价差仓位
                 opt_val_line = ""
                 cur_pnl = _trend_opt_pnl or 0
-                if _trend_opt_strike and _trend_opt_entry:
-                    sym2 = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
-                    cur_mid = _opt_mid(sym2)
-                    if cur_mid is not None:
-                        cur_pnl = (cur_mid - _trend_opt_entry) * 100 + (_trend_opt_pnl or 0)
+                if _trend_opt_strike and _trend_opt_strike2 and _trend_opt_entry is not None:
+                    sym2a = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
+                    sym2b = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike2 * 1000)}"
+                    c1 = _opt_mid(sym2a)
+                    c2 = _opt_mid(sym2b)
+                    if c1 is not None and c2 is not None:
+                        cur_pnl = (c1 - c2 - _trend_opt_entry) * 100 + (_trend_opt_pnl or 0)
                         opt_val_line = f" | PnL ${cur_pnl:.0f}"
-                lines.append(f"═══ 趋势滚动裸CALL {_trend_opt_expiry} ═══")
-                lines.append(f"{_trend_opt_strike}C 入场 ${_trend_opt_entry:.2f}{opt_val_line}")
+                lines.append(f"═══ 趋势滚动CALL价差 {_trend_opt_expiry} ═══")
+                lines.append(f"{_trend_opt_strike}C / {_trend_opt_strike2}C 入场 ${_trend_opt_entry:.2f}{opt_val_line}")
                 _latest_report['trend_opt_expiry'] = _trend_opt_expiry
                 _latest_report['trend_opt_strike'] = _trend_opt_strike
+                _latest_report['trend_opt_strike2'] = _trend_opt_strike2
                 _latest_report['trend_opt_entry'] = _trend_opt_entry
                 _latest_report['trend_opt_pnl'] = cur_pnl
                 _latest_report['trend_opt_dte'] = dte
         else:
-            # 无趋势方向: 关闭滚动裸买
+            # 无趋势方向: 关闭滚动价差
             if _trend_opt_expiry:
                 # 计算最终PnL
-                if _trend_opt_entry and _trend_opt_strike:
+                if _trend_opt_entry is not None and _trend_opt_strike and _trend_opt_strike2:
                     sym3 = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
-                    close_mid = _opt_mid(sym3)
-                    if close_mid is not None:
-                        _trend_opt_pnl = (_trend_opt_pnl or 0) + (close_mid - _trend_opt_entry) * 100
+                    sym3b = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike2 * 1000)}"
+                    cm1 = _opt_mid(sym3)
+                    cm2 = _opt_mid(sym3b)
+                    if cm1 is not None and cm2 is not None:
+                        _trend_opt_pnl = (_trend_opt_pnl or 0) + max((cm1 - cm2 - _trend_opt_entry), -_trend_opt_entry) * 100
                 _trend_opt_expiry = None
                 _trend_opt_strike = None
+                _trend_opt_strike2 = None
                 _trend_opt_entry = None
                 _trend_opt_entry_date = None
                 _trend_opt_sigma = None
@@ -801,7 +824,7 @@ def send_market_report(report_type, force=False):
         crash_cal_days = (_today - _crash_entry_date).days
         crash_days = len(pd.bdate_range(_crash_entry_date, _today)) - 1
         lines.append(f"")
-        lines.append(f"═══ 崩盘反弹 CALL价差5点 ({_crash_entry_date}) ═══")
+        lines.append(f"═══ 崩盘反弹 CALL价差15点 21DTE ({_crash_entry_date}) ═══")
         lines.append(f"入场 ${_crash_entry_price:.2f} | 持有 {crash_days}d | 现价 ${price:.2f}")
         lines.append(f"价差 ${_crash_k1}C / ${_crash_k2}C  成本${_crash_debit*100:.0f}/口")
         if _crash_etf_entry:
@@ -812,7 +835,7 @@ def send_market_report(report_type, force=False):
 
         opt_value = 0
         if _crash_sigma and _crash_debit:
-            T = 7 / 365.0
+            T = 21 / 365.0
             T_rem = max(T - crash_cal_days / 365.0, 1 / 365.0)
             e1 = pricing.black_scholes(price, _crash_k1, T_rem, 0.05, _crash_sigma, 'C')
             e2 = pricing.black_scholes(price, _crash_k2, T_rem, 0.05, _crash_sigma, 'C')
@@ -903,6 +926,7 @@ def send_market_report(report_type, force=False):
                 'crash_etf_entry': _crash_etf_entry,
                 'trend_opt_expiry': _trend_opt_expiry,
                 'trend_opt_strike': _trend_opt_strike,
+                'trend_opt_strike2': _trend_opt_strike2,
                 'trend_opt_entry': _trend_opt_entry,
                 'trend_opt_entry_date': str(_trend_opt_entry_date) if _trend_opt_entry_date else None,
                 'trend_opt_sigma': _trend_opt_sigma,
