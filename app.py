@@ -571,7 +571,7 @@ def send_market_report(report_type, force=False):
                 lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
             lines.append("")
 
-            if is_trend and direction == 'CALL':
+            if is_trend and direction == 'CALL' and dlow <= 80:
                 expiry14 = _find_n_dte_expiry(14 + dte_adj)
                 ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
                 if ds14:
@@ -590,6 +590,8 @@ def send_market_report(report_type, force=False):
                         p1 = f"${mid1:.2f}" if mid1 is not None else "--"
                         p2 = f"${mid2:.2f}" if mid2 is not None else "--"
                         lines.append(f"{strike}C {p1} | {k2d}C {p2} | {single_mid_s}")
+                elif is_trend and direction == 'CALL' and dlow > 80:
+                    lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
         else:
             lines.append("⚠️ 无可用7DTE期权数据")
 
@@ -616,7 +618,7 @@ def send_market_report(report_type, force=False):
             expiry_trend = _find_n_dte_expiry(14 + dte_adj)
             ds_trend = expiry_trend[2:4] + expiry_trend[5:7] + expiry_trend[8:10] if expiry_trend else None
             atm_strike = _s5(price)
-            if _trend_opt_expiry is None and ds_trend:
+            if _trend_opt_expiry is None and ds_trend and dlow <= 80:
                 # 新开仓: 14DTE CALL价差 (K1=Δ0.50, K2=K1+15)
                 strike_opt, delta_opt = _find_delta_strike(expiry_trend, 0.50, 'C')
                 k1 = strike_opt if strike_opt else atm_strike
@@ -643,6 +645,8 @@ def send_market_report(report_type, force=False):
                         except Exception as e:
                             print(f"⚠️ Watchlist save failed: {e}")
                         socketio.emit('sync_watchlist', user_watchlist)
+            elif _trend_opt_expiry is None and ds_trend and dlow > 80:
+                lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
             elif _trend_opt_expiry:
                 # 检查到期日: DTE≤2 → 滚至下一期14DTE
                 exp_date = datetime.strptime(_trend_opt_expiry, '%Y-%m-%d').date()

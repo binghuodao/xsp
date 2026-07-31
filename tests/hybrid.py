@@ -34,11 +34,12 @@ def find_strike_for_delta(S, target_delta, T, sigma, r=0.05):
     return _s5((lo + hi) / 2)
 
 def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked_delta=None,
-              opt_dte=14, roll_dte=2, opt_spread=1, spread_width=15):
+               opt_dte=14, roll_dte=2, opt_spread=1, spread_width=15, skip_bbp=0.80):
     """Trend: $5k SPXL 3x + 1 rolling CALL position.
     opt_spread=0 → naked CALL (opt_dte DTE).
     opt_spread=1 → CALL debit spread (opt_dte DTE, long ATM K1, short K1+spread_width).
-    Roll when remaining DTE ≤ roll_dte. Option shares ETF exits (no own stop)."""
+    Roll when remaining DTE ≤ roll_dte. Option shares ETF exits (no own stop).
+    skip_bbp>0 → skip NEW entry when BB%>skip_bbp (high-band filter); ≤0 disables."""
     np.random.seed(0)
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
@@ -199,7 +200,8 @@ def hybrid_bt(period='10y', trend_hold=30, trend_trail=0.03, naked_size=0, naked
                 trend_pos['num_rolls'] += 1
 
         # ─── Trend entry ───
-        if trend_pos is None and trend_sig is not None and trend_sig[0] is not None:
+        if trend_pos is None and trend_sig is not None and trend_sig[0] is not None \
+                and (skip_bbp <= 0 or float(row['bbp']) <= skip_bbp):
             trend_pos = {'dir': 'CALL', 'ep': float(row['price']), 'ed': dt, 'ei': i,
                          'pp': float(row['price']), 'reason': trend_sig[1],
                          'etf_entry': float(spxl_c.loc[df.index[i]])}
