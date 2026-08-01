@@ -83,6 +83,8 @@ _latest_report = {}
 _active_position_date = None
 _entry_price = None
 _peak_price = None
+_etf_entry_price = None
+_etf_peak_price = None
 _mr_entry_date = None
 _mr_entry_price = None
 _mr_etf_entry_price = None
@@ -108,6 +110,8 @@ try:
         _active_position_date = datetime.strptime(_pd['active_position_date'], '%Y-%m-%d').date()
     _entry_price = _pd.get('entry_price')
     _peak_price = _pd.get('peak_price')
+    _etf_entry_price = _pd.get('etf_entry_price')
+    _etf_peak_price = _pd.get('etf_peak_price')
     if _pd.get('mr_entry_date'):
         _mr_entry_date = datetime.strptime(_pd['mr_entry_date'], '%Y-%m-%d').date()
     _mr_entry_price = _pd.get('mr_entry_price')
@@ -238,6 +242,7 @@ def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
     global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price, _mr_etf_entry_price
     global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry, _crash_etf_scaled
+    global _etf_entry_price, _etf_peak_price
     global _trend_opt_expiry, _trend_opt_strike, _trend_opt_strike2, _trend_opt_entry, _trend_opt_entry_date, _trend_opt_sigma, _trend_opt_pnl
     now_syd = datetime.now(S_TZ)
     today = now_syd.strftime('%y%m%d')
@@ -462,7 +467,7 @@ def send_market_report(report_type, force=False):
             # (5) P&L ≥ 50% or ≤ -50%
             if abs(pnl_pct) >= 50:
                 tag = '盈利' if pnl_pct > 0 else '亏损'
-                alerts.append(f"{tag}{pnl_pct:.0f}%")
+                alerts.append(f"{tag}{pnl_pct:.0f}% 盈亏${pnl*100:.0f} (入场${entry_val:.2f}→现价${cur_mid:.2f})")
             # (6) Direction conflict
             if direction and g_opt != direction:
                 alerts.append("方向冲突")
@@ -474,7 +479,7 @@ def send_market_report(report_type, force=False):
             if max_loss is not None and pnl < 0:
                 cur_loss = -pnl * 100
                 if cur_loss >= max_loss * 0.8:
-                    alerts.append(f"浮亏达最大损失{cur_loss / max_loss * 100:.0f}%")
+                    alerts.append(f"浮亏${cur_loss:.0f} (最大损失${max_loss:.0f}的{cur_loss / max_loss * 100:.0f}%, 入场${entry_val:.2f}→现价${cur_mid:.2f})")
             if alerts:
                 close_lines.append(f"  ⚠️ {g_date} {g_short}{g_opt}: {' | '.join(alerts)}")
         # (3) BB middle
@@ -727,7 +732,7 @@ def send_market_report(report_type, force=False):
 
         # 统一跟踪（XSP基准，对齐回测）
         if tool_recommend:
-            global _entry_price, _peak_price
+            global _entry_price, _peak_price, _etf_entry_price, _etf_peak_price
             etf_ticker = tool_recommend['etf']
             etf_price = _get_etf_price(etf_ticker)
             is_nearbb = reason and ('贴BB' in reason)
@@ -737,8 +742,13 @@ def send_market_report(report_type, force=False):
                 if holding_days == 0:
                     _entry_price = price
                     _peak_price = price
+                    if etf_price:
+                        _etf_entry_price = etf_price
+                        _etf_peak_price = etf_price
                 elif _peak_price and price > _peak_price:
                     _peak_price = price
+                    if etf_price and _etf_entry_price:
+                        _etf_peak_price = etf_price
 
                 # 固定止损（XSP基准，Moomoo止蚀盘对应ETF）
                 stop_pct = 0.01 if is_nearbb else 0.05
@@ -761,23 +771,46 @@ def send_market_report(report_type, force=False):
                 if entry_trail_stop:
                     effective = min(effective, entry_trail_stop)
 
-                sl_title = f"止损(基准) ${effective:.2f} (≈ETF ${effective*ratio:.2f})"
-                sl_parts = [sl_title, f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}% XSP, ≈${fixed_etf:.2f} ETF)",
-                            f"最高XSP ${_peak_price:.2f}"]
-                if trail_active and trail_stop and trail_stop < effective:
-                    sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (XSP回落{trail_pct*100:.0f}%)")
-                if entry_trail_stop and entry_trail_stop < effective:
-                    ete = entry_trail_stop * ratio
-                    sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, ≈${ete:.2f} ETF)")
+                # SPXL 自身tick止损 (XSP% × 3 杠杆)
+                etf_fixed = _etf_entry_price * (1 - stop_pct * 3) if _etf_entry_price else None
+                etf_trail = _etf_peak_price * (1 - trail_pct * 3) if (_etf_peak_price and _etf_entry_price and trail_active) else None
+                etf_entry_stop = _etf_entry_price * (1 - 0.02 * 3) if (_etf_entry_price and entry_trail_active) else None
+                etf_effective = etf_fixed
+                if etf_trail and etf_trail > 0:
+                    etf_effective = min(etf_effective, etf_trail) if etf_effective else etf_trail
+                if etf_entry_stop:
+                    etf_effective = min(etf_effective, etf_entry_stop) if etf_effective else etf_entry_stop
+
+                if etf_effective:
+                    sl_title = f"止损(基准) ${effective:.2f} | SPXL ${etf_effective:.2f}"
+                    sl_parts = [sl_title,
+                                f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}% XSP, SPXL ${etf_fixed:.2f})",
+                                f"最高XSP ${_peak_price:.2f}" + (f" | SPXL最高 ${_etf_peak_price:.2f}" if _etf_peak_price else "")]
+                    if trail_active and trail_stop and trail_stop < effective:
+                        sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (XSP回落{trail_pct*100:.0f}%, SPXL ${etf_trail:.2f})")
+                    if entry_trail_stop and entry_trail_stop < effective:
+                        sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, SPXL ${etf_entry_stop:.2f})")
+                else:
+                    # 无ETF价数据时回退实时比价
+                    sl_title = f"止损(基准) ${effective:.2f} (≈ETF ${effective*ratio:.2f})"
+                    sl_parts = [sl_title, f"固定 ${fixed_stop:.2f} (-{stop_pct*100:.0f}% XSP, ≈${fixed_etf:.2f} ETF)",
+                                f"最高XSP ${_peak_price:.2f}"]
+                    if trail_active and trail_stop and trail_stop < effective:
+                        sl_parts.insert(1, f"跟踪 ${trail_stop:.2f} (XSP回落{trail_pct*100:.0f}%)")
+                    if entry_trail_stop and entry_trail_stop < effective:
+                        ete = entry_trail_stop * ratio
+                        sl_parts.insert(1, f"入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, ≈${ete:.2f} ETF)")
                 _latest_report['stop_loss'] = sl_parts
                 lines.append(f"🛑 {' | '.join(sl_parts)}")
 
                 # 跟踪触发提示（XSP基准）
                 if trail_stop and price is not None and price <= trail_stop and _peak_price and _peak_price > _entry_price:
-                    close_lines.append(f"  🛑 XSP从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${price:.2f} ≤ 跟踪 ${trail_stop:.2f} (≈ETF${price*ratio:.2f})，建议平仓")
+                    etf_now = f" | SPXL现价 ${etf_price:.2f} ≤ 止损 ${etf_trail:.2f}" if (etf_price and etf_trail) else ""
+                    close_lines.append(f"  🛑 XSP从最高 ${_peak_price:.2f} 回落{trail_pct*100:.0f}%，现价 ${price:.2f} ≤ 跟踪 ${trail_stop:.2f}{etf_now}，建议平仓")
                 # 入场硬止损触发
                 if entry_trail_stop and price is not None and price <= entry_trail_stop:
-                    close_lines.append(f"  🛑 XSP入场未涨超0.5%，现价 ${price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%, ≈ETF${price*ratio:.2f})，建议平仓")
+                    etf_now2 = f" | SPXL现价 ${etf_price:.2f} ≤ 止损 ${etf_entry_stop:.2f}" if (etf_price and etf_entry_stop) else ""
+                    close_lines.append(f"  🛑 XSP入场未涨超0.5%，现价 ${price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%){etf_now2}，建议平仓")
 
 
     # ── Mean Reversion 裸买CALL 展示 ──
@@ -795,10 +828,15 @@ def send_market_report(report_type, force=False):
             lines.append(f"📋 工具: CALL + SPXL $2k (入场${_mr_etf_entry_price:.2f})")
         _stop_price = _mr_entry_price * 0.98
         _green_price = _mr_entry_price * 1.003
-        lines.append(f"止损 ${_stop_price:.2f} (-2%) | 首阳 ${_green_price:.2f} (+0.3%)")
+        _mr_etf_stop = _mr_etf_entry_price * 0.94 if _mr_etf_entry_price else None
+        _mr_etf_green = _mr_etf_entry_price * 1.009 if _mr_etf_entry_price else None
+        _mr_spxl = ""
+        if _mr_etf_stop:
+            _mr_spxl = f" | SPXL止损 ${_mr_etf_stop:.2f} / 首阳 ${_mr_etf_green:.2f}"
+        lines.append(f"止损 ${_stop_price:.2f} (-2%) | 首阳 ${_green_price:.2f} (+0.3%){_mr_spxl}")
         if mr_exit_price <= _stop_price:
-            lines.append(f"🛑 MR跌穿-2%止损 ({_mr_entry_price:.2f}→{mr_exit_price:.2f}), 建议平仓")
-            close_lines.append(f"  🛑 MR跌穿-2%止损 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f}), 建议平仓")
+            lines.append(f"🛑 MR跌穿-2%止损 ({_mr_entry_price:.2f}→{mr_exit_price:.2f} ≤ 止损${_stop_price:.2f}), 建议平仓")
+            close_lines.append(f"  🛑 MR跌穿-2%止损 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f} ≤ 止损${_stop_price:.2f}), 建议平仓")
             _mr_entry_date = None
             _mr_entry_price = None
             _mr_etf_entry_price = None
@@ -815,12 +853,14 @@ def send_market_report(report_type, force=False):
             _mr_entry_price = None
             _mr_etf_entry_price = None
         else:
-            lines.append(f"⏳ MR等待中 ({3 - mr_days}d最多 | 止损-2% | 首阳+0.3%)")
+            lines.append(f"⏳ MR等待中 ({3 - mr_days}d最多 | 止损 ${_stop_price:.2f} (-2%) | 首阳 ${_green_price:.2f} (+0.3%))")
         _latest_report['mr_entry_date'] = str(_mr_entry_date) if _mr_entry_date else None
         _latest_report['mr_entry_price'] = _mr_entry_price
         _latest_report['mr_days'] = mr_days
         _latest_report['mr_stop'] = _stop_price
         _latest_report['mr_green'] = _green_price
+        _latest_report['mr_etf_stop'] = _mr_etf_stop
+        _latest_report['mr_etf_green'] = _mr_etf_green
         _latest_report['mr_strike'] = _atm_strike
         _latest_report['mr_est_cost'] = _est_cost
         _latest_report['mr_etf_entry_price'] = _mr_etf_entry_price
@@ -841,7 +881,12 @@ def send_market_report(report_type, force=False):
             lines.append(f"📋 工具: CALL价差 + SPXL $2k (入场${_crash_etf_entry:.2f})")
         _crash_stop = _crash_entry_price * 0.975
         _crash_green = _crash_entry_price * 1.0
-        lines.append(f"止损 ${_crash_stop:.2f} (-2.5%) | 首阳 ${_crash_green:.2f}")
+        _crash_etf_stop = _crash_etf_entry * 0.925 if _crash_etf_entry else None
+        _crash_etf_green = _crash_etf_entry if _crash_etf_entry else None
+        _crash_spxl = ""
+        if _crash_etf_stop:
+            _crash_spxl = f" | SPXL止损 ${_crash_etf_stop:.2f}"
+        lines.append(f"止损 ${_crash_stop:.2f} (-2.5%) | 首阳 ${_crash_green:.2f}{_crash_spxl}")
 
         opt_value = 0
         if not _crash_etf_scaled and _crash_sigma and _crash_debit:
@@ -853,23 +898,23 @@ def send_market_report(report_type, force=False):
 
         if price <= _crash_stop:
             if _crash_etf_scaled:
-                lines.append(f"🛑 剩余SPXL $1k 跌穿-2.5%止损, 建议平仓")
-                close_lines.append(f"  🛑 崩盘ETF剩一半止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                lines.append(f"🛑 剩余SPXL $1k 跌穿止损 ${_crash_stop:.2f} (-2.5%), 现价XSP ${price:.2f}, 建议平仓")
+                close_lines.append(f"  🛑 崩盘ETF剩一半止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} ≤ 止损${_crash_stop:.2f}), 建议平仓")
             else:
-                lines.append(f"🛑 崩盘跌穿-2.5%止损 ({_crash_entry_price:.2f}→{price:.2f}), 建议平仓")
-                close_lines.append(f"  🛑 崩盘跌穿-2.5%止损 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+                lines.append(f"🛑 崩盘跌穿止损 ${_crash_stop:.2f} (-2.5%) ({_crash_entry_price:.2f}→{price:.2f}), 建议平仓")
+                close_lines.append(f"  🛑 崩盘跌穿止损 ${_crash_stop:.2f} {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
             _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
             _crash_k2 = None; _crash_debit = None; _crash_sigma = None
             _crash_etf_entry = None; _crash_etf_scaled = False
         elif price > _crash_green and crash_days <= 4:
             if not _crash_etf_scaled:
-                lines.append(f"💰 崩盘首阳: 平CALL价差 + SPXL退一半($1k), 剩$1k续持")
-                close_lines.append(f"  💰 崩盘首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 平CALL价差+ETF一半")
+                lines.append(f"💰 崩盘首阳 (>首阳${_crash_green:.2f}): 平CALL价差 + SPXL退一半($1k), 剩$1k续持")
+                close_lines.append(f"  💰 崩盘首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平CALL价差+ETF一半")
                 _crash_k1 = None; _crash_k2 = None; _crash_debit = None; _crash_sigma = None
                 _crash_etf_scaled = True
             else:
                 lines.append(f"💰 二次首阳: 剩余SPXL $1k平仓")
-                close_lines.append(f"  💰 崩盘二次首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f}), 平剩余ETF一半")
+                close_lines.append(f"  💰 崩盘二次首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平剩余ETF一半")
                 _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
                 _crash_k2 = None; _crash_debit = None; _crash_sigma = None
                 _crash_etf_entry = None; _crash_etf_scaled = False
@@ -885,9 +930,9 @@ def send_market_report(report_type, force=False):
             _crash_etf_entry = None; _crash_etf_scaled = False
         else:
             if _crash_etf_scaled:
-                lines.append(f"⏳ 剩SPXL $1k续持 ({4 - crash_days}d最多 | 止损-2.5%)")
+                lines.append(f"⏳ 剩SPXL $1k续持 ({4 - crash_days}d最多 | 止损 ${_crash_stop:.2f} (-2.5%) | 首阳 ${_crash_green:.2f})")
             else:
-                lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损-2.5%)")
+                lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损 ${_crash_stop:.2f} (-2.5%) | 首阳 ${_crash_green:.2f})")
         _latest_report['crash_entry_date'] = str(_crash_entry_date) if _crash_entry_date else None
         _latest_report['crash_entry_price'] = _crash_entry_price
         _latest_report['crash_days'] = crash_days
@@ -895,6 +940,8 @@ def send_market_report(report_type, force=False):
         _latest_report['crash_k2'] = _crash_k2
         _latest_report['crash_debit'] = _crash_debit
         _latest_report['crash_stop'] = _crash_stop
+        _latest_report['crash_etf_stop'] = _crash_etf_stop
+        _latest_report['crash_etf_green'] = _crash_etf_green
         _latest_report['crash_green'] = _crash_green
         _latest_report['crash_etf_entry'] = _crash_etf_entry
         _latest_report['crash_etf_scaled'] = _crash_etf_scaled
@@ -942,6 +989,8 @@ def send_market_report(report_type, force=False):
                 'prev_report_score': _prev_report_score,
                 'entry_price': _entry_price,
                 'peak_price': _peak_price,
+                'etf_entry_price': _etf_entry_price,
+                'etf_peak_price': _etf_peak_price,
                 'mr_entry_date': str(_mr_entry_date) if _mr_entry_date else None,
                 'mr_entry_price': _mr_entry_price,
                 'mr_etf_entry_price': _mr_etf_entry_price,
