@@ -338,11 +338,13 @@ def mr_bt(period='10y', pricing='gamma_theta', entry_cost=3.50, green_buffer=0.0
 
 
 def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spread_width=15,
-             stop_pct=0.025, trail_pct=0, green_buffer=0.0, max_hold=4, T_dte=21):
+             stop_pct=0.025, trail_pct=0, green_buffer=0.0, max_hold=4, T_dte=21, etf_scale_out=True):
     """Crash bounce: XSP drop>drop_thresh → 1 CALL spread (ATM + ATM+spread_width, T_dte DTE) + $2k SPXL.
     Stop exits: fixed stop (stop_pct) and/or trailing stop (trail_pct from peak).
     Green exit: entry × (1+green_buffer). Time exit: T+max_hold.
-    Max loss = net debit paid. Max gain = (spread_width×100) - debit."""
+    Max loss = net debit paid. Max gain = (spread_width×100) - debit.
+    etf_scale_out: on first green, option exits fully but ETF sells HALF and the
+    other half rides to the 2nd green / stop / time (ETF only; option stays 1 lot)."""
     xsp = yf.download('^XSP', period=period, interval='1d', progress=False)
     if isinstance(xsp.columns, pd.MultiIndex): xsp = xsp.droplevel('Ticker', axis=1)
     vix = yf.download('^VIX', period=period, interval='1d', progress=False)
@@ -391,21 +393,42 @@ def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spre
                     T_rem = max(T - cal_days / 365, 1 / 365)
                     e1 = bs_call_price(xp, pos['K1'], T_rem, pos['sigma'])
                     e2 = bs_call_price(xp, pos['K2'], T_rem, pos['sigma'])
-                    opt_pnl = round(max((e1 - e2 - pos['debit']) * 100, -pos['debit'] * 100), 2)
-                    etf_pnl = 0
+                    opt_full = max((e1 - e2 - pos['debit']) * 100, -pos['debit'] * 100)
+                    etf_full = 0
                     if etf_size > 0 and 'etf_entry' in pos:
                         spxl_exit = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
-                        etf_pnl = round(etf_size * (spxl_exit / pos['etf_entry'] - 1), 2)
-                    trades.append({
-                        'entry_date': pos['ed'], 'exit_date': dt,
-                        'dir': 'CALL_spread', 'type': 'crash',
-                        'entry_price': pos['ep'], 'exit_price': round(xp, 2),
-                        'pnl': opt_pnl, 'exit_type': xt,
-                        'entry_reason': 'crash_vix_drop',
-                        'entry_opt_cost': pos['debit'],
-                        'etf_pnl': etf_pnl,
-                    })
-                    pos = None
+                        etf_full = etf_size * (spxl_exit / pos['etf_entry'] - 1)
+                    if pos.get('stage') == 1:
+                        # 只剩ETF另一半: 在二次首阳/止损/时间出场
+                        etf_pnl = round(etf_full / 2, 2)
+                        trades.append({
+                            'entry_date': pos['ed'], 'exit_date': dt,
+                            'dir': 'CALL_spread', 'type': 'crash',
+                            'entry_price': pos['ep'], 'exit_price': round(xp, 2),
+                            'pnl': pos['opt_earned'], 'exit_type': xt + '_scaled',
+                            'entry_reason': 'crash_vix_drop',
+                            'entry_opt_cost': pos['debit'],
+                            'etf_pnl': round(pos.get('half_etf', 0) + etf_pnl, 2),
+                            'half_date': pos.get('half_date'),
+                        })
+                        pos = None
+                    elif etf_scale_out and xt == 'green':
+                        # 首阳: 期权全额出 + ETF退一半; ETF另一半续持
+                        pos['stage'] = 1
+                        pos['opt_earned'] = round(opt_full, 2)
+                        pos['half_etf'] = round(etf_full / 2, 2)
+                        pos['half_date'] = dt
+                    else:
+                        trades.append({
+                            'entry_date': pos['ed'], 'exit_date': dt,
+                            'dir': 'CALL_spread', 'type': 'crash',
+                            'entry_price': pos['ep'], 'exit_price': round(xp, 2),
+                            'pnl': round(opt_full, 2), 'exit_type': xt,
+                            'entry_reason': 'crash_vix_drop',
+                            'entry_opt_cost': pos['debit'],
+                            'etf_pnl': round(etf_full, 2),
+                        })
+                        pos = None
 
         # ── Crash bounce entry ──
         entry_ok = (i > 0 and row['chg1'] < -drop_thresh and (not vix_req or row['vix'] > 20))
@@ -534,7 +557,7 @@ if __name__ == '__main__':
     print(f'  MR组合(CALL+$2k ETF)${mc_tot:+>7.0f}')
 
     print()
-    print('=== 崩盘反弹CALL价差15点 21DTE + $2k SPXL (0.5%drop, 无VIX, 2.5%stop, 首阳即出, T+4) ===')
+    print('=== 崩盘反弹CALL价差15点 21DTE + $2k SPXL (0.5%drop, 无VIX, 2.5%stop, 首阳期权出+ETF退半, T+4) ===')
     crash_by_yr = by_year(crash)
     for yr in sorted(crash_by_yr.keys()):
         yt = crash_by_yr[yr]
