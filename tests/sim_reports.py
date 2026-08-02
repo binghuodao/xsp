@@ -11,8 +11,8 @@ real VIX of that day as sigma (yfinance has no historical option chains).
 Usage:  python3 tests/sim_reports.py > tests/sim_reports_results.txt
 
 Scenarios:
-  1  Trend baseline (no position, real 06-03 signal)
-  2  Trend open (entry=peak, day 0)
+  1  Trend open 05-15 (real signal day, entry=peak=$740.85)
+  2  Trend held (real 06-03: 05-15 entry continuing, 19d, no trigger)
   3  Trend new high trailing (not triggered)
   4  Trend trail trigger (close)
   5  MR holding (03-27 entry, 03-30 report)
@@ -243,17 +243,21 @@ def scenario(report_date, title, setup, snap=None):
     print("[direction]", app._latest_report.get('direction'), "| reason:", app._latest_report.get('reason'))
 
 # ── 4. scenarios ──
-# 1 baseline (trend day, no position)
-scenario(TREND_DATE, "1. 基线（无持仓，真实 06-03 信号）", lambda p, s: s)
+# 1 trend open on the real 05-15 signal day (entry=peak=740.85)
+def _trend_open0515(p, s):
+    app._active_position_date = date(2026, 5, 15)
+    app._prev_report_direction = 'CALL'; app._prev_report_score = 54
+    return s
+scenario(date(2026, 5, 15), "1. 趋势·05-15 开仓当日（真实信号, entry=peak=XSP $740.85）", _trend_open0515)
 
-# 2 trend open
-def _trend_open(p, s):
-    app._entry_price = p; app._peak_price = p
-    app._etf_entry_price = s; app._etf_peak_price = s
-    app._active_position_date = TREND_DATE
+# 2 trend held on real 06-03 (05-15 entry continuing, 19d, healthy no trigger)
+def _trend_held(p, s):
+    app._entry_price = 740.85; app._peak_price = 760.98
+    app._etf_entry_price = 266.08; app._etf_peak_price = 287.47
+    app._active_position_date = date(2026, 5, 15)
     app._prev_report_direction = 'CALL'; app._prev_report_score = 62
     return s
-scenario(TREND_DATE, "2. 趋势·开仓（entry=peak=XSP 755.37, ETF=SPXL）", _trend_open)
+scenario(TREND_DATE, "2. 趋势·持仓中（真实06-03: 05-15入场$740.85延续, 持有19d）", _trend_held)
 
 # 3 trend higher peak
 def _trend_peak(p, s):
