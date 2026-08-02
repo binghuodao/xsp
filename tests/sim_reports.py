@@ -185,8 +185,8 @@ CRASH_DATE, CRASH_PREV_DATE, CRASH_CHG = find_crash_day()
 # ── 3. mock clock ──
 def _clock_for(asof):
     mn = type('MN', (), {})()
-    mn.syd_dt = datetime.datetime.combine(asof, datetime.time(21, 30, 0))
-    mn.et_dt = datetime.datetime.combine(asof, datetime.time(7, 30, 0))
+    mn.syd_dt = datetime.datetime.combine(asof + timedelta(days=1), datetime.time(6, 30, 0))
+    mn.et_dt = datetime.datetime.combine(asof, datetime.time(16, 30, 0))
     real_dt = app.datetime
     class _FakeDatetime:
         def __getattr__(self, name):
@@ -238,7 +238,7 @@ def scenario(report_date, title, setup, snap=None):
     spxl = setup(price, spxl_p)
     app._etf_price_cache['SPXL'] = spxl
     print(); print("=" * 78); print("SCENARIO:", title); print("=" * 78)
-    app.send_market_report('morning', force=False)
+    app.send_market_report('evening', force=False)
     print()
     print("[direction]", app._latest_report.get('direction'), "| reason:", app._latest_report.get('reason'))
 
@@ -283,7 +283,7 @@ def _mr(p, s):
     app._mr_entry_price = float(x_i['Close'].iloc[-1])
     app._mr_etf_entry_price = float(sp_i['Close'].iloc[-1])
     return s
-scenario(date(2026, 3, 30), "5. MR持仓（03-27 入场, 03-30 早报）", _mr)
+scenario(date(2026, 3, 30), "5. MR持仓（03-27 入场, 03-30 晚报）", _mr)
 
 # 6 crash not scaled
 def _crash(p, s):
@@ -363,7 +363,7 @@ def _t_hold5(p, s):
     app._active_position_date = TREND_DATE
     app._prev_report_direction = 'CALL'; app._prev_report_score = 62
     return s
-scenario(date(2026, 6, 10), "12. 趋势·持有5天（06-03开仓, 06-10早报, 跟踪激活未触发）", _t_hold5, snap=TREND_DATE)
+scenario(date(2026, 6, 10), "12. 趋势·持有5天（06-03开仓, 06-10晚报, 跟踪激活未触发）", _t_hold5, snap=TREND_DATE)
 
 # 13 trend new high (peak updates 749 -> 756)
 def _t_peak_up(p, s):
@@ -399,7 +399,7 @@ scenario(date(2026, 3, 30), "15. MR·首阳（现价640 > 首阳638.80）", _mr_
 def _mr_force3(p, s):
     _mr_state()
     return s
-scenario(date(2026, 4, 1), "16. MR·3天强制平（03-27入场, 04-01早报）", _mr_force3, snap=date(2026, 3, 30))
+scenario(date(2026, 4, 1), "16. MR·3天强制平（03-27入场, 04-01晚报）", _mr_force3, snap=date(2026, 3, 30))
 
 # ══════════ 17-20 崩盘层关键触发（07-29 入场 731.62） ══════════
 
@@ -442,7 +442,7 @@ scenario(CRASH_DATE, "19. 崩盘·二次首阳（剩SPXL $1k平仓）", _c_green
 def _c_force4(p, s):
     _crash_state(p, s)
     return s
-scenario(date(2026, 8, 4), "20. 崩盘·4天强制平（07-29入场, 08-04早报）", _c_force4, snap=CRASH_DATE)
+scenario(date(2026, 8, 4), "20. 崩盘·4天强制平（07-29入场, 08-04晚报）", _c_force4, snap=CRASH_DATE)
 
 print()
 print("CRASH day auto-picked:", CRASH_DATE, "chg", f"{CRASH_CHG*100:.2f}%")
