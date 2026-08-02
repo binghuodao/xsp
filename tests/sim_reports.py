@@ -9,6 +9,28 @@ All inputs are real from yfinance; the option chain is BS-synthesized with the
 real VIX of that day as sigma (yfinance has no historical option chains).
 
 Usage:  python3 tests/sim_reports.py > tests/sim_reports_results.txt
+
+Scenarios:
+  1  Trend baseline (no position, real 06-03 signal)
+  2  Trend open (entry=peak, day 0)
+  3  Trend new high trailing (not triggered)
+  4  Trend trail trigger (close)
+  5  MR holding (03-27 entry, 03-30 report)
+  6  Crash not scaled (signal-day entry)
+  7  Crash scaled (options closed, $1k SPXL left)
+  8  Trend fixed-stop benchmark broken -> entry hard stop
+  9  Trend ended (prev 70 -> now 62)
+ 10  Trend rolling CALL spread held (realized $185)
+ 11  Trend spread roll (DTE<=2 -> next 14DTE)
+ 12  Trend held 5+ days, trailing active not triggered
+ 13  Trend new high (peak updates 749->756)
+ 14  MR stop (-2% break)
+ 15  MR first green (+0.3%)
+ 16  MR 3-day forced close
+ 17  Crash stop (-2.5% break)
+ 18  Crash first green -> half ETF out
+ 19  Crash second green -> remaining $1k closed
+ 20  Crash 4-day forced close
 """
 import sys, os, tempfile, datetime
 from datetime import date, timedelta
@@ -199,11 +221,19 @@ def reset_state():
     app.POSITION_FILE = tempfile.mktemp(suffix='.json')
     app.WATCHLIST_FILE = tempfile.mktemp(suffix='.json')
 
-def scenario(date, title, setup):
+def scenario(report_date, title, setup, snap=None):
+    """Run one report scenario.
+
+    report_date = mock clock date (shown in the report header, used for
+    holding-day/DTE math). snap = date used for the real indicator snapshot
+    + option chain (defaults to report_date). Setting snap to the signal day
+    while advancing report_date simulates a "held N days" report.
+    """
     reset_state()
-    app.datetime = _clock_for(date)
-    price, spxl_p, vix_p = build_snapshot(date)
-    make_chain(price, vix_p / 100.0, date)
+    app.datetime = _clock_for(report_date)
+    snap_date = snap if snap is not None else report_date
+    price, spxl_p, vix_p = build_snapshot(snap_date)
+    make_chain(price, vix_p / 100.0, snap_date)
     app.latest_data['index']['price'] = price
     spxl = setup(price, spxl_p)
     app._etf_price_cache['SPXL'] = spxl
@@ -281,6 +311,138 @@ def _crash_scaled(p, s):
     app._crash_etf_scaled = True
     return s
 scenario(CRASH_DATE, "7. 崩盘·已缩放（期权已平, 剩$1k SPXL续持）", _crash_scaled)
+
+# ══════════ 8-13 趋势层关键触发（06-03 信号日） ══════════
+
+# 8 trend fixed-stop benchmark broken -> entry hard stop (never rallied)
+def _t_entry_stop(p, s):
+    app._entry_price = p; app._peak_price = p
+    app._etf_entry_price = s; app._etf_peak_price = s
+    app._active_position_date = TREND_DATE - timedelta(days=1)
+    app._prev_report_direction = 'CALL'; app._prev_report_score = 62
+    app.latest_data['index']['price'] = 733.00
+    return s
+scenario(TREND_DATE, "8. 趋势·固定止损基准跌破（入场未涨超0.5%→硬止损）", _t_entry_stop)
+
+# 9 trend ended (score 70 -> 62)
+def _t_end(p, s):
+    app._prev_report_direction = 'CALL'; app._prev_report_score = 70
+    return s
+scenario(TREND_DATE, "9. 趋势·结束（上期70→本期62）", _t_end)
+
+# 10 trend rolling spread held (entry from chain, realized pnl 185)
+def _t_spread(p, s):
+    app._trend_opt_expiry = '2026-06-17'
+    app._trend_opt_strike = 755; app._trend_opt_strike2 = 770
+    m1 = app._opt_mid('US.XSP260617C755000')
+    m2 = app._opt_mid('US.XSP260617C770000')
+    app._trend_opt_entry = round((m1 or 0) - (m2 or 0), 2)
+    app._trend_opt_entry_date = TREND_DATE
+    app._trend_opt_sigma = app.historical_stats.get('vix', 20) / 100.0
+    app._trend_opt_pnl = 185.0
+    return s
+scenario(TREND_DATE, "10. 趋势·滚动CALL价差持仓（已滚入$185）", _t_spread)
+
+# 11 trend spread roll (DTE<=2 -> roll to next 14DTE)
+def _t_roll(p, s):
+    app._trend_opt_expiry = '2026-06-10'
+    app._trend_opt_strike = 755; app._trend_opt_strike2 = 770
+    m1 = app._opt_mid('US.XSP260610C755000')
+    m2 = app._opt_mid('US.XSP260610C770000')
+    app._trend_opt_entry = round((m1 or 0) - (m2 or 0), 2)
+    app._trend_opt_entry_date = TREND_DATE
+    app._trend_opt_sigma = app.historical_stats.get('vix', 20) / 100.0
+    app._trend_opt_pnl = 0.0
+    return s
+scenario(date(2026, 6, 9), "11. 趋势·价差滚仓（06-10到期 DTE≤2 → 滚至06-24）", _t_roll, snap=TREND_DATE)
+
+# 12 trend held 5+ days, trailing activated but not triggered
+def _t_hold5(p, s):
+    app._entry_price = p; app._peak_price = p + 3
+    app._etf_entry_price = s; app._etf_peak_price = s + 1.1
+    app._active_position_date = TREND_DATE
+    app._prev_report_direction = 'CALL'; app._prev_report_score = 62
+    return s
+scenario(date(2026, 6, 10), "12. 趋势·持有5天（06-03开仓, 06-10早报, 跟踪激活未触发）", _t_hold5, snap=TREND_DATE)
+
+# 13 trend new high (peak updates 749 -> 756)
+def _t_peak_up(p, s):
+    app._entry_price = 749.0; app._peak_price = 749.0
+    app._etf_entry_price = round(s * 749.0 / p, 2); app._etf_peak_price = round(s * 749.0 / p, 2)
+    app._active_position_date = TREND_DATE - timedelta(days=1)
+    app._prev_report_direction = 'CALL'; app._prev_report_score = 62
+    app.latest_data['index']['price'] = 756.00
+    return s
+scenario(TREND_DATE, "13. 趋势·新高更新（peak 749→756, 06-02开仓）", _t_peak_up)
+
+# ══════════ 14-16 MR 层关键触发（03-27 入场 636.89） ══════════
+
+def _mr_state():
+    x_i = xsp[xsp.index <= pd.Timestamp(MR_DATE)]
+    sp_i = spxl[spxl.index <= pd.Timestamp(MR_DATE)]
+    app._mr_entry_date = MR_DATE
+    app._mr_entry_price = float(x_i['Close'].iloc[-1])
+    app._mr_etf_entry_price = float(sp_i['Close'].iloc[-1])
+
+def _mr_stop(p, s):
+    _mr_state()
+    app.latest_data['index']['price'] = 620.00
+    return s
+scenario(date(2026, 3, 30), "14. MR·跌穿-2%止损（入场636.89→现价620）", _mr_stop)
+
+def _mr_green(p, s):
+    _mr_state()
+    app.latest_data['index']['price'] = 640.00
+    return s
+scenario(date(2026, 3, 30), "15. MR·首阳（现价640 > 首阳638.80）", _mr_green)
+
+def _mr_force3(p, s):
+    _mr_state()
+    return s
+scenario(date(2026, 4, 1), "16. MR·3天强制平（03-27入场, 04-01早报）", _mr_force3, snap=date(2026, 3, 30))
+
+# ══════════ 17-20 崩盘层关键触发（07-29 入场 731.62） ══════════
+
+def _crash_state(p, s):
+    app._crash_entry_date = CRASH_DATE
+    app._crash_entry_price = p
+    k1 = app._s5(p); k2 = k1 + 15
+    app._crash_k1 = k1; app._crash_k2 = k2
+    app._crash_sigma = app.historical_stats.get('vix', 20) / 100.0
+    T21 = 21 / 365.0
+    r = 0.05
+    e1 = pricing.black_scholes(p, k1, T21, r, app._crash_sigma, 'C')
+    e2 = pricing.black_scholes(p, k2, T21, r, app._crash_sigma, 'C')
+    app._crash_debit = e1 - e2
+    app._crash_etf_entry = s
+    app._crash_etf_scaled = False
+
+def _c_stop(p, s):
+    _crash_state(p, s)
+    app.latest_data['index']['price'] = 710.00
+    return s * 0.97
+scenario(CRASH_DATE, "17. 崩盘·跌穿-2.5%止损（731.62→现价710）", _c_stop)
+
+def _c_green(p, s):
+    _crash_state(p, s)
+    app.latest_data['index']['price'] = 745.00
+    return s
+scenario(CRASH_DATE, "18. 崩盘·首阳退半（现价745 > 首阳731.62）", _c_green)
+
+def _c_green2(p, s):
+    app._crash_entry_date = CRASH_DATE
+    app._crash_entry_price = p
+    app._crash_k1 = None; app._crash_k2 = None; app._crash_debit = None; app._crash_sigma = None
+    app._crash_etf_entry = s
+    app._crash_etf_scaled = True
+    app.latest_data['index']['price'] = 745.00
+    return s
+scenario(CRASH_DATE, "19. 崩盘·二次首阳（剩SPXL $1k平仓）", _c_green2)
+
+def _c_force4(p, s):
+    _crash_state(p, s)
+    return s
+scenario(date(2026, 8, 4), "20. 崩盘·4天强制平（07-29入场, 08-04早报）", _c_force4, snap=CRASH_DATE)
 
 print()
 print("CRASH day auto-picked:", CRASH_DATE, "chg", f"{CRASH_CHG*100:.2f}%")
