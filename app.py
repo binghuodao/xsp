@@ -543,41 +543,13 @@ def send_market_report(report_type, force=False):
         expiry_tree = _find_n_dte_expiry(7 + dte_adj)
         ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
 
-        def sym_str(sk, ot):
-            return f"US.XSP{ds_tree}{ot}{int(sk * 1000)}" if ds_tree else None
-
         ot_type = 'C'
 
         # Trending: 14DTE CALL价差 (initialized before expiry check)
-        strike, delta, mid_single = None, None, None
-        mid = None
+        strike, delta = None, None
         single_label_s = single_strike_s = single_mid_s = None
 
         if expiry_tree:
-            sym_s = sym_str(s, ot_type)
-            sym_m = sym_str(m, ot_type)
-            sym_l = sym_str(l, ot_type)
-
-            lines.append(f"═══ 7DTE {direction}树 ({expiry_tree}) ═══")
-            lines.append(f"M={m} ({'EMA20' + ('%+d' % off) if is_trend else 'EMA20'})")
-
-            for label, sk_strike, sym in [('S', s, sym_s), ('M', m, sym_m), ('L', l, sym_l)]:
-                mid = _opt_mid(sym)
-                hist = _get_hist_mid(sym)
-                p = f"${mid:.2f}" if mid is not None else "--"
-                if hist is not None:
-                    p += f" | 历均 ${hist:.2f}"
-                lines.append(f"{label} {sk_strike}  mid {p}")
-
-            s_mid = _opt_mid(sym_s)
-            m_mid = _opt_mid(sym_m)
-            l_mid = _opt_mid(sym_l)
-            if all(v is not None for v in (s_mid, m_mid, l_mid)):
-                combo_val = s_mid + 2 * l_mid - 3 * m_mid
-                tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
-                lines.append(f"组合值: ${abs(combo_val):.2f} {tag} → 一手 max loss ${abs(combo_val)*100:.0f}")
-            lines.append("")
-
             if is_trend and direction == 'CALL' and dlow <= 80:
                 expiry14 = _find_n_dte_expiry(14 + dte_adj)
                 ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
@@ -600,7 +572,7 @@ def send_market_report(report_type, force=False):
                 elif is_trend and direction == 'CALL' and dlow > 80:
                     lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
         else:
-            lines.append("⚠️ 无可用7DTE期权数据")
+            lines.append("⚠️ 无可用期权数据")
 
         # 更新前端展示
         _latest_report = {
@@ -608,13 +580,6 @@ def send_market_report(report_type, force=False):
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': direction, 'reason': reason,
         }
-        if expiry_tree:
-            _latest_report['tree_label'] = f"7DTE {direction}树 ({expiry_tree})"
-            _latest_report['tree_strikes'] = f"S={s}  M={m}  L={l}"
-            if all(v is not None for v in (s_mid, m_mid, l_mid)):
-                _latest_report['tree_mids'] = f"${s_mid:.2f} / ${m_mid:.2f} / ${l_mid:.2f}"
-                tag = 'credit (收)' if combo_val >= 0 else 'debit (付)'
-                _latest_report['combo'] = f"${abs(combo_val):.2f} {tag}"
         if single_label_s:
             _latest_report['single_label'] = single_label_s
             _latest_report['single_strike'] = single_strike_s

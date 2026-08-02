@@ -82,46 +82,6 @@ class TestDirection:
 
 
 # ═══════════════════════════════════════════════════════════
-# 2.3 树行权价计算
-# ═══════════════════════════════════════════════════════════
-
-class TestTreeStrikes:
-    XSP = 750.0
-
-    @pytest.mark.parametrize("desc,hs_overrides,exp_s,exp_m,exp_l", [
-        ("PUT 震荡", {'skew': 0, 'adx': 15}, 760, 750, 745),
-        ("CALL 震荡", {'skew': 0, 'adx': 15}, 740, 750, 755),
-    ])
-    def test_tree_strikes_ranging(self, reset_globals, mock_sio, desc, hs_overrides, exp_s, exp_m, exp_l):
-        app.historical_stats.update(std_hs(**hs_overrides))
-        app.historical_stats['ema_20'] = self.XSP
-        app.latest_data["index"]["price"] = self.XSP
-        app.send_market_report('morning', force=True)
-        r = app._latest_report
-        dir = r.get('direction')
-        if dir:
-            assert f"S={exp_s}" in r.get('tree_strikes', ''), f"{desc}: short mismatch"
-            assert f"M={exp_m}" in r.get('tree_strikes', ''), f"{desc}: mid mismatch"
-            assert f"L={exp_l}" in r.get('tree_strikes', ''), f"{desc}: long mismatch"
-
-    @pytest.mark.parametrize("desc,hs_overrides,exp_s,exp_m,exp_l", [
-        ("PUT 趋势 ← off=-5", {'skew': -2, 'adx': 28}, 755, 745, 740),
-        ("CALL 趋势 ← off=+5", {'skew': 2, 'adx': 28}, 745, 755, 760),
-    ])
-    def test_tree_strikes_trending(self, reset_globals, mock_sio, desc, hs_overrides, exp_s, exp_m, exp_l):
-        app.historical_stats.update(std_hs(**hs_overrides))
-        app.historical_stats['ema_20'] = self.XSP
-        app.latest_data["index"]["price"] = self.XSP
-        app.send_market_report('morning', force=True)
-        r = app._latest_report
-        dir = r.get('direction')
-        if dir:
-            assert f"S={exp_s}" in r.get('tree_strikes', ''), f"{desc}: short mismatch"
-            assert f"M={exp_m}" in r.get('tree_strikes', ''), f"{desc}: mid mismatch"
-            assert f"L={exp_l}" in r.get('tree_strikes', ''), f"{desc}: long mismatch"
-
-
-# ═══════════════════════════════════════════════════════════
 # 2.4 裸买单腿
 # ═══════════════════════════════════════════════════════════
 
@@ -485,13 +445,13 @@ class TestEdgeCases:
         assert app._latest_report != {}
 
     def test_no_expiry_found(self, reset_globals, mock_sio):
-        """case 52: 找不到到期日→跳过树/裸买"""
+        """case 52: 找不到到期日→跳过价差推荐"""
         app.latest_data["options"] = {}
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
-        # 方向应有（trending, di_diff→CALL），但树和裸买可能缺失（无期权数据）
+        # 方向应有（trending, di_diff→CALL），但价差推荐可能缺失（无期权数据）
         assert r.get('direction') is not None
 
     def test_wl_missing_fields(self, reset_globals, mock_sio):
@@ -535,13 +495,12 @@ class TestOutputFormat:
         assert r.get('direction') is None
 
     def test_full_report_trending_call(self, reset_globals, mock_sio):
-        """case 59: 趋势CALL→含ETF+树+价差推荐"""
+        """case 59: 趋势CALL→含ETF+价差推荐"""
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') == 'CALL'
-        assert 'CALL树' in r.get('tree_label', '')
         assert '价差' in r.get('single_label', '') or 'CALL' in r.get('single_label', '')
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
@@ -553,7 +512,7 @@ class TestOutputFormat:
         assert r.get('direction') == 'CALL'
 
     def test_direction_none_format(self, reset_globals, mock_sio):
-        """case 61: direction=None→无ETF/树/裸买"""
+        """case 61: direction=None→无ETF/价差推荐"""
         app.historical_stats.update(std_hs(adx=15, vr=0.8))
         app.latest_data["index"]["price"] = 750.0  # BB中段
         app.send_market_report('morning', force=True)

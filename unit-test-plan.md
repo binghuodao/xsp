@@ -51,6 +51,8 @@
 
 ### 2.3 树行权价计算
 
+> ⚠️ 树已从报告中移除（2026-08-02）。s/m/l 行权价现仅用于 **watchlist 树组合自动加入**（app.py `if direction and expiry_tree and ds_tree`），不再出现在报告。
+
 | # | 方向 | `ema20` | 预期 `s` | 预期 `m` | 预期 `l` |
 |---|---|---|---|---|---|
 | 13 | PUT | 750.0 | 755 (m+10) | 745 (ema20-5) | 740 (m-5) |
@@ -151,7 +153,7 @@ mock `latest_data["options"]` 返回对应的组合价 / 中间价。
 | 49 | `historical_stats` 中 `ema_20` 为 0 或缺失 | 函数不崩溃，使用兜底值 |
 | 50 | `hs.get('atr_14')` 为 0 或 None | 降级到 `BW×10%` |
 | 51 | `latest_data["options"]` 为空 | close_lines 不崩溃，`for g in user_watchlist` 的 `o_s = None` 被 `if o_s and o_m and o_l` 跳过 |
-| 52 | `_find_n_dte_expiry` 找不到合适的到期日（如非交易日） | 返回 `None`，树和裸买部分跳过 |
+| 52 | `_find_n_dte_expiry` 找不到合适的到期日（如非交易日） | 返回 `None`，价差推荐部分跳过 |
 | 53 | `compute_combo_price` 中某个 leg mid 为 None | 不纳入计算，`cur_mid` 保持 None，跳过该条目 |
 | 54 | watchlist 条目缺少 `date` 或 `short` 字段 | `continue` 跳过，不崩溃 |
 | 55 | watchlist 条目 `entry` 字段无法转为 float | `try/except` 跳过 |
@@ -164,10 +166,10 @@ mock `latest_data["options"]` 返回对应的组合价 / 中间价。
 
 | # | 场景 | 预期检验 |
 |---|---|---|
-| 58 | `direction='PUT'`, `is_trend=True` | 标题行含 icon+score，ETF 行，树行（7DTE），裸买行（7DTE, Δ≈-0.35），方向行 |
-| 59 | `direction='CALL'`, `is_trend=True` | ETF 行，树行（7DTE），裸买行（7DTE, Δ≈0.35） |
-| 60 | `direction='PUT'`, `is_trend=False` | 树行（off=0），无裸买行 |
-| 61 | `direction=None` | 方向行 `BB中段，不开仓`，无 ETF/树/裸买 |
+| 58 | `direction='PUT'`, `is_trend=True` | 标题行含 icon+score，ETF 行，价差推荐行（无树），方向行 |
+| 59 | `direction='CALL'`, `is_trend=True` | ETF 行，价差推荐行（14DTE CALL价差，无树） |
+| 60 | `direction='PUT'`, `is_trend=False` | 无树行（树已移除），无价差推荐 |
+| 61 | `direction=None` | 方向行 `BB中段，不开仓`，无 ETF/价差推荐 |
 | 62 | `close_lines` 非空 | 追加 `━━━ 平仓提示 ━━━` 及各 alert |
 | 63 | `close_lines` 为空 | 不追加平仓提示段 |
 | 64 | 报告标题包含 ET 日期时间 | `Thu 2026-07-16 19:30 ET` 格式 |

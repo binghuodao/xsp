@@ -1922,12 +1922,6 @@
             var html = '<h3 style="margin:0 0 10px 0;font-size:16px;color:var(--green);">' + r.icon + ' ' + r.title + ' — ' + r.time + '</h3>'
                 + '<div style="margin-bottom:6px;">方向: ' + dirHtml + ' — 综合 <b>' + r.score + '</b> / ' + r.slbl + '</div>';
             if (r.etf) html += '<div style="margin-bottom:6px;">' + r.etf + '</div>';
-            if (r.tree_label) {
-                html += '<div style="margin-top:8px;"><b>' + r.tree_label + '</b></div>'
-                    + '<div>' + r.tree_strikes + '</div>';
-                if (r.tree_mids) html += '<div>' + r.tree_mids + '</div>';
-                if (r.combo) html += '<div>组合值 <b>' + r.combo + '</b></div>';
-            }
             if (r.single_label) {
                 html += '<div style="margin-top:8px;"><b>' + r.single_label + '</b></div>'
                     + '<div>' + r.single_strike + '  mid ' + r.single_mid + '</div>';
