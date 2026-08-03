@@ -1,7 +1,11 @@
 """Pure trend CALL strategy. Swing removed 2026-07-28:
    6y backtest: 33 swing trades net −$266. Signal B (DI cross) never
    fired with double_day. Signal C (BB edge+RSI) net −$266 total.
-   Swing added complexity with zero net benefit vs pure trend."""
+   Swing added complexity with zero net benefit vs pure trend.
+
+   NOTE (2026-08-03): RULES.md 数字来源已切换至 app 重放
+   (tests/sim_reports_full.py --period 7y)。本文件为研究/探索脚本，
+   不再作为 RULES 引用回测口径（其入场无 direction/互斥闸，与 app 实际执行不符）。"""
 import sys, os, collections, math
 import numpy as np, pandas as pd, yfinance as yf
 

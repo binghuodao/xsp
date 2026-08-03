@@ -1,11 +1,16 @@
-"""3-year full-history replay of the app's own signal engine -> real daily reports.
+"""Full-history replay of the app's own signal engine -> real daily reports.
 
-For EVERY trading day over the last 3 years we rebuild app state (indicators +
+For EVERY trading day we rebuild app state (indicators +
 BS option chain + mock evening clock) and call app.send_market_report('evening'),
 so the app's position state machine runs continuously exactly like production.
 
+Canonical backtest: python3 tests/sim_reports_full.py --no-net --period 7y
+  = full data window (2021-06-01 -> today, ~5.4y; ^XSP data caps at 2021-03-01).
+  Default --period 3y keeps the daily-review window used for day-to-day checks.
+
 Output — batched into tests/sim_reports_full/ for easy lookup:
-  index.txt            master index: per-strategy trade table (open/close/result/file:line)
+  index_{period}.txt    master index: per-strategy trade table (open/close/result/file:line)
+  backtest_stats_{period}.txt  per-year PnL/WR table (BS repricing, r=5%)
   sim_rpt_YYYY.txt     full "state changed" reports per year (split to H1/H2 if large)
   Compact hold lines:  unchanged hold days are 1 line (date · D+n · #trade · peak · price · stop)
 
@@ -66,9 +71,13 @@ def _load(cache, ticker, period):
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
+ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
 args = ap.parse_args()
 
-print("Loading real history (3y)...")
+PERIOD = args.period
+REPLAY_START = pd.Timestamp('2020-08-01')   # canonical backtest floor; ^XSP data caps at 2021-03-01, so window = data-available
+
+print(f"Loading real history ({PERIOD})...")
 xsp = _load(not args.no_net, '^XSP', PERIOD)
 vix = _load(not args.no_net, '^VIX', PERIOD)
 spy = _load(not args.no_net, 'SPY', PERIOD)
@@ -229,14 +238,60 @@ def infer_blocked(msg, r):
 # ═══════════════════════════════ 3. trade ledger ═══════════════════════════════
 ledger = {'TREND': [], 'MR': [], 'CRASH': []}
 _open_ref = {'TREND': None, 'MR': None, 'CRASH': None}  # n of currently-open trade
+ETF_SIZE = {'TREND': 5000, 'MR': 2000, 'CRASH': 2000}
 
 def open_trade(kind, asof):
     n = len(ledger[kind]) + 1
     ledger[kind].append({'n': n, 'kind': kind, 'open': asof, 'open_p': None,
                          'close': None, 'close_p': None, 'result': None,
-                         'file': None, 'line': None, 'rolls': 0})
+                         'file': None, 'line': None, 'rolls': 0,
+                         'etf_entry': None, 'etf_pnl': 0.0, 'opt_pnl': 0.0, 'segs': [],
+                         'mr_K': None, 'mr_sigma': None, 'mr_expiry': None, 'mr_opt_entry': None,
+                         'k1': None, 'k2': None, 'debit': None, 'sigma': None,
+                         'half_etf': 0.0, 'half_date': None})
     _open_ref[kind] = n
     return n
+
+def _bs_spread(price, k1, k2, T, sigma):
+    if T <= 0: T = 1 / 365.0
+    if not sigma or sigma <= 0: sigma = 0.20
+    return pricing.black_scholes(price, k1, T, 0.05, sigma, 'C') - pricing.black_scholes(price, k2, T, 0.05, sigma, 'C')
+
+def _bs_call(price, K, T, sigma):
+    if T <= 0: T = 1 / 365.0
+    if not sigma or sigma <= 0: sigma = 0.20
+    return pricing.black_scholes(price, K, T, 0.05, sigma, 'C')
+
+def _seg_from_app():
+    if not app._trend_opt_expiry:
+        return None
+    return {'expiry': app._trend_opt_expiry,
+            'k1': app._trend_opt_strike, 'k2': app._trend_opt_strike2,
+            'debit': app._trend_opt_entry, 'sigma': app._trend_opt_sigma,
+            'open': app._trend_opt_entry_date}
+
+def _seg_close_pnl(seg, asof, price):
+    """Realized PnL of one spread segment closed at `asof` close."""
+    if not seg or not seg.get('k1') or not seg.get('k2') or seg.get('debit') is None:
+        return 0.0
+    exp = datetime.datetime.strptime(seg['expiry'], '%Y-%m-%d').date()
+    T_rem = max((exp - asof).days / 365.0, 1 / 365.0)
+    close_d = _bs_spread(price, seg['k1'], seg['k2'], T_rem, seg.get('sigma'))
+    return max((close_d - seg['debit']), -seg['debit']) * 100
+
+def book_spread(asof, price, prev_seg, now_seg):
+    """Accrue trend spread segment PnL into the currently-open TREND trade.
+    Roll/close when the segment changed (expiry or strikes differ); persist otherwise."""
+    t = cur_trade('TREND')
+    if not t:
+        return
+    same = (prev_seg is not None and now_seg is not None
+            and prev_seg.get('expiry') == now_seg.get('expiry')
+            and prev_seg.get('k1') == now_seg.get('k1'))
+    if prev_seg and not same:
+        t['opt_pnl'] = (t.get('opt_pnl') or 0) + _seg_close_pnl(prev_seg, asof, price)
+    if now_seg and not same:
+        t['segs'] = list(t.get('segs') or []) + [now_seg]
 
 def cur_trade(kind):
     if _open_ref[kind] is None:
@@ -318,6 +373,8 @@ def check_day(asof, msg, r, price, blocked, failures):
 def main():
     init_state()
     trading_days = list(xsp.index)
+    if REPLAY_START is not None:
+        trading_days = [d for d in trading_days if d >= REPLAY_START]
     if len(trading_days) <= WARMUP_DAYS:
         sys.exit('not enough history')
     trading_days = trading_days[WARMUP_DAYS:]
@@ -330,6 +387,7 @@ def main():
     prev_fp = None
     prev_dir = None
     prev_blocked = None
+    prev_spread_seg = None
 
     for i, day in enumerate(trading_days):
         asof = day.date()
@@ -350,15 +408,22 @@ def main():
         blocked = infer_blocked(msg, r)
         alerts = r.get('close_alerts', []) or []
         sig_alerts = [l for l in alerts if 'BB中段' not in l]   # ignore daily background hint
+        now_spread_seg = _seg_from_app()
 
         ev = []
         # trend open/close
         if prev_fp is not None:
             if prev_fp[1] is None and now_fp[1] is not None:
                 n = open_trade('TREND', asof)
+                t = cur_trade('TREND')
+                if t: t['etf_entry'] = spxl_p
                 ev.append(f'TREND#{n} 开仓')
             elif prev_fp[1] is not None and now_fp[1] is None:
                 n = cur_trade('TREND')['n'] if cur_trade('TREND') else None
+                t = cur_trade('TREND')
+                if t and t.get('etf_entry'):
+                    t['etf_pnl'] = ETF_SIZE['TREND'] * (spxl_p / t['etf_entry'] - 1)
+                book_spread(asof, price, prev_spread_seg, now_spread_seg)
                 close_trade('TREND', asof, price, trend_close_result(alerts))
                 ev.append(f'TREND#{n} 平仓')
             if prev_fp[2] is None and now_fp[2] is not None:
@@ -371,22 +436,65 @@ def main():
                 ev.append('价差滚仓')
             if prev_fp[5] is None and now_fp[5] is not None:
                 n = open_trade('MR', asof)
+                t = cur_trade('MR')
+                if t:
+                    t['etf_entry'] = spxl_p
+                    t['mr_K'] = app._s5(app._mr_entry_price or price)
+                    t['mr_sigma'] = vix_p / 100.0
+                    t['mr_expiry'] = asof + timedelta(days=7)
+                    t['mr_opt_entry'] = _bs_call(price, t['mr_K'], 7 / 365.0, t['mr_sigma'])
                 ev.append(f'MR#{n} 开仓')
             elif prev_fp[5] is not None and now_fp[5] is None:
                 n = cur_trade('MR')['n'] if cur_trade('MR') else None
+                t = cur_trade('MR')
+                if t:
+                    if t.get('mr_K') is not None and t.get('mr_opt_entry') is not None:
+                        T_rem = max((t['mr_expiry'] - asof).days / 365.0, 1 / 365.0)
+                        exit_opt = _bs_call(price, t['mr_K'], T_rem, t.get('mr_sigma'))
+                        t['opt_pnl'] = max((exit_opt - t['mr_opt_entry']), -t['mr_opt_entry']) * 100
+                    if t.get('etf_entry'):
+                        t['etf_pnl'] = ETF_SIZE['MR'] * (spxl_p / t['etf_entry'] - 1)
                 res = ('首阳+0.3%' if 'MR首阳' in msg else '止损-2%' if 'MR跌穿' in msg else '3天强制平')
                 close_trade('MR', asof, price, res)
                 ev.append(f'MR#{n} 平仓')
             if prev_fp[6] is None and now_fp[6] is not None:
                 n = open_trade('CRASH', asof)
+                t = cur_trade('CRASH')
+                if t:
+                    t['etf_entry'] = spxl_p
+                    t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
+                    t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
                 ev.append(f'CRASH#{n} 开仓')
             elif prev_fp[6] is not None and now_fp[6] is None:
                 n = cur_trade('CRASH')['n'] if cur_trade('CRASH') else None
+                t = cur_trade('CRASH')
+                if t:
+                    cal = (asof - t['open']).days
+                    T_rem = max(21 / 365.0 - cal / 365.0, 1 / 365.0)
+                    if t.get('half_date'):
+                        rem = (ETF_SIZE['CRASH'] / 2) * (spxl_p / t['etf_entry'] - 1) if t.get('etf_entry') else 0
+                        t['etf_pnl'] = (t.get('half_etf') or 0) + rem
+                    else:
+                        if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                            close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                        if t.get('etf_entry'):
+                            t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1)
                 res = ('二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
                        else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
                 close_trade('CRASH', asof, price, res)
                 ev.append(f'CRASH#{n} 平仓')
             if not prev_fp[7] and now_fp[7]:
+                t = cur_trade('CRASH')
+                if t:
+                    cal = (asof - t['open']).days
+                    T_rem = max(21 / 365.0 - cal / 365.0, 1 / 365.0)
+                    if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                    if t.get('etf_entry'):
+                        t['half_etf'] = (ETF_SIZE['CRASH'] / 2) * (spxl_p / t['etf_entry'] - 1)
+                    t['half_date'] = asof
                 ev.append('崩盘退半')
             if prev_blocked is not None and prev_blocked != blocked:
                 ev.append('高位拦截' if blocked else '拦截解除')
@@ -394,6 +502,7 @@ def main():
                 ev.append(f'方向 {prev_dir}→{d}')
         if sig_alerts:
             ev.append('平仓提示')
+        book_spread(asof, price, prev_spread_seg, now_spread_seg)
         fp_changed = (prev_fp is not None and now_fp != prev_fp)
 
         is_first = (i == 0)
@@ -428,6 +537,7 @@ def main():
         prev_fp = now_fp
         prev_dir = d
         prev_blocked = blocked
+        prev_spread_seg = now_spread_seg
 
     stats['opens'] = sum(len(ledger[k]) for k in ledger)
     stats['closes'] = sum(1 for k in ledger for t in ledger[k] if t.get('close'))
@@ -463,9 +573,9 @@ def main():
         for fn, sub in halves:
             body = []
             body.append('═' * 70)
-            body.append(f'XSP 盘后晚报 — 3年重放  文件={fn}')
+            body.append(f'XSP 盘后晚报 — 全历史重放（{trading_days[0].date()} → {trading_days[-1].date()}）  文件={fn}')
             body.append(f'完整晚报 = 状态变化日(开仓/触发/平仓/拦截/方向变) | 缩进行 = 持有无变化')
-            body.append(f'生成: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  | 数据: yfinance 3y | 全部盘后 16:30 ET')
+            body.append(f'生成: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  | 数据: yfinance {PERIOD} | 全部盘后 16:30 ET')
             body.append('═' * 70)
             body.append('')
             start_line = len(body) + 1
@@ -504,7 +614,7 @@ def main():
     # ═══════════════════════════════ 7. master index ═══════════════════════════════
     idx = []
     idx.append('═' * 70)
-    idx.append('XSP 三策略 3年全历史重放 — 交易总表')
+    idx.append('XSP 三策略 全历史重放 — 交易总表')
     idx.append(f'重放区间: {trading_days[0].date()} → {trading_days[-1].date()}  ({len(trading_days)} 交易日)')
     idx.append(f'完整晚报 {stats["full"]} 日 | 紧凑持有行 {stats["compact"]} 日 | 跳过 {stats["skipped"]} 日')
     idx.append('查找: 定位列给出 文件:行号; 全部为盘后晚报(16:30 ET)')
@@ -532,10 +642,76 @@ def main():
     idx.append('')
     idx.append('说明: 平仓结果=触发类型; 趋势平仓=方向转空/BB中段/跟踪/硬止损; MR 3天/崩盘4天=强制平')
 
-    index_path = os.path.join(OUT_DIR, 'index.txt')
+    index_path = os.path.join(OUT_DIR, f'index_{PERIOD}.txt')
     with open(index_path, 'w') as f:
         f.write('\n'.join(idx) + '\n')
-    print(f"  wrote index.txt: {len(ledger['TREND'])} TREND, {len(ledger['MR'])} MR, {len(ledger['CRASH'])} CRASH trades")
+    print(f"  wrote index_{PERIOD}.txt: {len(ledger['TREND'])} TREND, {len(ledger['MR'])} MR, {len(ledger['CRASH'])} CRASH trades")
+
+    # ═══════════════════════════════ 7.5 backtest stats ═══════════════════════════════
+    def _trade_pnl(t):
+        return (t.get('etf_pnl') or 0) + (t.get('opt_pnl') or 0)
+
+    def _trade_cost(t):
+        if t['kind'] == 'TREND':
+            segs = t.get('segs') or []
+            if not segs:
+                return 0.0
+            return sum((seg.get('debit') or 0) for seg in segs) / len(segs) * 100
+        if t['kind'] == 'MR':
+            return (t.get('mr_opt_entry') or 0) * 100
+        return (t.get('debit') or 0) * 100
+
+    bt = []
+    bt.append('═' * 70)
+    bt.append(f'XSP 三策略 全历史重放 — 回测统计  ({trading_days[0].date()} → {trading_days[-1].date()}, {len(trading_days)} 交易日)')
+    bt.append(f'数据: yfinance {PERIOD} | 口径: app 重放逐笔 PnL, 期权 BS 重定价 r=5%, 费用未计')
+    bt.append('═' * 70)
+    bt.append('')
+    LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
+                  'MR': 'MR 裸买CALL 7DTE ($2k SPXL)',
+                  'CRASH': '崩盘 CALL价差15点21DTE+$2k SPXL'}
+    for kind in ('TREND', 'MR', 'CRASH'):
+        trs = ledger[kind]
+        closed = [t for t in trs if t.get('close')]
+        bt.append(f'── {LAYER_NAME[kind]}  共 {len(trs)} 笔 (已平 {len(closed)}) ──')
+        bt.append('  年度    笔数    总PnL     胜率    均成本   最大亏    滚仓')
+        byyr = {}
+        for t in trs:
+            byyr.setdefault(t['open'].year, []).append(t)
+        for yr in sorted(byyr):
+            ts = byyr[yr]
+            pnl = sum(_trade_pnl(t) for t in ts)
+            closes = [t for t in ts if t.get('close')]
+            w = sum(1 for t in closes if _trade_pnl(t) > 0)
+            wr = f"{w}/{len(closes)}" if closes else '-'
+            cost = sum(_trade_cost(t) for t in ts) / len(ts) if ts else 0
+            ml = min((_trade_pnl(t) for t in ts), default=0)
+            rl = sum(t.get('rolls') or 0 for t in ts)
+            bt.append(f'  {yr}    {len(ts):>3}   {pnl:>9.0f}   {wr:>5}   {cost:>7.1f}   {ml:>8.0f}   {rl:>4}')
+        pnl = sum(_trade_pnl(t) for t in trs)
+        closes = [t for t in trs if t.get('close')]
+        w = sum(1 for t in closes if _trade_pnl(t) > 0)
+        wr = f"{w}/{len(closes)}" if closes else '-'
+        cost = sum(_trade_cost(t) for t in trs) / len(trs) if trs else 0
+        ml = min((_trade_pnl(t) for t in trs), default=0)
+        rl = sum(t.get('rolls') or 0 for t in trs)
+        bt.append(f'  合计   {len(trs):>3}   {pnl:>9.0f}   {wr:>5}   {cost:>7.1f}   {ml:>8.0f}   {rl:>4}')
+        bt.append('')
+    allt = ledger['TREND'] + ledger['MR'] + ledger['CRASH']
+    tot_closed = [t for t in allt if t.get('close')]
+    tot_pnl = sum(_trade_pnl(t) for t in allt)
+    w = sum(1 for t in tot_closed if _trade_pnl(t) > 0)
+    bt.append(f'── 三层合计  共 {len(allt)} 笔 (已平 {len(tot_closed)})  总PnL ${tot_pnl:,.0f}  胜率 {w}/{len(tot_closed)} ──')
+    bt.append('')
+    bt.append('说明:')
+    bt.append('  · PnL = ETF仓位($5k/$2k/$2k SPXL) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
+    bt.append('  · 首阳退半: 崩盘期权当日全额结算, ETF 退半; 二次首阳/止损/4天 再结剩余半仓')
+    bt.append('  · MR 信号日=恐慌日(RSI<30+VIX>20), 与崩盘开仓日高度重叠; app 有 direction 闸+崩盘互斥')
+    bt.append('    +2026-07-31 强制互斥, 故 MR 低频属结构性(panic 日优先被崩盘层承接), 非回测误差')
+    bt_stats_path = os.path.join(OUT_DIR, f'backtest_stats_{PERIOD}.txt')
+    with open(bt_stats_path, 'w') as f:
+        f.write('\n'.join(bt) + '\n')
+    print(f"  wrote backtest_stats_{PERIOD}.txt")
 
     # ═══════════════════════════════ 8. report ═══════════════════════════════
     print()
