@@ -103,6 +103,29 @@ _trend_opt_entry = None
 _trend_opt_entry_date = None
 _trend_opt_sigma = None
 _trend_opt_pnl = None
+
+
+def _close_trend_spread():
+    """RULES §6.3: 趋势结束时CALL价差随ETF一起平仓（清状态，累计最终PnL）。"""
+    global _trend_opt_expiry, _trend_opt_strike, _trend_opt_strike2, _trend_opt_entry, _trend_opt_entry_date, _trend_opt_sigma, _trend_opt_pnl
+    if not _trend_opt_expiry:
+        return
+    if _trend_opt_entry is not None and _trend_opt_strike and _trend_opt_strike2:
+        ds_old = _trend_opt_expiry[2:4] + _trend_opt_expiry[5:7] + _trend_opt_expiry[8:10]
+        sym3 = f"US.XSP{ds_old}C{int(_trend_opt_strike * 1000)}"
+        sym3b = f"US.XSP{ds_old}C{int(_trend_opt_strike2 * 1000)}"
+        cm1 = _opt_mid(sym3)
+        cm2 = _opt_mid(sym3b)
+        if cm1 is not None and cm2 is not None:
+            _trend_opt_pnl = (_trend_opt_pnl or 0) + max((cm1 - cm2 - _trend_opt_entry), -_trend_opt_entry) * 100
+    _trend_opt_expiry = None
+    _trend_opt_strike = None
+    _trend_opt_strike2 = None
+    _trend_opt_entry = None
+    _trend_opt_entry_date = None
+    _trend_opt_sigma = None
+
+
 try:
     with open(POSITION_FILE) as f:
         _pd = json.load(f)
@@ -354,6 +377,10 @@ def send_market_report(report_type, force=False):
     else:
         direction, reason = None, 'BB 中段'
 
+    # ── 趋势高位过滤: BB%>80 暂缓趋势新开仓 (对齐 RULES 2026-07-31; 已有持仓不受影响) ──
+    trend_entry_blocked = (is_trend and direction == 'CALL' and dlow > 80
+                           and _active_position_date is None and _trend_opt_expiry is None)
+
     # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰趋势/崩盘) ──
     is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
     if is_mr_signal and _mr_entry_date is None and direction is None and _crash_entry_date is None:
@@ -488,7 +515,7 @@ def send_market_report(report_type, force=False):
         # (4) Trend ended
         if _prev_report_score >= 65 and score < 65:
             close_lines.append("  💡 趋势结束（上期{:.0f}→本期{:.0f}），建议平仓".format(_prev_report_score, score))
-        elif _prev_report_direction and direction and _prev_report_direction != direction:
+        elif _prev_report_direction and direction and _prev_report_direction != direction and not trend_entry_blocked:
             close_lines.append("  💡 方向已由{}转为{}，建议平仓".format(_prev_report_direction, direction))
         _prev_report_score = score
         _prev_report_direction = direction
@@ -500,7 +527,7 @@ def send_market_report(report_type, force=False):
     hs = historical_stats
     di_strength = abs(hs.get('di_diff', 0))
 
-    if not direction:
+    if not direction or trend_entry_blocked:
         signal_tier = None
         tool_recommend = None
         holding_days = 0
@@ -523,56 +550,64 @@ def send_market_report(report_type, force=False):
         }
 
     if not direction:
+        # RULES §6.3: 趋势结束（direction转空）→ CALL价差随ETF一起平仓
+        if _trend_opt_expiry:
+            _close_trend_spread()
+            close_lines.append("  💡 趋势结束（direction转空），滚动CALL价差已平仓")
         _latest_report = {
             'title': title, 'time': now_et_str,
             'icon': icon, 'score': score, 'slbl': slbl,
             'direction': None, 'reason': reason,
         }
     else:
-        # ETF reference
-        lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
-
-        # Mid leg
-        off = 5 if is_trend else 0
-        m = _s5(ema20 + off)
-
-        # Tree strikes (CALL only)
-        s = m - 10
-        l = m + 5
-
-        expiry_tree = _find_n_dte_expiry(7 + dte_adj)
-        ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
-
-        ot_type = 'C'
-
-        # Trending: 14DTE CALL价差 (initialized before expiry check)
         strike, delta = None, None
         single_label_s = single_strike_s = single_mid_s = None
+        expiry_tree = ds_tree = None
 
-        if expiry_tree:
-            if is_trend and direction == 'CALL' and dlow <= 80:
-                expiry14 = _find_n_dte_expiry(14 + dte_adj)
-                ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
-                if ds14:
-                    strike, delta = _find_delta_strike(expiry14, 0.50, 'C')
-                    if strike:
-                        k2d = strike + 15
-                        sym1 = f"US.XSP{ds14}C{int(strike * 1000)}"
-                        sym2d = f"US.XSP{ds14}C{int(k2d * 1000)}"
-                        mid1 = _opt_mid(sym1)
-                        mid2 = _opt_mid(sym2d)
-                        debit_d = (mid1 - mid2) if (mid1 is not None and mid2 is not None) else None
-                        single_label_s = "14DTE CALL价差"
-                        single_strike_s = f"{strike}C / {k2d}C (Δ {delta:+.3f})"
-                        single_mid_s = f"净借 ${debit_d:.2f}" if debit_d is not None else "--"
-                        lines.append(f"═══ {single_label_s} ═══")
-                        p1 = f"${mid1:.2f}" if mid1 is not None else "--"
-                        p2 = f"${mid2:.2f}" if mid2 is not None else "--"
-                        lines.append(f"{strike}C {p1} | {k2d}C {p2} | {single_mid_s}")
-                elif is_trend and direction == 'CALL' and dlow > 80:
-                    lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
+        if trend_entry_blocked:
+            lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓趋势开仓（不追高，等待回落）")
         else:
-            lines.append("⚠️ 无可用期权数据")
+            # ETF reference
+            lines.append("★ 做多 ETF: SPYM(1x) / SSO(2x) / SPXL(3x)")
+
+            # Mid leg
+            off = 5 if is_trend else 0
+            m = _s5(ema20 + off)
+
+            # Tree strikes (CALL only)
+            s = m - 10
+            l = m + 5
+
+            expiry_tree = _find_n_dte_expiry(7 + dte_adj)
+            ds_tree = expiry_tree[2:4] + expiry_tree[5:7] + expiry_tree[8:10] if expiry_tree else None
+
+            ot_type = 'C'
+
+            # Trending: 14DTE CALL价差 (initialized before expiry check)
+            if expiry_tree:
+                if is_trend and direction == 'CALL' and dlow <= 80:
+                    expiry14 = _find_n_dte_expiry(14 + dte_adj)
+                    ds14 = expiry14[2:4] + expiry14[5:7] + expiry14[8:10] if expiry14 else None
+                    if ds14:
+                        strike, delta = _find_delta_strike(expiry14, 0.50, 'C')
+                        if strike:
+                            k2d = strike + 15
+                            sym1 = f"US.XSP{ds14}C{int(strike * 1000)}"
+                            sym2d = f"US.XSP{ds14}C{int(k2d * 1000)}"
+                            mid1 = _opt_mid(sym1)
+                            mid2 = _opt_mid(sym2d)
+                            debit_d = (mid1 - mid2) if (mid1 is not None and mid2 is not None) else None
+                            single_label_s = "14DTE CALL价差"
+                            single_strike_s = f"{strike}C / {k2d}C (Δ {delta:+.3f})"
+                            single_mid_s = f"净借 ${debit_d:.2f}" if debit_d is not None else "--"
+                            lines.append(f"═══ {single_label_s} ═══")
+                            p1 = f"${mid1:.2f}" if mid1 is not None else "--"
+                            p2 = f"${mid2:.2f}" if mid2 is not None else "--"
+                            lines.append(f"{strike}C {p1} | {k2d}C {p2} | {single_mid_s}")
+                    elif is_trend and direction == 'CALL' and dlow > 80:
+                        lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
+            else:
+                lines.append("⚠️ 无可用期权数据")
 
         # 更新前端展示
         _latest_report = {
@@ -617,7 +652,7 @@ def send_market_report(report_type, force=False):
                         except Exception as e:
                             print(f"⚠️ Watchlist save failed: {e}")
                         socketio.emit('sync_watchlist', user_watchlist)
-            elif _trend_opt_expiry is None and ds_trend and dlow > 80:
+            elif _trend_opt_expiry is None and ds_trend and dlow > 80 and not trend_entry_blocked:
                 lines.append(f"⚠️ BB%>80（dlow {dlow:.0f}%）高位，暂缓新开趋势CALL价差")
             elif _trend_opt_expiry:
                 # 检查到期日: DTE≤2 → 滚至下一期14DTE
@@ -678,22 +713,10 @@ def send_market_report(report_type, force=False):
                 _latest_report['trend_opt_pnl'] = cur_pnl
                 _latest_report['trend_opt_dte'] = dte
         else:
-            # 无趋势方向: 关闭滚动价差
+            # RULES §6.3: 趋势信号消失（score<50 或方向非趋势）→ CALL价差随ETF一起平仓
             if _trend_opt_expiry:
-                # 计算最终PnL
-                if _trend_opt_entry is not None and _trend_opt_strike and _trend_opt_strike2:
-                    sym3 = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike * 1000)}"
-                    sym3b = f"US.XSP{_trend_opt_expiry[2:4]+_trend_opt_expiry[5:7]+_trend_opt_expiry[8:10]}C{int(_trend_opt_strike2 * 1000)}"
-                    cm1 = _opt_mid(sym3)
-                    cm2 = _opt_mid(sym3b)
-                    if cm1 is not None and cm2 is not None:
-                        _trend_opt_pnl = (_trend_opt_pnl or 0) + max((cm1 - cm2 - _trend_opt_entry), -_trend_opt_entry) * 100
-                _trend_opt_expiry = None
-                _trend_opt_strike = None
-                _trend_opt_strike2 = None
-                _trend_opt_entry = None
-                _trend_opt_entry_date = None
-                _trend_opt_sigma = None
+                _close_trend_spread()
+                close_lines.append("  💡 趋势信号消失，滚动CALL价差已平仓")
 
         # 统一跟踪（XSP基准，对齐回测）
         if tool_recommend:
@@ -777,6 +800,17 @@ def send_market_report(report_type, force=False):
                     etf_now2 = f" | SPXL现价 ${etf_price:.2f} ≤ 止损 ${etf_entry_stop:.2f}" if (etf_price and etf_entry_stop) else ""
                     close_lines.append(f"  🛑 XSP入场未涨超0.5%，现价 ${price:.2f} ≤ 入场硬止损 ${entry_trail_stop:.2f} (XSP跌2%){etf_now2}，建议平仓")
 
+                # t+30 收盘强制平仓 (RULES §7.1): 持有满30个交易日 → ETF+CALL价差同平
+                if _active_position_date:
+                    t30 = len(pd.bdate_range(_active_position_date, datetime.now(ET_TZ).date())) - 1
+                    if t30 >= 30:
+                        close_lines.append(f"  💸 ETF已持{t30}交易日 (入场XSP ${_entry_price:.2f}→现价 ${price:.2f}), t+30收盘强制平仓 (CALL价差同出)")
+                        _close_trend_spread()
+                        _active_position_date = None
+                        _entry_price = None
+                        _peak_price = None
+                        _etf_entry_price = None
+                        _etf_peak_price = None
 
     # ── Mean Reversion 裸买CALL 展示 ──
     if _mr_entry_date:

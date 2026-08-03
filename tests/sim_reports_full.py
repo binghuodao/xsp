@@ -1,0 +1,556 @@
+"""3-year full-history replay of the app's own signal engine -> real daily reports.
+
+For EVERY trading day over the last 3 years we rebuild app state (indicators +
+BS option chain + mock evening clock) and call app.send_market_report('evening'),
+so the app's position state machine runs continuously exactly like production.
+
+Output — batched into tests/sim_reports_full/ for easy lookup:
+  index.txt            master index: per-strategy trade table (open/close/result/file:line)
+  sim_rpt_YYYY.txt     full "state changed" reports per year (split to H1/H2 if large)
+  Compact hold lines:  unchanged hold days are 1 line (date · D+n · #trade · peak · price · stop)
+
+"State unchanged" = position fingerprint identical to yesterday AND no significant
+close/trigger event. Those days emit only the compact line (or nothing if no position).
+
+Usage:  python3 tests/sim_reports_full.py        (writes tests/sim_reports_full/*)
+        python3 tests/sim_reports_full.py --no-net   (skip downloads; reuse cached csv)
+"""
+import sys, os, tempfile, datetime, json, argparse
+from datetime import date, timedelta
+from unittest.mock import MagicMock
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))
+sys.path.insert(0, _SCRIPT_DIR)
+
+# fake moomoo before importing app
+class _FakeMoomoo:
+    class OpenQuoteContext:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a, **kw): pass
+    class SubType:
+        ORDER_BOOK = 1
+    RET_OK = 0
+sys.modules['moomoo'] = _FakeMoomoo()
+
+import pandas as pd
+import pandas_ta as ta
+import yfinance as yf
+import app
+import pricing
+
+OUT_DIR = os.path.join(_SCRIPT_DIR, 'sim_reports_full')
+os.makedirs(OUT_DIR, exist_ok=True)
+SPLIT_LINES = 3000          # year file bigger than this -> split H1/H2
+WARMUP_DAYS = 60            # skip indicator warmup days
+PERIOD = '3y'
+
+# ═══════════════════════════════ 1. data ═══════════════════════════════
+def _cols(df):
+    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+    if getattr(df.index, 'tz', None) is not None:
+        df.index = df.index.tz_localize(None)
+    return df
+
+def _load(cache, ticker, period):
+    csv = os.path.join(OUT_DIR, f'_{ticker}_{period}.csv')
+    if cache and os.path.exists(csv):
+        df = pd.read_csv(csv, index_col=0, parse_dates=True)
+    else:
+        df = _cols(yf.Ticker(ticker).history(period=period)).sort_index()
+        df.to_csv(csv)
+    df = _cols(df).sort_index()
+    df.drop_duplicates(inplace=True)
+    return df
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
+args = ap.parse_args()
+
+print("Loading real history (3y)...")
+xsp = _load(not args.no_net, '^XSP', PERIOD)
+vix = _load(not args.no_net, '^VIX', PERIOD)
+spy = _load(not args.no_net, 'SPY', PERIOD)
+spxl = _load(not args.no_net, 'SPXL', PERIOD)
+skew = _load(not args.no_net, '^SKEW', PERIOD)
+
+adx_df = ta.adx(spy['High'], spy['Low'], spy['Close'], length=14)
+bb_df = ta.bbands(spy['Close'], length=20, std=2)
+rsi_s = ta.rsi(spy['Close'], length=14)
+sma20_s = spy['Close'].rolling(20).mean()
+avg_vol_s = spy['Volume'].rolling(20).mean()
+ema20p_s = spy['Close'].ewm(span=20, adjust=False).mean()
+
+W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
+T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
+     'bbw': [45, 30, 18, 10, 0], 'dev': [3.0, 1.5, 0.8, 0.3, 0],
+     'vr': [2.0, 1.3, .8, .5, 0]}
+
+def _st(v, th):
+    for t, s in zip(th, [100, 75, 50, 25, 0]):
+        if v >= t:
+            return s
+    return 0
+
+def build_snapshot(asof):
+    """Rebuild app.historical_stats / price / spxl / prev_close as of `asof` (real data)."""
+    x_i = xsp[xsp.index <= pd.Timestamp(asof)]
+    v_i = vix[vix.index <= pd.Timestamp(asof)]
+    s_i = spy[spy.index <= pd.Timestamp(asof)]
+    sk_i = skew[skew.index <= pd.Timestamp(asof)]
+    hs = dict(app.historical_stats)
+    cv = float(v_i['Close'].iloc[-1])
+    hs['vix'] = cv
+    hs['vix_rank'] = float((cv - v_i['Close'].min()) / (v_i['Close'].max() - v_i['Close'].min())) * 100
+    hs['vix_percentile'] = float((v_i['Close'] < cv).mean()) * 100
+    if len(sk_i):
+        hs['skew_index'] = float(sk_i['Close'].iloc[-1])
+    closes = x_i['Close']; highs = x_i['High']; lows = x_i['Low']
+    tr = pd.concat([highs - lows, (highs - closes.shift(1)).abs(), (lows - closes.shift(1)).abs()], axis=1).max(axis=1)
+    hs['atr_14'] = float(tr.iloc[-14:].mean())
+    hs['ema_20'] = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+    if len(closes) >= 50:
+        hs['sma50'] = float(closes.rolling(50).mean().iloc[-1])
+        s50 = closes.rolling(50).mean()
+        hs['sma50_slope'] = float(s50.iloc[-1] - s50.iloc[-6]) if len(s50.dropna()) >= 6 else 0
+    hs['sma200'] = float(closes.rolling(200).mean().iloc[-1]) if len(closes) >= 200 else 0.0
+    a_i = adx_df[adx_df.index <= pd.Timestamp(asof)]
+    b_i = bb_df[bb_df.index <= pd.Timestamp(asof)]
+    hs['adx'] = float(a_i['ADX_14'].iloc[-1])
+    dmp = float(a_i['DMP_14'].iloc[-1]) if 'DMP_14' in a_i.columns else 0.0
+    dmn = float(a_i['DMN_14'].iloc[-1]) if 'DMN_14' in a_i.columns else 0.0
+    hs['di_diff'] = round((dmp - dmn) / 100, 3)
+    prev_a = adx_df[adx_df.index < pd.Timestamp(asof)]
+    if len(prev_a):
+        hs['di_diff_prev'] = round((float(prev_a['DMP_14'].iloc[-1]) - float(prev_a['DMN_14'].iloc[-1])) / 100, 3)
+    scl = s_i['Close']
+    hs['er'] = float(abs(scl.iloc[-1] - scl.iloc[-11]) / scl.diff().abs().tail(10).sum())
+    up, mid, lo = b_i.iloc[:, 2].iloc[-1], b_i.iloc[:, 1].iloc[-1], b_i.iloc[:, 0].iloc[-1]
+    hs['bbw'] = float((up - lo) / mid * 100)
+    hs['support'] = float(lo)
+    hs['resistance'] = float(up)
+    sm_i = sma20_s[sma20_s.index <= pd.Timestamp(asof)]
+    hs['dev'] = float((scl.iloc[-1] - sm_i.iloc[-1]) / sm_i.iloc[-1] * 100)
+    av_i = avg_vol_s[avg_vol_s.index <= pd.Timestamp(asof)]
+    hs['vr'] = float(s_i['Volume'].iloc[-1] / av_i.iloc[-1])
+    r_i = rsi_s[rsi_s.index <= pd.Timestamp(asof)]
+    hs['rsi_14'] = float(r_i.iloc[-1])
+    ep_i = ema20p_s[ema20p_s.index <= pd.Timestamp(asof)]
+    hs['price_ema20_pct'] = float((scl.iloc[-1] / ep_i.iloc[-1] - 1) * 100)
+    hs['last_updated'] = 0
+    app.historical_stats = hs
+    app.latest_data['index']['price'] = float(x_i['Close'].iloc[-1])
+    p_prev = xsp[xsp.index < pd.Timestamp(asof)]
+    app._get_xsp_prev_close = lambda: float(p_prev['Close'].iloc[-1])
+    sp = spxl[spxl.index <= pd.Timestamp(asof)]
+    spxl_price = float(sp['Close'].iloc[-1])
+    return float(x_i['Close'].iloc[-1]), spxl_price, float(cv)
+
+def make_chain(price, sigma, asof):
+    """BS-synthesized option chain: expiries +7/+14/+21 days, dynamic strike band."""
+    opts = {}
+    lo = int(price * 0.92 // 5) * 5 - 5
+    hi = int(price * 1.10 // 5) * 5 + 10
+    for n in (7, 14, 21):
+        exp = asof + timedelta(days=n)
+        exp_str = exp.strftime('%Y-%m-%d')
+        ds = exp.strftime('%y%m%d')
+        T = n / 365.0
+        for strike in range(lo, hi + 1, 5):
+            for ot in ('C', 'P'):
+                bs = pricing.black_scholes(price, strike, T, 0.05, sigma, ot)
+                eps = 0.5
+                d = (pricing.black_scholes(price + eps, strike, T, 0.05, sigma, ot)
+                     - pricing.black_scholes(price - eps, strike, T, 0.05, sigma, ot)) / (2 * eps)
+                sym = f"US.XSP{ds}{ot}{int(strike * 1000)}"
+                opts[sym] = {'symbol': sym, 'strike': strike, 'expiry': exp_str,
+                             'opt_type': ot, 'bid': round(bs * 0.98, 2), 'ask': round(bs * 1.02, 2),
+                             'mid': round(bs, 2), 'delta': round(d, 4), 'gamma': 0.01,
+                             'theta': -0.02, 'vega': 0.05, 'iv': sigma, 'is_watched': False,
+                             'open_interest': 1000}
+    app.latest_data['options'] = opts
+
+# ═══════════════════════════════ 2. harness ═══════════════════════════════
+def _clock_for(asof):
+    mn = type('MN', (), {})()
+    mn.syd_dt = datetime.datetime.combine(asof + timedelta(days=1), datetime.time(6, 30, 0))
+    mn.et_dt = datetime.datetime.combine(asof, datetime.time(16, 30, 0))
+    real_dt = app.datetime
+    class _FakeDatetime:
+        def __getattr__(self, name):
+            if name == 'now':
+                def _now(tz=None):
+                    if tz is app.ET_TZ:
+                        return mn.et_dt.replace(tzinfo=app.ET_TZ)
+                    if tz is app.S_TZ:
+                        return mn.syd_dt.replace(tzinfo=app.S_TZ)
+                    return datetime.datetime.now(tz)
+                return _now
+            return getattr(real_dt, name)
+    return _FakeDatetime()
+
+app.socketio = MagicMock()
+_captured = {}
+def _capture(m):
+    _captured['msg'] = m
+app.send_telegram = _capture
+
+def init_state():
+    for a in ('_active_position_date', '_entry_price', '_peak_price', '_etf_entry_price', '_etf_peak_price',
+              '_prev_report_direction', '_mr_entry_date', '_mr_entry_price', '_mr_etf_entry_price',
+              '_crash_entry_date', '_crash_entry_price', '_crash_k1', '_crash_k2', '_crash_debit',
+              '_crash_sigma', '_crash_etf_entry', '_trend_opt_expiry', '_trend_opt_strike',
+              '_trend_opt_strike2', '_trend_opt_entry', '_trend_opt_entry_date', '_trend_opt_sigma'):
+        setattr(app, a, None)
+    app._crash_etf_scaled = False
+    app._trend_opt_pnl = 0.0
+    app._latest_report = {}
+    app._morning_report_date = ''
+    app._evening_report_date = ''
+    app._prev_report_score = 0
+    app.user_watchlist = []
+    app.POSITION_FILE = tempfile.mktemp(suffix='.json')
+    app.WATCHLIST_FILE = tempfile.mktemp(suffix='.json')
+    app._etf_price_cache = {}
+    app.historical_stats = {}
+
+def state_fp():
+    return (app._prev_report_direction,
+            app._active_position_date,
+            app._trend_opt_expiry, app._trend_opt_strike, app._trend_opt_strike2,
+            app._mr_entry_date,
+            app._crash_entry_date,
+            app._crash_etf_scaled)
+
+def infer_blocked(msg, r):
+    return (r.get('direction') == 'CALL' and '暂缓' in msg and '★ 做多 ETF' not in msg)
+
+# ═══════════════════════════════ 3. trade ledger ═══════════════════════════════
+ledger = {'TREND': [], 'MR': [], 'CRASH': []}
+_open_ref = {'TREND': None, 'MR': None, 'CRASH': None}  # n of currently-open trade
+
+def open_trade(kind, asof):
+    n = len(ledger[kind]) + 1
+    ledger[kind].append({'n': n, 'kind': kind, 'open': asof, 'open_p': None,
+                         'close': None, 'close_p': None, 'result': None,
+                         'file': None, 'line': None, 'rolls': 0})
+    _open_ref[kind] = n
+    return n
+
+def cur_trade(kind):
+    if _open_ref[kind] is None:
+        return None
+    for t in ledger[kind]:
+        if t['n'] == _open_ref[kind]:
+            return t
+    return None
+
+def close_trade(kind, asof, price, result):
+    t = cur_trade(kind)
+    if t:
+        t['close'] = asof
+        t['close_p'] = price
+        t['result'] = result
+        t['hold_days'] = max(len(pd.bdate_range(t['open'], asof)) - 1, 0)
+    _open_ref[kind] = None
+
+def trend_close_result(alerts):
+    s = ' | '.join(alerts)
+    if 't+30' in s: return 't+30强制平仓'
+    if '滚动CALL价差已平仓' in s: return '趋势结束平价差'
+    if '跟踪' in s: return '跟踪-3%触发'
+    if '入场硬止损' in s: return '入场硬止损-2%'
+    if '方向已由' in s: return '方向转变'
+    if 'BB中段' in s: return 'BB中段/综合分不足'
+    return '方向转空'
+
+# ═══════════════════════════════ 4. assertions ═══════════════════════════════
+def check_day(asof, msg, r, price, blocked, failures):
+    f = []
+    d = r.get('direction')
+    # direction line consistency
+    if d == 'CALL' and '→ 方向: CALL' not in msg:
+        f.append('方向行缺失(CALL)')
+    if d is None and 'BB中段' not in msg:
+        f.append('方向行缺失(None)')
+    # zero tree rows (tree removed)
+    if '树' in msg:
+        f.append('报告含树行')
+    # blocked behavior
+    if blocked:
+        if '★ 做多 ETF' in msg: f.append('blocked日现ETF线')
+        if '🛑' in msg: f.append('blocked日现止损线')
+        if '暂缓' not in msg: f.append('blocked日缺暂缓提示')
+        if d != 'CALL': f.append('blocked日方向异常')
+        if app._active_position_date is not None: f.append('blocked日误开仓')
+    # trend stop formula
+    if r.get('stop_loss') and app._entry_price:
+        e = app._entry_price
+        is_nearbb = bool(r.get('reason')) and '贴BB' in r.get('reason')
+        pct = 0.01 if is_nearbb else 0.05
+        exp_fixed = e * (1 - pct)
+        if f"固定 ${exp_fixed:.2f} (-{pct*100:.0f}%" not in msg:
+            f.append(f'固定止损不符(期望{e*(1-pct):.2f})')
+    # MR formula
+    if r.get('mr_entry_price'):
+        exp_stop = r['mr_entry_price'] * 0.98
+        exp_green = r['mr_entry_price'] * 1.003
+        if f"止损 ${exp_stop:.2f} (-2%)" not in msg: f.append('MR止损值不符')
+        if f"首阳 ${exp_green:.2f} (+0.3%)" not in msg: f.append('MR首阳值不符')
+        if r.get('mr_days') is not None and r['mr_days'] >= 3:
+            if not any(x in msg for x in ('MR已持3天', 'MR首阳', 'MR跌穿')):
+                f.append('MR到期未平仓')
+    # crash formula
+    if r.get('crash_entry_price'):
+        exp_stop = r['crash_entry_price'] * 0.975
+        exp_green = r['crash_entry_price'] * 1.0
+        if f"止损 ${exp_stop:.2f} (-2.5%)" not in msg: f.append('崩盘止损值不符')
+        if f"首阳 ${exp_green:.2f}" not in msg: f.append('崩盘首阳值不符')
+        if r.get('crash_days') is not None and r['crash_days'] >= 4:
+            if not any(x in msg for x in ('已持4天', '跌穿止损', '首阳')):
+                f.append('崩盘到期未平仓')
+    for x in f:
+        failures.append(f"[{asof}] {x}")
+
+
+# ═══════════════════════════════ 5. replay ═══════════════════════════════
+def main():
+    init_state()
+    trading_days = list(xsp.index)
+    if len(trading_days) <= WARMUP_DAYS:
+        sys.exit('not enough history')
+    trading_days = trading_days[WARMUP_DAYS:]
+    print(f"Replaying {len(trading_days)} trading days  {trading_days[0].date()} → {trading_days[-1].date()}")
+
+    records = []          # one entry per emitted day
+    stats = {'full': 0, 'compact': 0, 'skipped': 0, 'opens': 0, 'closes': 0}
+    failures = []
+
+    prev_fp = None
+    prev_dir = None
+    prev_blocked = None
+
+    for i, day in enumerate(trading_days):
+        asof = day.date()
+        price, spxl_p, vix_p = build_snapshot(asof)
+        make_chain(price, vix_p / 100.0, asof)
+        app.latest_data['index']['price'] = price
+        app._etf_price_cache['SPXL'] = spxl_p
+        app.datetime = _clock_for(asof)
+        _captured.clear()
+        app.send_market_report('evening', force=False)
+        msg = _captured.get('msg', '')
+        if not msg:
+            stats['skipped'] += 1
+            continue
+        r = app._latest_report
+        now_fp = state_fp()
+        d = r.get('direction')
+        blocked = infer_blocked(msg, r)
+        alerts = r.get('close_alerts', []) or []
+        sig_alerts = [l for l in alerts if 'BB中段' not in l]   # ignore daily background hint
+
+        ev = []
+        # trend open/close
+        if prev_fp is not None:
+            if prev_fp[1] is None and now_fp[1] is not None:
+                n = open_trade('TREND', asof)
+                ev.append(f'TREND#{n} 开仓')
+            elif prev_fp[1] is not None and now_fp[1] is None:
+                n = cur_trade('TREND')['n'] if cur_trade('TREND') else None
+                close_trade('TREND', asof, price, trend_close_result(alerts))
+                ev.append(f'TREND#{n} 平仓')
+            if prev_fp[2] is None and now_fp[2] is not None:
+                ev.append('价差开')
+            elif prev_fp[2] is not None and now_fp[2] is None:
+                ev.append('价差平')
+            if '滚仓' in msg:
+                t = cur_trade('TREND')
+                if t: t['rolls'] += 1
+                ev.append('价差滚仓')
+            if prev_fp[5] is None and now_fp[5] is not None:
+                n = open_trade('MR', asof)
+                ev.append(f'MR#{n} 开仓')
+            elif prev_fp[5] is not None and now_fp[5] is None:
+                n = cur_trade('MR')['n'] if cur_trade('MR') else None
+                res = ('首阳+0.3%' if 'MR首阳' in msg else '止损-2%' if 'MR跌穿' in msg else '3天强制平')
+                close_trade('MR', asof, price, res)
+                ev.append(f'MR#{n} 平仓')
+            if prev_fp[6] is None and now_fp[6] is not None:
+                n = open_trade('CRASH', asof)
+                ev.append(f'CRASH#{n} 开仓')
+            elif prev_fp[6] is not None and now_fp[6] is None:
+                n = cur_trade('CRASH')['n'] if cur_trade('CRASH') else None
+                res = ('二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
+                       else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
+                close_trade('CRASH', asof, price, res)
+                ev.append(f'CRASH#{n} 平仓')
+            if not prev_fp[7] and now_fp[7]:
+                ev.append('崩盘退半')
+            if prev_blocked is not None and prev_blocked != blocked:
+                ev.append('高位拦截' if blocked else '拦截解除')
+            if prev_dir is not None and d != prev_dir:
+                ev.append(f'方向 {prev_dir}→{d}')
+        if sig_alerts:
+            ev.append('平仓提示')
+        fp_changed = (prev_fp is not None and now_fp != prev_fp)
+
+        is_first = (i == 0)
+        if ev or fp_changed or is_first:
+            check_day(asof, msg, r, price, blocked, failures)
+            records.append({'asof': asof, 'full': True,
+                            'tag': ' | '.join(ev) if ev else ('SEED' if is_first else '状态变化'),
+                            'msg': msg, 'dir': d, 'score': r.get('score'), 'blocked': blocked})
+            stats['full'] += 1
+        else:
+            holds = [(k, cur_trade(k)) for k in ('TREND', 'MR', 'CRASH') if cur_trade(k)]
+            if holds:
+                line_parts = []
+                for k, t in holds:
+                    if k == 'TREND' and r.get('stop_loss'):
+                        sl = r['stop_loss'][0].split('|')[0].strip().replace('止损(基准) ', '')
+                        dd = max(len(pd.bdate_range(t['open'], asof)) - 1, 0)
+                        line_parts.append(f"TREND#{t['n']} D+{dd} peak {app._peak_price:.2f} 现价 {price:.2f} 止损 {sl}")
+                    elif k == 'MR' and r.get('mr_entry_price'):
+                        dd = r.get('mr_days', 0)
+                        line_parts.append(f"MR#{t['n']} D+{dd} 现价 {price:.2f} 止损 {r['mr_stop']:.2f} 首阳 {r['mr_green']:.2f}")
+                    elif k == 'CRASH' and r.get('crash_entry_price'):
+                        dd = r.get('crash_days', 0)
+                        line_parts.append(f"CRASH#{t['n']} D+{dd} 现价 {price:.2f} 止损 {r['crash_stop']:.2f} 首阳 {r['crash_green']:.2f}")
+                if line_parts:
+                    records.append({'asof': asof, 'full': False, 'tag': '', 'msg': ' | '.join(line_parts),
+                                    'dir': d, 'score': r.get('score'), 'blocked': blocked})
+                    stats['compact'] += 1
+            else:
+                stats['skipped'] += 1
+
+        prev_fp = now_fp
+        prev_dir = d
+        prev_blocked = blocked
+
+    stats['opens'] = sum(len(ledger[k]) for k in ledger)
+    stats['closes'] = sum(1 for k in ledger for t in ledger[k] if t.get('close'))
+
+    # ═══════════════════════════════ 6. render batch files ═══════════════════════════════
+    def _rec_lines(rec):
+        if rec['full']:
+            d = rec['dir']; sc = rec.get('score')
+            tag = rec['tag']
+            head = f"[{rec['asof']} {rec['asof'].strftime('%a')}]  {tag}  方向{str(d)} 综合{sc}"
+            sep = '─' * 70
+            return [head, sep] + rec['msg'].split('\n')
+        return [f"    {rec['asof']}  {rec['msg']}"]
+
+    # group records by year
+    by_year = {}
+    for rec in records:
+        by_year.setdefault(rec['asof'].year, []).append(rec)
+
+    file_specs = []   # (file_path, [lines], [ (asof, rec_index_global) ])
+    rec_file = {}     # id(rec) -> (filename, start_line)
+    for yr, rcs in sorted(by_year.items()):
+        lines_all = []
+        for rc in rcs:
+            lines_all.extend(_rec_lines(rc))
+        split = len(lines_all) > SPLIT_LINES
+        if split:
+            h1 = [rc for rc in rcs if rc['asof'].month <= 6]
+            h2 = [rc for rc in rcs if rc['asof'].month > 6]
+            halves = [(f'sim_rpt_{yr}_H1.txt', h1), (f'sim_rpt_{yr}_H2.txt', h2)]
+        else:
+            halves = [(f'sim_rpt_{yr}.txt', rcs)]
+        for fn, sub in halves:
+            body = []
+            body.append('═' * 70)
+            body.append(f'XSP 盘后晚报 — 3年重放  文件={fn}')
+            body.append(f'完整晚报 = 状态变化日(开仓/触发/平仓/拦截/方向变) | 缩进行 = 持有无变化')
+            body.append(f'生成: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  | 数据: yfinance 3y | 全部盘后 16:30 ET')
+            body.append('═' * 70)
+            body.append('')
+            start_line = len(body) + 1
+            for rc in sub:
+                rec_file[id(rc)] = (fn, start_line)
+                ls = _rec_lines(rc)
+                body.extend(ls)
+                start_line += len(ls)
+            with open(os.path.join(OUT_DIR, fn), 'w') as f:
+                f.write('\n'.join(body) + '\n')
+            print(f"  wrote {fn}: {len(sub)} entries, {len(body)} lines")
+
+    # fill trade file/line refs + open prices from the actual report
+    def _price_from_rec(rec, asof):
+        # open price = the report's 现价 line (2nd block line) fallback: parse msg header
+        for line in rec['msg'].split('\n'):
+            if '现价 $' in line:
+                try:
+                    return float(line.split('现价 $')[1].split()[0])
+                except Exception:
+                    pass
+        return None
+
+    for t in ledger['TREND'] + ledger['MR'] + ledger['CRASH']:
+        for rc in records:
+            if rc['asof'] == t['open']:
+                t['open_p'] = _price_from_rec(rc, t['open']) or t['open_p']
+            if rc['asof'] == t['close']:
+                t['close_p'] = _price_from_rec(rc, t['close']) or t['close_p']
+        for rc in records:
+            if rc['asof'] == t['open'] and id(rc) in rec_file:
+                t['file'], t['line'] = rec_file[id(rc)]
+            if rc['asof'] == t['close'] and id(rc) in rec_file:
+                t['file_close'], t['line_close'] = rec_file[id(rc)]
+
+    # ═══════════════════════════════ 7. master index ═══════════════════════════════
+    idx = []
+    idx.append('═' * 70)
+    idx.append('XSP 三策略 3年全历史重放 — 交易总表')
+    idx.append(f'重放区间: {trading_days[0].date()} → {trading_days[-1].date()}  ({len(trading_days)} 交易日)')
+    idx.append(f'完整晚报 {stats["full"]} 日 | 紧凑持有行 {stats["compact"]} 日 | 跳过 {stats["skipped"]} 日')
+    idx.append('查找: 定位列给出 文件:行号; 全部为盘后晚报(16:30 ET)')
+    idx.append('═' * 70)
+    idx.append('')
+    idx.append(f'── TREND 趋势 ETF($5k SPXL)+14DTE CALL价差  共 {len(ledger["TREND"])} 笔 ──')
+    idx.append('  #  开仓日        入场价    平仓日        出场价    天数  滚仓  结果            定位')
+    for t in ledger['TREND']:
+        fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
+        cl = f"{t.get('file_close')}:{t.get('line_close')}" if t.get('file_close') else '-'
+        idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {t.get('rolls',0):>3}  {str(t.get('result','')):<14} {fl}")
+        idx.append(f"       平仓定位: {cl}")
+    idx.append('')
+    idx.append(f'── MR 裸买CALL 7DTE (RSI<30+VIX>20)  共 {len(ledger["MR"])} 笔 ──')
+    idx.append('  #  开仓日        入场价    平仓日        出场价    天数  结果            定位')
+    for t in ledger['MR']:
+        fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
+        idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {str(t.get('result','')):<14} {fl}")
+    idx.append('')
+    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+$2k SPXL  共 {len(ledger["CRASH"])} 笔 ──')
+    idx.append('  #  开仓日        入场价    平仓日        出场价    天数  结果            定位')
+    for t in ledger['CRASH']:
+        fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
+        idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {str(t.get('result','')):<14} {fl}")
+    idx.append('')
+    idx.append('说明: 平仓结果=触发类型; 趋势平仓=方向转空/BB中段/跟踪/硬止损; MR 3天/崩盘4天=强制平')
+
+    index_path = os.path.join(OUT_DIR, 'index.txt')
+    with open(index_path, 'w') as f:
+        f.write('\n'.join(idx) + '\n')
+    print(f"  wrote index.txt: {len(ledger['TREND'])} TREND, {len(ledger['MR'])} MR, {len(ledger['CRASH'])} CRASH trades")
+
+    # ═══════════════════════════════ 8. report ═══════════════════════════════
+    print()
+    print('═' * 70)
+    print(f"重放完成: 完整晚报 {stats['full']} | 紧凑 {stats['compact']} | 跳过 {stats['skipped']}")
+    print(f"开仓 {stats['opens']} | 平仓 {stats['closes']}")
+    if failures:
+        print(f"❌ 断言失败 {len(failures)} 条:")
+        for x in failures[:60]:
+            print("   " + x)
+        if len(failures) > 60:
+            print(f"   ... 共 {len(failures)} 条")
+        sys.exit(1)
+    print("✅ 全部断言通过")
+
+
+if __name__ == '__main__':
+    main()
