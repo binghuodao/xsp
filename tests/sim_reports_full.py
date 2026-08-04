@@ -78,11 +78,11 @@ PERIOD = args.period
 REPLAY_START = pd.Timestamp('2020-08-01')   # canonical backtest floor; ^XSP data caps at 2021-03-01, so window = data-available
 
 print(f"Loading real history ({PERIOD})...")
-xsp = _load(not args.no_net, '^XSP', PERIOD)
-vix = _load(not args.no_net, '^VIX', PERIOD)
-spy = _load(not args.no_net, 'SPY', PERIOD)
-spxl = _load(not args.no_net, 'SPXL', PERIOD)
-skew = _load(not args.no_net, '^SKEW', PERIOD)
+xsp = _load(args.no_net, '^XSP', PERIOD)
+vix = _load(args.no_net, '^VIX', PERIOD)
+spy = _load(args.no_net, 'SPY', PERIOD)
+spxl = _load(args.no_net, 'SPXL', PERIOD)
+skew = _load(args.no_net, '^SKEW', PERIOD)
 
 adx_df = ta.adx(spy['High'], spy['Low'], spy['Close'], length=14)
 bb_df = ta.bbands(spy['Close'], length=20, std=2)
@@ -185,7 +185,7 @@ def _clock_for(asof):
     mn = type('MN', (), {})()
     mn.syd_dt = datetime.datetime.combine(asof + timedelta(days=1), datetime.time(6, 30, 0))
     mn.et_dt = datetime.datetime.combine(asof, datetime.time(16, 30, 0))
-    real_dt = app.datetime
+    real_dt = datetime.datetime
     class _FakeDatetime:
         def __getattr__(self, name):
             if name == 'now':
