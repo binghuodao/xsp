@@ -208,10 +208,12 @@ def reset_state():
     for a in ('_active_position_date', '_entry_price', '_peak_price', '_etf_entry_price', '_etf_peak_price',
               '_prev_report_direction', '_mr_entry_date', '_mr_entry_price', '_mr_etf_entry_price',
               '_crash_entry_date', '_crash_entry_price', '_crash_k1', '_crash_k2', '_crash_debit',
-              '_crash_sigma', '_crash_etf_entry', '_trend_opt_expiry', '_trend_opt_strike',
+              '_crash_sigma', '_crash_etf_entry', '_crash_half_date', '_crash_reentry_date',
+              '_trend_opt_expiry', '_trend_opt_strike',
               '_trend_opt_strike2', '_trend_opt_entry', '_trend_opt_entry_date', '_trend_opt_sigma'):
         setattr(app, a, None)
     app._crash_etf_scaled = False
+    app._crash_reentry = False
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -303,6 +305,7 @@ def _crash(p, s):
     app._crash_debit = e1 - e2
     app._crash_etf_entry = s
     app._crash_etf_scaled = False
+    app._crash_reentry = False
     return s
 scenario(CRASH_DATE, "6. 崩盘·未缩放（信号日入场）", _crash)
 
@@ -313,6 +316,7 @@ def _crash_scaled(p, s):
     app._crash_k1 = None; app._crash_k2 = None; app._crash_debit = None; app._crash_sigma = None
     app._crash_etf_entry = s
     app._crash_etf_scaled = True
+    app._crash_reentry = True
     return s
 scenario(CRASH_DATE, "7. 崩盘·已缩放（期权已平, 剩$1k SPXL续持）", _crash_scaled)
 
@@ -420,6 +424,7 @@ def _crash_state(p, s):
     app._crash_debit = e1 - e2
     app._crash_etf_entry = s
     app._crash_etf_scaled = False
+    app._crash_reentry = False
 
 def _c_stop(p, s):
     _crash_state(p, s)
@@ -439,6 +444,7 @@ def _c_green2(p, s):
     app._crash_k1 = None; app._crash_k2 = None; app._crash_debit = None; app._crash_sigma = None
     app._crash_etf_entry = s
     app._crash_etf_scaled = True
+    app._crash_reentry = False
     app.latest_data['index']['price'] = 745.00
     return s
 scenario(CRASH_DATE, "19. 崩盘·二次首阳（剩SPXL $1k平仓）", _c_green2)

@@ -29,6 +29,12 @@ def reset_globals():
     app._prev_report_direction = None
     app._last_watchlist_clean_date = None
     app._active_position_date = None
+    app._crash_entry_date = None
+    app._crash_etf_scaled = False
+    app._crash_half_date = None
+    app._crash_reentry = False
+    app._crash_reentry_date = None
+    app._crash_exit_mode = 'V4'
     app.POSITION_FILE = tempfile.mktemp(suffix='.json')
     app.user_watchlist = []
     app.latest_data = {
