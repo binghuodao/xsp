@@ -74,6 +74,10 @@ ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no d
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
 ap.add_argument('--crash-mode', default='V4', help='crash exit variant: V4 re-entry (default, production) | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
 ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $250 keep $1750); 0.25 sell $0.5k keep $1.5k, 0.5 V4 legacy sell $1k keep $1k')
+ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
+ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')
+ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-expiry (default 21)')
+ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 args = ap.parse_args()
@@ -81,6 +85,10 @@ args = ap.parse_args()
 PERIOD = args.period
 CRASH_MODE = args.crash_mode
 CRASH_HALF = args.crash_half
+STOP_PCT = args.stop_pct
+REENTRY_PCT = args.reentry_pct
+DTE = args.dte
+SPREAD_W = args.spread_w
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -226,6 +234,10 @@ def init_state():
     app._crash_reentry = False
     app._crash_exit_mode = CRASH_MODE
     app._crash_half_pct = CRASH_HALF
+    app._crash_stop_pct = STOP_PCT
+    app._crash_reentry_pct = REENTRY_PCT
+    app._crash_dte = DTE
+    app._crash_spread_w = SPREAD_W
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -372,9 +384,9 @@ def check_day(asof, msg, r, price, blocked, failures):
                 f.append('MR到期未平仓')
     # crash formula
     if r.get('crash_entry_price'):
-        exp_stop = r['crash_entry_price'] * 0.975
+        exp_stop = r['crash_entry_price'] * (1 - STOP_PCT)
         exp_green = r['crash_entry_price'] * 1.0
-        if f"止损 ${exp_stop:.2f} (-2.5%)" not in msg: f.append('崩盘止损值不符')
+        if f"止损 ${exp_stop:.2f} (-{STOP_PCT:.1%})" not in msg: f.append('崩盘止损值不符')
         if f"首阳 ${exp_green:.2f}" not in msg: f.append('崩盘首阳值不符')
         cf = r.get('crash_force_days')
         if cf is None:
@@ -487,7 +499,7 @@ def main():
                 t = cur_trade('CRASH')
                 if t:
                     cal = (asof - t['open']).days
-                    T_rem = max(21 / 365.0 - cal / 365.0, 1 / 365.0)
+                    T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
                     if t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
                         rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
@@ -506,7 +518,7 @@ def main():
                 t = cur_trade('CRASH')
                 if t:
                     cal = (asof - t['open']).days
-                    T_rem = max(21 / 365.0 - cal / 365.0, 1 / 365.0)
+                    T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
                     if t.get('k1') and t.get('k2') and t.get('debit') is not None:
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
@@ -690,7 +702,7 @@ def main():
     bt.append('═' * 70)
     bt.append(f'XSP 三策略 全历史重放 — 回测统计  ({trading_days[0].date()} → {trading_days[-1].date()}, {len(trading_days)} 交易日)')
     bt.append(f'数据: yfinance {PERIOD} | 口径: app 重放逐笔 PnL, 期权 BS 重定价 r=5%, 费用未计')
-    bt.append(f'崩盘出场模式: {CRASH_MODE} (首阳退半比例 {CRASH_HALF:.0%})')
+    bt.append(f'崩盘出场模式: {CRASH_MODE} (首阳退半 {CRASH_HALF:.0%} | 止损-{STOP_PCT:.1%} | 再进≤入场×{REENTRY_PCT:.2f} | 价差{SPREAD_W}点 {DTE}DTE)')
     bt.append('═' * 70)
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
@@ -713,7 +725,9 @@ def main():
             cost = sum(_trade_cost(t) for t in ts) / len(ts) if ts else 0
             ml = min((_trade_pnl(t) for t in ts), default=0)
             rl = sum(t.get('rolls') or 0 for t in ts)
-            bt.append(f'  {yr}    {len(ts):>3}   {pnl:>9.0f}   {wr:>5}   {cost:>7.1f}   {ml:>8.0f}   {rl:>4}')
+            opt_y = sum((t.get('opt_pnl') or 0) for t in ts)
+            etf_y = sum((t.get('etf_pnl') or 0) for t in ts)
+            bt.append(f'  {yr}    {len(ts):>3}   {pnl:>9.0f}   {wr:>5}   {cost:>7.1f}   {ml:>8.0f}   {rl:>4}   opt{opt_y:>+8.0f} etf{etf_y:>+8.0f}')
         pnl = sum(_trade_pnl(t) for t in trs)
         closes = [t for t in trs if t.get('close')]
         w = sum(1 for t in closes if _trade_pnl(t) > 0)
@@ -724,6 +738,9 @@ def main():
         hd = [t.get('hold_days', 0) for t in trs if t.get('close')]
         avh = f"{sum(hd) / len(hd):.1f}" if hd else '-'
         bt.append(f'  合计   {len(trs):>3}   {pnl:>9.0f}   {wr:>5}   {cost:>7.1f}   {ml:>8.0f}   {rl:>4}  均持{avh}d')
+        opt_pnl = sum((t.get('opt_pnl') or 0) for t in trs)
+        etf_pnl = sum((t.get('etf_pnl') or 0) for t in trs)
+        bt.append(f'  腿拆分  期权 {opt_pnl:>+9.0f} | ETF {etf_pnl:>+9.0f} | 合计 {pnl:>+9.0f}')
         bt.append('')
     allt = ledger['TREND'] + ledger['MR'] + ledger['CRASH']
     tot_closed = [t for t in allt if t.get('close')]
