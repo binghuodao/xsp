@@ -73,12 +73,14 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
 ap.add_argument('--crash-mode', default='V4', help='crash exit variant: V4 re-entry (default, production) | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
+ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $250 keep $1750); 0.25 sell $0.5k keep $1.5k, 0.5 V4 legacy sell $1k keep $1k')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 args = ap.parse_args()
 
 PERIOD = args.period
 CRASH_MODE = args.crash_mode
+CRASH_HALF = args.crash_half
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -223,6 +225,7 @@ def init_state():
     app._crash_etf_scaled = False
     app._crash_reentry = False
     app._crash_exit_mode = CRASH_MODE
+    app._crash_half_pct = CRASH_HALF
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -487,7 +490,7 @@ def main():
                     T_rem = max(21 / 365.0 - cal / 365.0, 1 / 365.0)
                     if t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
-                        rem = (ETF_SIZE['CRASH'] / 2) * (spxl_p / base - 1) if base else 0
+                        rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
                         t['etf_pnl'] = (t.get('half_etf') or 0) + rem
                     else:
                         if t.get('k1') and t.get('k2') and t.get('debit') is not None:
@@ -508,7 +511,7 @@ def main():
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
                     if t.get('etf_entry'):
-                        t['half_etf'] = (ETF_SIZE['CRASH'] / 2) * (spxl_p / t['etf_entry'] - 1)
+                        t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1)
                     t['half_date'] = asof
                 ev.append('崩盘退半')
             if not prev_fp[8] and now_fp[8]:
@@ -687,7 +690,7 @@ def main():
     bt.append('═' * 70)
     bt.append(f'XSP 三策略 全历史重放 — 回测统计  ({trading_days[0].date()} → {trading_days[-1].date()}, {len(trading_days)} 交易日)')
     bt.append(f'数据: yfinance {PERIOD} | 口径: app 重放逐笔 PnL, 期权 BS 重定价 r=5%, 费用未计')
-    bt.append(f'崩盘出场模式: {CRASH_MODE}')
+    bt.append(f'崩盘出场模式: {CRASH_MODE} (首阳退半比例 {CRASH_HALF:.0%})')
     bt.append('═' * 70)
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
@@ -730,7 +733,7 @@ def main():
     bt.append('')
     bt.append('说明:')
     bt.append('  · PnL = ETF仓位($5k/$2k/$2k SPXL) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
-    bt.append('  · 首阳退半: 崩盘期权当日全额结算, ETF 退半; 二次首阳/止损/4天 再结剩余半仓')
+    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退 {CRASH_HALF:.0%}(${2000*CRASH_HALF:.0f}); 二次首阳/止损/4天 再结剩余 ${2000*(1-CRASH_HALF):.0f}')
     bt.append('  · MR 信号日=恐慌日(RSI<30+VIX>20), 与崩盘开仓日高度重叠; app 有 direction 闸+崩盘互斥')
     bt.append('    +2026-07-31 强制互斥, 故 MR 低频属结构性(panic 日优先被崩盘层承接), 非回测误差')
     bt_stats_path = os.path.join(RESULT_DIR, f'backtest_stats_{PERIOD}.txt')
