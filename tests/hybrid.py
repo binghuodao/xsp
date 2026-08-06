@@ -403,7 +403,7 @@ def crash_bt(period='10y', vix_req=False, drop_thresh=0.005, etf_size=2000, spre
                         spxl_exit = float(spxl_c.loc[dt]) if dt in spxl_c.index else float(spxl_c.iloc[-1])
                         etf_full = etf_size * (spxl_exit / pos['etf_entry'] - 1)
                     if pos.get('stage') == 1:
-                        # 只剩ETF另一半: 在二次首阳/止损/时间出场
+                        # 只剩ETF另一半: 在首阴/止损/时间出场
                         etf_pnl = round(etf_full / 2, 2)
                         trades.append({
                             'entry_date': pos['ed'], 'exit_date': dt,

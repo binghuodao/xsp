@@ -447,7 +447,7 @@ def _c_green2(p, s):
     app._crash_reentry = False
     app.latest_data['index']['price'] = 745.00
     return s
-scenario(CRASH_DATE, "19. 崩盘·二次首阳（剩SPXL $1k平仓）", _c_green2)
+scenario(CRASH_DATE, "19. 崩盘·首阴（剩SPXL $1k平仓）", _c_green2)
 
 def _c_force4(p, s):
     _crash_state(p, s)

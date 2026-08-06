@@ -96,7 +96,7 @@ _crash_debit = None
 _crash_sigma = None
 _crash_etf_entry = None
 _crash_etf_scaled = False
-_crash_exit_mode = 'V4'          # operative rule: V4 re-entry | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
+_crash_exit_mode = 'V5'          # operative rule: V5 首阴+盈利保护 (default) | V4 首阴 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
 _crash_half_pct = 0.125          # crash ETF fraction sold at 首阳 (V8d optimal; 12.5% = sell $250 keep $1750)
 _crash_stop_pct = 0.025          # crash XSP stop line = entry*(1-pct) (default -2.5%)
 _crash_reentry_pct = 1.0         # V4 re-entry trigger: price <= entry*this
@@ -105,6 +105,7 @@ _crash_spread_w = 15             # crash CALL spread width (k2 = k1 + w)
 _crash_half_date = None          # V2: date the ETF half was scaled
 _crash_reentry = False           # V4: re-bought the $1k half after retrace
 _crash_reentry_date = None       # V4: T+4 counted from this date
+_crash_green_streak = 0          # V7: consecutive green days after 首阳退半
 _trend_opt_expiry = None
 _trend_opt_strike = None
 _trend_opt_strike2 = None
@@ -275,6 +276,7 @@ def send_market_report(report_type, force=False):
     global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price, _mr_etf_entry_price
     global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry, _crash_etf_scaled
     global _crash_exit_mode, _crash_half_date, _crash_reentry, _crash_reentry_date, _crash_half_pct, _crash_stop_pct, _crash_reentry_pct, _crash_dte, _crash_spread_w
+    global _crash_green_streak
     global _etf_entry_price, _etf_peak_price
     global _trend_opt_expiry, _trend_opt_strike, _trend_opt_strike2, _trend_opt_entry, _trend_opt_entry_date, _trend_opt_sigma, _trend_opt_pnl
     now_syd = datetime.now(S_TZ)
@@ -348,6 +350,7 @@ def send_market_report(report_type, force=False):
         _crash_half_date = None
         _crash_reentry = False
         _crash_reentry_date = None
+        _crash_green_streak = 0
         _crash_entry_price = price
         _crash_k1 = _s5(price)
         _crash_k2 = _crash_k1 + _crash_spread_w
@@ -932,53 +935,89 @@ def send_market_report(report_type, force=False):
             _crash_k2 = None; _crash_debit = None; _crash_sigma = None
             _crash_etf_entry = None; _crash_etf_scaled = False
             _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
-        elif price > _crash_green and (crash_days <= _green_gate if not _crash_etf_scaled else _force_days <= _green_gate):
-            if not _crash_etf_scaled:
-                if _crash_exit_mode == 'V3':
-                    lines.append(f"💰 崩盘首阳: 全平 (平CALL价差 + 全SPXL $2k)")
-                    close_lines.append(f"  💰 崩盘首阳全平 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平全仓")
-                    _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
-                    _crash_k2 = None; _crash_debit = None; _crash_sigma = None
-                    _crash_etf_entry = None; _crash_etf_scaled = False
-                    _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
-                else:
-                    lines.append(f"💰 崩盘首阳 (>首阳${_crash_green:.2f}): 平CALL价差 + SPXL退${_crash_sold:.0f}, 剩${_crash_keep:.0f}续持")
-                    close_lines.append(f"  💰 崩盘首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平CALL价差+ETF{_crash_half_pct:.0%}")
-                    _crash_k1 = None; _crash_k2 = None; _crash_debit = None; _crash_sigma = None
-                    _crash_etf_scaled = True
-                    _crash_half_date = _today
+        elif not _crash_etf_scaled and price > _crash_green and crash_days <= _green_gate:
+            if _crash_exit_mode == 'V3':
+                lines.append(f"💰 崩盘首阳: 全平 (平CALL价差 + 全SPXL $2k)")
+                close_lines.append(f"  💰 崩盘首阳全平 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平全仓")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None; _crash_etf_scaled = False
+                _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
             else:
+                lines.append(f"💰 崩盘首阳 (>首阳${_crash_green:.2f}): 平CALL价差 + SPXL退${_crash_sold:.0f}, 剩${_crash_keep:.0f}续持")
+                close_lines.append(f"  💰 崩盘首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平CALL价差+ETF{_crash_half_pct:.0%}")
+                _crash_k1 = None; _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_scaled = True
+                _crash_half_date = _today
+                _crash_green_streak = 1
+        elif _crash_etf_scaled:
+            _half_days = len(pd.bdate_range(_crash_half_date, _today)) - 1 if _crash_half_date else 0
+            _spxl_now = _get_etf_price('SPXL')
+            _is_yin = bool(_xsp_prev_close) and price < _xsp_prev_close
+            _exit_kind = None
+            if _is_yin:
+                if _crash_exit_mode in ('V4', 'V8'):
+                    _exit_kind = '首阴'
+                elif _crash_exit_mode == 'V5':
+                    if _spxl_now and _crash_etf_entry and _spxl_now > _crash_etf_entry:
+                        _exit_kind = '首阴'
+                elif _crash_exit_mode == 'V6':
+                    if _half_days <= 3:
+                        _exit_kind = '首阴'
+                elif _crash_exit_mode == 'V7':
+                    _exit_kind = '首阴' if _crash_green_streak >= 2 else '二次首阳'
+            elif _crash_exit_mode in ('V6', 'V8') and price > _crash_green and _force_days <= _green_gate:
+                _exit_kind = '二次首阳'
+            if _exit_kind == '首阴':
+                lines.append(f"💰 首阴: 剩余SPXL ${_crash_keep:.0f}平仓")
+                close_lines.append(f"  💰 崩盘首阴 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} < 昨收${_xsp_prev_close:.2f}), 平剩余ETF ${_crash_keep:.0f}")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None; _crash_etf_scaled = False
+                _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
+                _crash_green_streak = 0
+            elif _exit_kind == '二次首阳':
                 lines.append(f"💰 二次首阳: 剩余SPXL ${_crash_keep:.0f}平仓")
                 close_lines.append(f"  💰 崩盘二次首阳 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} > 首阳${_crash_green:.2f}), 平剩余ETF ${_crash_keep:.0f}")
                 _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
                 _crash_k2 = None; _crash_debit = None; _crash_sigma = None
                 _crash_etf_entry = None; _crash_etf_scaled = False
                 _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
-        elif (_crash_exit_mode == 'V4' and _crash_etf_scaled and not _crash_reentry
-              and _crash_half_pct > 0 and price <= _crash_entry_price * _crash_reentry_pct):
-            lines.append(f"🔁 崩盘跌回入场价(${_crash_entry_price:.2f}): 买回SPXL ${_crash_sold:.0f}, T+4自{_today}重算")
-            close_lines.append(f"  🔁 崩盘再进 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} ≤ 入场价), 买回ETF ${_crash_sold:.0f}")
-            _crash_reentry = True
-            _crash_reentry_date = _today
-        elif _force_days >= 4:
-            if _crash_etf_scaled:
+                _crash_green_streak = 0
+            elif _crash_exit_mode in ('V4', 'V5', 'V6', 'V7', 'V8') and not _crash_reentry \
+                   and _crash_half_pct > 0 and price <= _crash_entry_price * _crash_reentry_pct:
+                lines.append(f"🔁 崩盘跌回入场价(${_crash_entry_price:.2f}): 买回SPXL ${_crash_sold:.0f}, T+4自{_today}重算")
+                close_lines.append(f"  🔁 崩盘再进 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} ≤ 入场价), 买回ETF ${_crash_sold:.0f}")
+                _crash_reentry = True
+                _crash_reentry_date = _today
+                _crash_green_streak = 0
+            elif _force_days >= 4:
                 lines.append(f"💸 已持4天: 剩余SPXL ${_crash_keep:.0f}强制平仓")
                 close_lines.append(f"  💸 崩盘已持4天 (入场${_crash_entry_price:.2f}→现价${price:.2f}), 平剩余ETF ${_crash_keep:.0f}")
+                _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+                _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+                _crash_etf_entry = None; _crash_etf_scaled = False
+                _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
+                _crash_green_streak = 0
             else:
-                lines.append(f"💸 崩盘已持4天, 强制平仓")
-                close_lines.append(f"  💸 崩盘已持4天 (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
-            _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
-            _crash_k2 = None; _crash_debit = None; _crash_sigma = None
-            _crash_etf_entry = None; _crash_etf_scaled = False
-            _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
-        else:
-            if _crash_etf_scaled:
+                if _is_yin:
+                    _crash_green_streak = 0
+                else:
+                    _crash_green_streak += 1
                 if _crash_reentry:
                     lines.append(f"⏳ 剩SPXL ${_crash_keep:.0f}续持(再进) ({4 - _force_days}d最多 | 止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f})")
                 else:
                     lines.append(f"⏳ 剩SPXL ${_crash_keep:.0f}续持 ({4 - _force_days}d最多 | 止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f})")
-            else:
-                lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f})")
+        elif _force_days >= 4:
+            lines.append(f"💸 崩盘已持4天, 强制平仓")
+            close_lines.append(f"  💸 崩盘已持4天 (入场${_crash_entry_price:.2f}→现价${price:.2f}), 建议平仓")
+            _crash_entry_date = None; _crash_entry_price = None; _crash_k1 = None
+            _crash_k2 = None; _crash_debit = None; _crash_sigma = None
+            _crash_etf_entry = None; _crash_etf_scaled = False
+            _crash_half_date = None; _crash_reentry = False; _crash_reentry_date = None
+            _crash_green_streak = 0
+        else:
+            lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f})")
         _latest_report['crash_force_days'] = _force_days
         _latest_report['crash_reentry'] = _crash_reentry
         _latest_report['crash_half_date'] = str(_crash_half_date) if _crash_half_date else None
