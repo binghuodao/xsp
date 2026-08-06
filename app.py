@@ -337,6 +337,59 @@ def send_market_report(report_type, force=False):
     slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
     is_trend = score >= 50
 
+    direction, reason = None, None
+
+    # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
+    _xsp_prev_close = _get_xsp_prev_close()
+    xsp_chg_pct = (price - _xsp_prev_close) / _xsp_prev_close if _xsp_prev_close else 0
+    is_crash_signal = _xsp_prev_close and xsp_chg_pct < -0.005
+    if is_crash_signal and _crash_entry_date is None and _mr_entry_date is None:
+        _crash_entry_date = datetime.now(ET_TZ).date()
+        _crash_half_date = None
+        _crash_reentry = False
+        _crash_reentry_date = None
+        _crash_entry_price = price
+        _crash_k1 = _s5(price)
+        _crash_k2 = _crash_k1 + _crash_spread_w
+        _crash_sigma = hs.get('vix', 20) / 100.0
+        if _crash_sigma > 0.01:
+            T = _crash_dte / 365.0
+            r = 0.05
+            e1 = pricing.black_scholes(price, _crash_k1, T, r, _crash_sigma, 'C')
+            e2 = pricing.black_scholes(price, _crash_k2, T, r, _crash_sigma, 'C')
+            _crash_debit = e1 - e2
+        _crash_etf_entry = _get_etf_price('SPXL')
+        ws = {"date": _crash_entry_date.strftime("%y%m%d"),
+              "short": str(_crash_k1), "mid": "", "long": str(_crash_k2),
+              "opt_type": "C", "strategy": "spread", "entry": ""}
+        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
+            user_watchlist.append(ws)
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
+
+    # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰崩盘) ──
+    is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
+    if is_mr_signal and _mr_entry_date is None and _crash_entry_date is None:
+        _mr_entry_date = datetime.now(ET_TZ).date()
+        _mr_entry_price = price
+        _mr_etf_entry_price = _get_etf_price('SPXL')
+        mr_strike = _s5(price)
+        ws = {"date": _mr_entry_date.strftime("%y%m%d"),
+              "short": str(mr_strike), "mid": "", "long": "",
+              "opt_type": "C", "strategy": "naked", "entry": ""}
+        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
+            user_watchlist.append(ws)
+            try:
+                with open(WATCHLIST_FILE, 'w') as f:
+                    json.dump(user_watchlist, f)
+            except Exception as e:
+                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
+            socketio.emit('sync_watchlist', user_watchlist)
+
     # Direction — Phase 1 Fusion
     dup = (bbu - price) / bw * 100
     dlow = (price - bbl) / bw * 100
@@ -390,57 +443,6 @@ def send_market_report(report_type, force=False):
     # ── 趋势高位过滤: BB%>80 暂缓趋势新开仓 (对齐 RULES 2026-07-31; 已有持仓不受影响) ──
     trend_entry_blocked = (is_trend and direction == 'CALL' and dlow > 80
                            and _active_position_date is None and _trend_opt_expiry is None)
-
-    # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰趋势/崩盘) ──
-    is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
-    if is_mr_signal and _mr_entry_date is None and direction is None and _crash_entry_date is None:
-        _mr_entry_date = datetime.now(ET_TZ).date()
-        _mr_entry_price = price
-        _mr_etf_entry_price = _get_etf_price('SPXL')
-        mr_strike = _s5(price)
-        ws = {"date": _mr_entry_date.strftime("%y%m%d"),
-              "short": str(mr_strike), "mid": "", "long": "",
-              "opt_type": "C", "strategy": "naked", "entry": ""}
-        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
-            user_watchlist.append(ws)
-            try:
-                with open(WATCHLIST_FILE, 'w') as f:
-                    json.dump(user_watchlist, f)
-            except Exception as e:
-                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
-            socketio.emit('sync_watchlist', user_watchlist)
-
-    # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
-    _xsp_prev_close = _get_xsp_prev_close()
-    xsp_chg_pct = (price - _xsp_prev_close) / _xsp_prev_close if _xsp_prev_close else 0
-    is_crash_signal = _xsp_prev_close and xsp_chg_pct < -0.005
-    if is_crash_signal and _crash_entry_date is None and direction is None and _mr_entry_date is None:
-        _crash_entry_date = datetime.now(ET_TZ).date()
-        _crash_half_date = None
-        _crash_reentry = False
-        _crash_reentry_date = None
-        _crash_entry_price = price
-        _crash_k1 = _s5(price)
-        _crash_k2 = _crash_k1 + _crash_spread_w
-        _crash_sigma = hs.get('vix', 20) / 100.0
-        if _crash_sigma > 0.01:
-            T = _crash_dte / 365.0
-            r = 0.05
-            e1 = pricing.black_scholes(price, _crash_k1, T, r, _crash_sigma, 'C')
-            e2 = pricing.black_scholes(price, _crash_k2, T, r, _crash_sigma, 'C')
-            _crash_debit = e1 - e2
-        _crash_etf_entry = _get_etf_price('SPXL')
-        ws = {"date": _crash_entry_date.strftime("%y%m%d"),
-              "short": str(_crash_k1), "mid": "", "long": str(_crash_k2),
-              "opt_type": "C", "strategy": "spread", "entry": ""}
-        if not any(g.get('date')==ws['date'] and g.get('short')==ws['short'] for g in user_watchlist):
-            user_watchlist.append(ws)
-            try:
-                with open(WATCHLIST_FILE, 'w') as f:
-                    json.dump(user_watchlist, f)
-            except Exception as e:
-                print(f"\u26a0\ufe0f Watchlist save failed: {e}")
-            socketio.emit('sync_watchlist', user_watchlist)
 
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
     lines = [f"{title} — {now_et_str}",

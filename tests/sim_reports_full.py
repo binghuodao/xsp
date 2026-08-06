@@ -80,6 +80,7 @@ ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-e
 ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
+ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
 args = ap.parse_args()
 
 PERIOD = args.period
@@ -92,6 +93,7 @@ SPREAD_W = args.spread_w
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 os.makedirs(RESULT_DIR, exist_ok=True)
+WARMUP_DAYS = args.warmup
 REPLAY_START = pd.Timestamp('2020-08-01')   # canonical backtest floor; ^XSP data caps at 2021-03-01, so window = data-available
 
 print(f"Loading real history ({PERIOD})...")
