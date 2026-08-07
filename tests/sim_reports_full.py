@@ -73,7 +73,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
 ap.add_argument('--crash-mode', default='V4', help='crash exit variant: V4 首阴 (default, production) | V5 首阴+盈利保护 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
-ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $250 keep $1750); 0.25 sell $0.5k keep $1.5k, 0.5 V4 legacy sell $1k keep $1k')
+ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $625 keep $4375); 0.25 sell $1.25k keep $3.75k, 0.5 V4 legacy sell $2.5k keep $2.5k')
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
 ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')
 ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-expiry (default 21)')
@@ -266,7 +266,7 @@ def infer_blocked(msg, r):
 # ═══════════════════════════════ 3. trade ledger ═══════════════════════════════
 ledger = {'TREND': [], 'MR': [], 'CRASH': []}
 _open_ref = {'TREND': None, 'MR': None, 'CRASH': None}  # n of currently-open trade
-ETF_SIZE = {'TREND': 5000, 'MR': 2000, 'CRASH': 2000}
+ETF_SIZE = {'TREND': 5000, 'MR': 2000, 'CRASH': 5000}
 
 def open_trade(kind, asof):
     n = len(ledger[kind]) + 1
@@ -676,7 +676,7 @@ def main():
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
         idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {str(t.get('result','')):<14} {fl}")
     idx.append('')
-    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+$2k SPXL  共 {len(ledger["CRASH"])} 笔 ──')
+    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+$5k SPXL  共 {len(ledger["CRASH"])} 笔 ──')
     idx.append('  #  开仓日        入场价    平仓日        出场价    天数  结果            定位')
     for t in ledger['CRASH']:
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
@@ -712,7 +712,7 @@ def main():
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
                   'MR': 'MR 裸买CALL 7DTE ($2k SPXL)',
-                  'CRASH': '崩盘 CALL价差15点21DTE+$2k SPXL'}
+                  'CRASH': '崩盘 CALL价差15点21DTE+$5k SPXL'}
     for kind in ('TREND', 'MR', 'CRASH'):
         trs = ledger[kind]
         closed = [t for t in trs if t.get('close')]
@@ -754,8 +754,8 @@ def main():
     bt.append(f'── 三层合计  共 {len(allt)} 笔 (已平 {len(tot_closed)})  总PnL ${tot_pnl:,.0f}  胜率 {w}/{len(tot_closed)} ──')
     bt.append('')
     bt.append('说明:')
-    bt.append('  · PnL = ETF仓位($5k/$2k/$2k SPXL) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
-    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退 {CRASH_HALF:.0%}(${2000*CRASH_HALF:.0f}); 首阴(V4)/二次首阳(V6-8)/止损/4天 再结剩余 ${2000*(1-CRASH_HALF):.0f}')
+    bt.append('  · PnL = ETF仓位($5k/$2k/$5k SPXL) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
+    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退 {CRASH_HALF:.0%}(${ETF_SIZE["CRASH"]*CRASH_HALF:.0f}); 首阴(V4)/二次首阳(V6-8)/止损/4天 再结剩余 ${ETF_SIZE["CRASH"]*(1-CRASH_HALF):.0f}')
     bt.append('  · MR 信号日=恐慌日(RSI<30+VIX>20), 与崩盘开仓日高度重叠; app 有 direction 闸+崩盘互斥')
     bt.append('    +2026-07-31 强制互斥, 故 MR 低频属结构性(panic 日优先被崩盘层承接), 非回测误差')
     bt_stats_path = os.path.join(RESULT_DIR, f'backtest_stats_{PERIOD}.txt')

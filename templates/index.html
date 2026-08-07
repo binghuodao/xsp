@@ -1940,7 +1940,7 @@
                 html += '<b>💥 崩盘反弹 CALL价差15点 21DTE</b> (' + r.crash_entry_date + ')<br>';
                 html += '入场 <b>$' + r.crash_entry_price.toFixed(2) + '</b> | 持有 <b>' + r.crash_days + 'd</b><br>';
                 html += '价差 $' + r.crash_k1 + 'C / $' + r.crash_k2 + 'C  成本<b>$' + (r.crash_debit ? (r.crash_debit * 100).toFixed(0) : '?') + '</b>/口<br>';
-                if (r.crash_etf_entry) html += '工具: CALL价差 + SPXL $2k (入场$' + r.crash_etf_entry.toFixed(2) + ')<br>';
+                if (r.crash_etf_entry) html += '工具: CALL价差 + SPXL $5k (入场$' + r.crash_etf_entry.toFixed(2) + ')<br>';
                 html += '止损 <span style="color:#f0883e;">$' + r.crash_stop.toFixed(2) + ' (-3%)</span> | 首阳 <span style="color:#3fb950;">$' + r.crash_green.toFixed(2) + '</span>';
                 html += '</div>';
             }
