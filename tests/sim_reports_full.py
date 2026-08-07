@@ -442,14 +442,10 @@ def main():
         now_spread_seg = _seg_from_app()
 
         ev = []
-        # trend open/close
+        # trend open/close (supports same-day close+reopen: prev_fp[1] != now_fp[1])
         if prev_fp is not None:
-            if prev_fp[1] is None and now_fp[1] is not None:
-                n = open_trade('TREND', asof)
-                t = cur_trade('TREND')
-                if t: t['etf_entry'] = spxl_p
-                ev.append(f'TREND#{n} 开仓')
-            elif prev_fp[1] is not None and now_fp[1] is None:
+            tr_changed = prev_fp[1] != now_fp[1]
+            if tr_changed and prev_fp[1] is not None:
                 n = cur_trade('TREND')['n'] if cur_trade('TREND') else None
                 t = cur_trade('TREND')
                 if t and t.get('etf_entry'):
@@ -457,6 +453,11 @@ def main():
                 book_spread(asof, price, prev_spread_seg, now_spread_seg)
                 close_trade('TREND', asof, price, trend_close_result(alerts))
                 ev.append(f'TREND#{n} 平仓')
+            if tr_changed and now_fp[1] is not None:
+                n = open_trade('TREND', asof)
+                t = cur_trade('TREND')
+                if t: t['etf_entry'] = spxl_p
+                ev.append(f'TREND#{n} 开仓')
             if prev_fp[2] is None and now_fp[2] is not None:
                 ev.append('价差开')
             elif prev_fp[2] is not None and now_fp[2] is None:
@@ -465,17 +466,8 @@ def main():
                 t = cur_trade('TREND')
                 if t: t['rolls'] += 1
                 ev.append('价差滚仓')
-            if prev_fp[5] is None and now_fp[5] is not None:
-                n = open_trade('MR', asof)
-                t = cur_trade('MR')
-                if t:
-                    t['etf_entry'] = spxl_p
-                    t['mr_K'] = app._s5(app._mr_entry_price or price)
-                    t['mr_sigma'] = vix_p / 100.0
-                    t['mr_expiry'] = asof + timedelta(days=7)
-                    t['mr_opt_entry'] = _bs_call(price, t['mr_K'], 7 / 365.0, t['mr_sigma'])
-                ev.append(f'MR#{n} 开仓')
-            elif prev_fp[5] is not None and now_fp[5] is None:
+            mr_changed = prev_fp[5] != now_fp[5]
+            if mr_changed and prev_fp[5] is not None:
                 n = cur_trade('MR')['n'] if cur_trade('MR') else None
                 t = cur_trade('MR')
                 if t:
@@ -488,15 +480,18 @@ def main():
                 res = ('首阳+0.3%' if 'MR首阳' in msg else '止损-2%' if 'MR跌穿' in msg else '3天强制平')
                 close_trade('MR', asof, price, res)
                 ev.append(f'MR#{n} 平仓')
-            if prev_fp[6] is None and now_fp[6] is not None:
-                n = open_trade('CRASH', asof)
-                t = cur_trade('CRASH')
+            if mr_changed and now_fp[5] is not None:
+                n = open_trade('MR', asof)
+                t = cur_trade('MR')
                 if t:
                     t['etf_entry'] = spxl_p
-                    t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
-                    t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
-                ev.append(f'CRASH#{n} 开仓')
-            elif prev_fp[6] is not None and now_fp[6] is None:
+                    t['mr_K'] = app._s5(app._mr_entry_price or price)
+                    t['mr_sigma'] = vix_p / 100.0
+                    t['mr_expiry'] = asof + timedelta(days=7)
+                    t['mr_opt_entry'] = _bs_call(price, t['mr_K'], 7 / 365.0, t['mr_sigma'])
+                ev.append(f'MR#{n} 开仓')
+            cr_changed = prev_fp[6] != now_fp[6]
+            if cr_changed and prev_fp[6] is not None:
                 n = cur_trade('CRASH')['n'] if cur_trade('CRASH') else None
                 t = cur_trade('CRASH')
                 if t:
@@ -516,6 +511,14 @@ def main():
                        else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
                 close_trade('CRASH', asof, price, res)
                 ev.append(f'CRASH#{n} 平仓')
+            if cr_changed and now_fp[6] is not None:
+                n = open_trade('CRASH', asof)
+                t = cur_trade('CRASH')
+                if t:
+                    t['etf_entry'] = spxl_p
+                    t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
+                    t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
+                ev.append(f'CRASH#{n} 开仓')
             if not prev_fp[7] and now_fp[7]:
                 t = cur_trade('CRASH')
                 if t:

@@ -20,8 +20,9 @@ import app
 from tests.helpers import make_option_chain, std_hs
 
 @pytest.fixture(autouse=True)
-def reset_globals():
+def reset_globals(monkeypatch):
     """Reset all module-level globals before each test."""
+    monkeypatch.setattr(app, '_get_xsp_prev_close', lambda: None)
     app._latest_report = {}
     app._morning_report_date = ""
     app._evening_report_date = ""
@@ -35,6 +36,20 @@ def reset_globals():
     app._crash_reentry = False
     app._crash_reentry_date = None
     app._crash_exit_mode = 'V4'
+    app._mr_entry_date = None
+    app._mr_entry_price = None
+    app._mr_etf_entry_price = None
+    app._trend_opt_expiry = None
+    app._trend_opt_strike = None
+    app._trend_opt_strike2 = None
+    app._trend_opt_entry = None
+    app._trend_opt_entry_date = None
+    app._trend_opt_sigma = None
+    app._trend_opt_pnl = None
+    app._entry_price = None
+    app._peak_price = None
+    app._etf_entry_price = None
+    app._etf_peak_price = None
     app.POSITION_FILE = tempfile.mktemp(suffix='.json')
     app.user_watchlist = []
     app.latest_data = {
