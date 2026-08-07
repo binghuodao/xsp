@@ -884,9 +884,9 @@ def send_market_report(report_type, force=False):
         # force-close day-count basis (mode-dependent) + green window
         _green_gate = 3 if _crash_exit_mode == 'V1' else 4
         _force_ref = _crash_entry_date
-        if _crash_exit_mode == 'V2' and _crash_etf_scaled and _crash_half_date:
+        if _crash_exit_mode in ('V2', 'V4', 'V5', 'V6', 'V7', 'V8') and _crash_etf_scaled and _crash_half_date:
             _force_ref = _crash_half_date
-        elif _crash_exit_mode in ('V4', 'V5', 'V6', 'V7', 'V8') and _crash_reentry and _crash_reentry_date:
+        if _crash_exit_mode in ('V4', 'V5', 'V6', 'V7', 'V8') and _crash_reentry and _crash_reentry_date:
             _force_ref = _crash_reentry_date
         _force_days = len(pd.bdate_range(_force_ref, _today)) - 1 if _force_ref else crash_days
 
