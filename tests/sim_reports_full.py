@@ -72,7 +72,7 @@ def _load(cache, ticker, period):
 ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
-ap.add_argument('--crash-mode', default='V5', help='crash exit variant: V5 首阴+盈利保护 (default, production) | V4 首阴 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
+ap.add_argument('--crash-mode', default='V4', help='crash exit variant: V4 首阴 (default, production) | V5 首阴+盈利保护 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
 ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $250 keep $1750); 0.25 sell $0.5k keep $1.5k, 0.5 V4 legacy sell $1k keep $1k')
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
 ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')

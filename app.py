@@ -96,7 +96,7 @@ _crash_debit = None
 _crash_sigma = None
 _crash_etf_entry = None
 _crash_etf_scaled = False
-_crash_exit_mode = 'V5'          # operative rule: V5 首阴+盈利保护 (default) | V4 首阴 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
+_crash_exit_mode = 'V4'          # operative rule: V4 首阴 (default) | V5 首阴+盈利保护 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
 _crash_half_pct = 0.125          # crash ETF fraction sold at 首阳 (V8d optimal; 12.5% = sell $250 keep $1750)
 _crash_stop_pct = 0.025          # crash XSP stop line = entry*(1-pct) (default -2.5%)
 _crash_reentry_pct = 1.0         # V4 re-entry trigger: price <= entry*this
@@ -920,7 +920,7 @@ def send_market_report(report_type, force=False):
         _force_ref = _crash_entry_date
         if _crash_exit_mode == 'V2' and _crash_etf_scaled and _crash_half_date:
             _force_ref = _crash_half_date
-        elif _crash_exit_mode == 'V4' and _crash_reentry and _crash_reentry_date:
+        elif _crash_exit_mode in ('V4', 'V5', 'V6', 'V7', 'V8') and _crash_reentry and _crash_reentry_date:
             _force_ref = _crash_reentry_date
         _force_days = len(pd.bdate_range(_force_ref, _today)) - 1 if _force_ref else crash_days
 
