@@ -97,7 +97,7 @@ _crash_sigma = None
 _crash_etf_entry = None
 _crash_etf_scaled = False
 _crash_exit_mode = 'V9'          # operative rule: V9 止损日期权续持 (default) | V5 首阴+盈利保护 (V5 was default; V9 wins by +$1,583 7y with 2022 −$120→+$890, tail risk maxLoss −$952→−$1,134) | V4 首阴 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
-_crash_half_pct = 0.125          # crash ETF fraction sold at 首阳 (V8d optimal; 12.5% = sell $625 keep $4375)
+_crash_half_pct = 0.0625         # crash ETF fraction sold at 首阳 (0.0625 optimal in V9 sweep: sell $312 keep $4688; 0.125 V8d legacy sell $625 keep $4375; 0 = no half, ETF rides full $5k, 7y +$14,832 worse)
 _crash_etf_size = 5000           # crash SPXL allocation (matched to TREND $5k)
 _crash_stop_pct = 0.025          # crash XSP stop line = entry*(1-pct) (default -2.5%)
 _crash_reentry_pct = 1.0         # V4 re-entry trigger: price <= entry*this
