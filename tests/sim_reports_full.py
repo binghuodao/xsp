@@ -72,12 +72,16 @@ def _load(cache, ticker, period):
 ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
-ap.add_argument('--crash-mode', default='V4', help='crash exit variant: V4 首阴 (default, production) | V5 首阴+盈利保护 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
+ap.add_argument('--crash-mode', default='V5', help='crash exit variant: V5 首阴+盈利保护 (default, production) | V4 首阴 (optimal at $2k) | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
 ap.add_argument('--crash-half', type=float, default=0.125, help='crash ETF fraction sold at 首阳 (default 0.125 = V8d sell $625 keep $4375); 0.25 sell $1.25k keep $3.75k, 0.5 V4 legacy sell $2.5k keep $2.5k')
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
+ap.add_argument('--drop-thresh', type=float, default=0.005, help='crash signal XSP daily-drop threshold (default 0.005 = 0.5%%)')
+ap.add_argument('--stop-cooldown', type=int, default=0, help='days to block new crash entries after a crash stop-loss (default 0 = off)')
 ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')
 ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-expiry (default 21)')
 ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
+ap.add_argument('--etf-stop', type=float, default=0.0, help='crash SPXL separate stop pct: exit ETF leg when SPXL <= entry*(1-pct), option rides (default 0 = off)')
+ap.add_argument('--layer-priority', default='crash_mr_trend', help='delayed-open priority: crash_mr_trend (default, 崩盘优先) | mr_crash_trend (MR 优先承接恐慌日)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
@@ -88,8 +92,12 @@ CRASH_MODE = args.crash_mode
 CRASH_HALF = args.crash_half
 STOP_PCT = args.stop_pct
 REENTRY_PCT = args.reentry_pct
+DROP_THRESH = args.drop_thresh
+STOP_COOLDOWN = args.stop_cooldown
 DTE = args.dte
 SPREAD_W = args.spread_w
+ETF_STOP = args.etf_stop
+LAYER_PRIORITY = args.layer_priority
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -240,6 +248,12 @@ def init_state():
     app._crash_reentry_pct = REENTRY_PCT
     app._crash_dte = DTE
     app._crash_spread_w = SPREAD_W
+    app._crash_drop_thresh = DROP_THRESH
+    app._crash_etf_stop_pct = ETF_STOP
+    app._crash_etf_out = False
+    app._layer_priority = LAYER_PRIORITY
+    app._crash_stop_cooldown = STOP_COOLDOWN
+    app._crash_stop_date = None
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -258,7 +272,8 @@ def state_fp():
             app._mr_entry_date,
             app._crash_entry_date,
             app._crash_etf_scaled,
-            app._crash_reentry)
+            app._crash_reentry,
+            app._crash_etf_out)
 
 def infer_blocked(msg, r):
     return (r.get('direction') == 'CALL' and '暂缓' in msg and '★ 做多 ETF' not in msg)
@@ -276,7 +291,7 @@ def open_trade(kind, asof):
                          'etf_entry': None, 'etf_pnl': 0.0, 'opt_pnl': 0.0, 'segs': [],
                          'mr_K': None, 'mr_sigma': None, 'mr_expiry': None, 'mr_opt_entry': None,
                          'k1': None, 'k2': None, 'debit': None, 'sigma': None,
-                         'half_etf': 0.0, 'half_date': None})
+                         'half_etf': 0.0, 'half_date': None, 'etf_out': False})
     _open_ref[kind] = n
     return n
 
@@ -497,7 +512,11 @@ def main():
                 if t:
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
-                    if t.get('half_date'):
+                    if t.get('etf_out'):
+                        if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                            close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                    elif t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
                         rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
                         t['etf_pnl'] = (t.get('half_etf') or 0) + rem
@@ -527,7 +546,7 @@ def main():
                     if t.get('k1') and t.get('k2') and t.get('debit') is not None:
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
-                    if t.get('etf_entry'):
+                    if not t.get('etf_out') and t.get('etf_entry'):
                         t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1)
                     t['half_date'] = asof
                 ev.append('崩盘退半')
@@ -536,6 +555,17 @@ def main():
                 if t:
                     t['re_entry_spxl'] = spxl_p
                 ev.append('崩盘再进')
+            if not prev_fp[9] and now_fp[9]:
+                t = cur_trade('CRASH')
+                if t and not t.get('etf_out'):
+                    if t.get('half_date'):
+                        base = t.get('re_entry_spxl') or t.get('etf_entry')
+                        rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
+                        t['etf_pnl'] = (t.get('half_etf') or 0) + rem
+                    elif t.get('etf_entry'):
+                        t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1)
+                    t['etf_out'] = True
+                ev.append('崩盘ETF止损')
             if prev_blocked is not None and prev_blocked != blocked:
                 ev.append('高位拦截' if blocked else '拦截解除')
             if prev_dir is not None and d != prev_dir:

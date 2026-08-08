@@ -35,6 +35,7 @@ def reset_globals(monkeypatch):
     app._crash_half_date = None
     app._crash_reentry = False
     app._crash_reentry_date = None
+    app._crash_etf_out = False
     app._crash_exit_mode = 'V4'
     app._mr_entry_date = None
     app._mr_entry_price = None
