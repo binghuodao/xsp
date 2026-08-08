@@ -113,6 +113,12 @@ _crash_reentry = False           # V4: re-bought the $1k half after retrace
 _crash_reentry_date = None       # V4: T+4 counted from this date
 _crash_green_streak = 0          # V7: consecutive green days after 首阳退半
 _layer_priority = 'crash_mr_trend'  # 三层延迟开仓优先级: crash_mr_trend (default) | mr_crash_trend (MR 优先承接恐慌日)
+_crash_size_mult = 1.0           # crash allocation multiplier (0 = risk-off skip entry; 0<mult<1 scale PnL; harness-injected for regime-gate research)
+
+
+def _risk_off_active():
+    """Research-only hook: True = risk-off regime flag ON (set by tests/sim_reports_full gate)."""
+    return False
 _trend_opt_expiry = None
 _trend_opt_strike = None
 _trend_opt_strike2 = None
@@ -281,7 +287,7 @@ def _get_xsp_prev_close():
 def send_market_report(report_type, force=False):
     global _morning_report_date, _evening_report_date, _latest_report, user_watchlist
     global _prev_report_score, _prev_report_direction, _active_position_date, _mr_entry_date, _mr_entry_price, _mr_etf_entry_price
-    global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry, _crash_etf_scaled
+    global _crash_entry_date, _crash_entry_price, _crash_k1, _crash_k2, _crash_debit, _crash_sigma, _crash_etf_entry, _crash_etf_scaled, _crash_size_mult
     global _crash_exit_mode, _crash_half_date, _crash_reentry, _crash_reentry_date, _crash_half_pct, _crash_stop_pct, _crash_reentry_pct, _crash_dte, _crash_spread_w
     global _crash_drop_thresh, _crash_stop_cooldown, _crash_stop_date
     global _crash_etf_stop_pct, _crash_etf_out
@@ -1058,7 +1064,7 @@ def send_market_report(report_type, force=False):
                       and _trend_opt_expiry is None and _active_position_date is None)
     _cooldown_on = (_crash_stop_cooldown and _crash_stop_date
                     and (datetime.now(ET_TZ).date() - _crash_stop_date).days <= _crash_stop_cooldown)
-    _crash_ok = _no_layer_open and is_crash_signal and not _cooldown_on
+    _crash_ok = _no_layer_open and is_crash_signal and not _cooldown_on and not (_crash_size_mult == 0 and _risk_off_active())
     _mr_ok = _no_layer_open and is_mr_signal
     if _crash_ok and not (_mr_ok and _layer_priority == 'mr_crash_trend'):
         _crash_entry_date = datetime.now(ET_TZ).date()

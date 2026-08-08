@@ -82,6 +82,8 @@ ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-e
 ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
 ap.add_argument('--etf-stop', type=float, default=0.0, help='crash SPXL separate stop pct: exit ETF leg when SPXL <= entry*(1-pct), option rides (default 0 = off)')
 ap.add_argument('--layer-priority', default='crash_mr_trend', help='delayed-open priority: crash_mr_trend (default, 崩盘优先) | mr_crash_trend (MR 优先承接恐慌日)')
+ap.add_argument('--risk-gate', default='none', help='bear-regime gate (research): none | b200 (close<SMA200) | b200slope (close<SMA200 & SMA200 falling) | vix80 (VIX 252d pct>80) | macd (XSP MACD death cross) | engulf (bearish engulfing) | s3red (3 consecutive red days)')
+ap.add_argument('--risk-mult', type=float, default=1.0, help='crash size multiplier when gate ON: 0 = skip entry, 0<mult<1 = scale PnL (default 1.0 = gate inert)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
@@ -98,6 +100,8 @@ DTE = args.dte
 SPREAD_W = args.spread_w
 ETF_STOP = args.etf_stop
 LAYER_PRIORITY = args.layer_priority
+RISK_GATE = args.risk_gate
+RISK_MULT = args.risk_mult
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -117,6 +121,16 @@ rsi_s = ta.rsi(spy['Close'], length=14)
 sma20_s = spy['Close'].rolling(20).mean()
 avg_vol_s = spy['Volume'].rolling(20).mean()
 ema20p_s = spy['Close'].ewm(span=20, adjust=False).mean()
+
+# ── risk-gate point-in-time features (XSP index regime; slice by index<=asof in build_snapshot) ──
+_xc = xsp['Close']
+sma200_s = _xc.rolling(200).mean()
+macd_s = _xc.ewm(span=12, adjust=False).mean() - _xc.ewm(span=26, adjust=False).mean()
+macdsig_s = macd_s.ewm(span=9, adjust=False).mean()
+_ox, _cx = xsp['Open'], xsp['Close']
+engulf_s = (_cx < _ox) & (_cx.shift(1) > _ox.shift(1)) & (_ox >= _cx.shift(1)) & (_cx <= _ox.shift(1))
+s3red_s = (_cx < _cx.shift(1)) & (_cx.shift(1) < _cx.shift(2)) & (_cx.shift(2) < _cx.shift(3))
+vix_pct_252_s = vix['Close'].rolling(252).rank(pct=True) * 100
 
 W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
 T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
@@ -179,6 +193,35 @@ def build_snapshot(asof):
     app.latest_data['index']['price'] = float(x_i['Close'].iloc[-1])
     p_prev = xsp[xsp.index < pd.Timestamp(asof)]
     app._get_xsp_prev_close = lambda: float(p_prev['Close'].iloc[-1])
+    app._crash_size_mult = RISK_MULT
+    if RISK_GATE == 'none':
+        flag = False
+    else:
+        s200_i = sma200_s[sma200_s.index <= pd.Timestamp(asof)]
+        s200 = float(s200_i.iloc[-1]) if len(s200_i) else None
+        s200_prev = float(s200_i.iloc[-21]) if len(s200_i) >= 21 else None
+        cur = float(x_i['Close'].iloc[-1])
+        if RISK_GATE == 'b200':
+            flag = s200 is not None and cur < s200
+        elif RISK_GATE == 'b200slope':
+            flag = s200 is not None and s200_prev is not None and cur < s200 and (s200 - s200_prev) < 0
+        elif RISK_GATE == 'vix80':
+            v252 = vix_pct_252_s[vix_pct_252_s.index <= pd.Timestamp(asof)]
+            flag = bool(v252.iloc[-1] > 80) if len(v252) else False
+        elif RISK_GATE == 'macd':
+            m_i = macd_s[macd_s.index <= pd.Timestamp(asof)]
+            s_i2 = macdsig_s[macdsig_s.index <= pd.Timestamp(asof)]
+            flag = bool(m_i.iloc[-1] < s_i2.iloc[-1]) if len(m_i) and len(s_i2) else False
+        elif RISK_GATE == 'engulf':
+            e_i = engulf_s[engulf_s.index <= pd.Timestamp(asof)]
+            flag = bool(e_i.iloc[-1]) if len(e_i) else False
+        elif RISK_GATE == 's3red':
+            r3 = s3red_s[s3red_s.index <= pd.Timestamp(asof)]
+            flag = bool(r3.iloc[-1]) if len(r3) else False
+        else:
+            raise ValueError(f'unknown --risk-gate {RISK_GATE}')
+    app._risk_off_active = (lambda f=bool(flag): f)
+    app._crash_etf_size = int(ETF_SIZE['CRASH'] * (RISK_MULT if flag else 1.0))
     sp = spxl[spxl.index <= pd.Timestamp(asof)]
     spxl_price = float(sp['Close'].iloc[-1])
     return float(x_i['Close'].iloc[-1]), spxl_price, float(cv)
@@ -254,6 +297,9 @@ def init_state():
     app._layer_priority = LAYER_PRIORITY
     app._crash_stop_cooldown = STOP_COOLDOWN
     app._crash_stop_date = None
+    app._crash_size_mult = RISK_MULT
+    app._crash_etf_size = int(ETF_SIZE['CRASH'] * RISK_MULT)
+    app._risk_off_active = lambda: False
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -291,7 +337,7 @@ def open_trade(kind, asof):
                          'etf_entry': None, 'etf_pnl': 0.0, 'opt_pnl': 0.0, 'segs': [],
                          'mr_K': None, 'mr_sigma': None, 'mr_expiry': None, 'mr_opt_entry': None,
                          'k1': None, 'k2': None, 'debit': None, 'sigma': None,
-                         'half_etf': 0.0, 'half_date': None, 'etf_out': False})
+                         'half_etf': 0.0, 'half_date': None, 'etf_out': False, 'size_mult': 1.0})
     _open_ref[kind] = n
     return n
 
@@ -510,22 +556,23 @@ def main():
                 n = cur_trade('CRASH')['n'] if cur_trade('CRASH') else None
                 t = cur_trade('CRASH')
                 if t:
+                    sm = t.get('size_mult', 1.0)
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
                     if t.get('etf_out'):
                         if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None:
                             close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
-                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * sm
                     elif t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
                         rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
-                        t['etf_pnl'] = (t.get('half_etf') or 0) + rem
+                        t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     else:
                         if t.get('k1') and t.get('k2') and t.get('debit') is not None:
                             close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
-                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * sm
                         if t.get('etf_entry'):
-                            t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1)
+                            t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1) * sm
                 res = ('首阴清仓' if '崩盘首阴' in msg else '二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
                        else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
                 close_trade('CRASH', asof, price, res)
@@ -537,17 +584,19 @@ def main():
                     t['etf_entry'] = spxl_p
                     t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
                     t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
+                    t['size_mult'] = RISK_MULT if app._risk_off_active() else 1.0
                 ev.append(f'CRASH#{n} 开仓')
             if not prev_fp[7] and now_fp[7]:
                 t = cur_trade('CRASH')
                 if t:
+                    sm = t.get('size_mult', 1.0)
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
                     if t.get('k1') and t.get('k2') and t.get('debit') is not None:
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
-                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100
+                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * sm
                     if not t.get('etf_out') and t.get('etf_entry'):
-                        t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1)
+                        t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1) * sm
                     t['half_date'] = asof
                 ev.append('崩盘退半')
             if not prev_fp[8] and now_fp[8]:
@@ -558,12 +607,13 @@ def main():
             if not prev_fp[9] and now_fp[9]:
                 t = cur_trade('CRASH')
                 if t and not t.get('etf_out'):
+                    sm = t.get('size_mult', 1.0)
                     if t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
                         rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
-                        t['etf_pnl'] = (t.get('half_etf') or 0) + rem
+                        t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     elif t.get('etf_entry'):
-                        t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1)
+                        t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1) * sm
                     t['etf_out'] = True
                 ev.append('崩盘ETF止损')
             if prev_blocked is not None and prev_blocked != blocked:
@@ -719,6 +769,19 @@ def main():
         f.write('\n'.join(idx) + '\n')
     print(f"  wrote index_{PERIOD}.txt: {len(ledger['TREND'])} TREND, {len(ledger['MR'])} MR, {len(ledger['CRASH'])} CRASH trades")
 
+    # ═══════════════════════════════ 7.6 per-trade PnL ledger ═══════════════════════════════
+    trade_path = os.path.join(RESULT_DIR, f'trades_{PERIOD}.csv')
+    with open(trade_path, 'w') as f:
+        f.write('kind,n,open,open_p,close,close_p,hold_days,result,opt_pnl,etf_pnl,total_pnl\n')
+        for t in ledger['TREND'] + ledger['MR'] + ledger['CRASH']:
+            op = t.get('open_p') or 0
+            cp = t.get('close_p') or 0
+            hd = t.get('hold_days', '')
+            opt = t.get('opt_pnl') or 0
+            etf = t.get('etf_pnl') or 0
+            f.write(f"{t['kind']},{t['n']},{t['open']},{op:.2f},{str(t.get('close'))},{cp:.2f},{hd},{t.get('result')},{opt:.2f},{etf:.2f},{opt + etf:.2f}\n")
+    print(f"  wrote trades_{PERIOD}.csv: {len(ledger['TREND']) + len(ledger['MR']) + len(ledger['CRASH'])} trades")
+
     # ═══════════════════════════════ 7.5 backtest stats ═══════════════════════════════
     def _trade_pnl(t):
         return (t.get('etf_pnl') or 0) + (t.get('opt_pnl') or 0)
@@ -731,13 +794,15 @@ def main():
             return sum((seg.get('debit') or 0) for seg in segs) / len(segs) * 100
         if t['kind'] == 'MR':
             return (t.get('mr_opt_entry') or 0) * 100
-        return (t.get('debit') or 0) * 100
+        return (t.get('debit') or 0) * 100 * t.get('size_mult', 1.0)
 
     bt = []
     bt.append('═' * 70)
     bt.append(f'XSP 三策略 全历史重放 — 回测统计  ({trading_days[0].date()} → {trading_days[-1].date()}, {len(trading_days)} 交易日)')
     bt.append(f'数据: yfinance {PERIOD} | 口径: app 重放逐笔 PnL, 期权 BS 重定价 r=5%, 费用未计')
     bt.append(f'崩盘出场模式: {CRASH_MODE} (首阳退半 {CRASH_HALF:.0%} | 止损-{STOP_PCT:.1%} | 再进≤入场×{REENTRY_PCT:.2f} | 价差{SPREAD_W}点 {DTE}DTE)')
+    if RISK_GATE != 'none':
+        bt.append(f'熊市门: {RISK_GATE} × mult {RISK_MULT:g} (ON=门亮时崩盘仓缩至 {RISK_MULT:.0%})')
     bt.append('═' * 70)
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
