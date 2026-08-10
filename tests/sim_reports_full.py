@@ -89,6 +89,7 @@ ap.add_argument('--opt-mult', type=float, default=1.0, help='crash option-leg Pn
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
+ap.add_argument('--trace-trend', action='store_true', help='diagnose why TREND layer rarely opens: per-day classify 高位暂缓/三层互斥/已在仓/漏开/融合吃掉/非趋势, write trend_trace_{PERIOD}.txt')
 args = ap.parse_args()
 
 PERIOD = args.period
@@ -108,6 +109,7 @@ RISK_MULT = args.risk_mult
 OPT_MULT = args.opt_mult
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
+TRACE_TREND = args.trace_trend
 os.makedirs(RESULT_DIR, exist_ok=True)
 WARMUP_DAYS = args.warmup
 REPLAY_START = pd.Timestamp('2020-08-01')   # canonical backtest floor; ^XSP data caps at 2021-03-01, so window = data-available
@@ -503,6 +505,7 @@ def main():
     records = []          # one entry per emitted day
     stats = {'full': 0, 'compact': 0, 'skipped': 0, 'opens': 0, 'closes': 0}
     failures = []
+    trace_rows = []       # --trace-trend per-day diagnostics
 
     prev_fp = None
     prev_dir = None
@@ -529,6 +532,35 @@ def main():
         alerts = r.get('close_alerts', []) or []
         sig_alerts = [l for l in alerts if 'BB中段' not in l]   # ignore daily background hint
         now_spread_seg = _seg_from_app()
+
+        # ── TREND 哑火诊断: 逐日分类 (--trace-trend) ──
+        if TRACE_TREND:
+            hs = app.historical_stats
+            bbl = hs.get('support', 0); bbu = hs.get('resistance', 0)
+            bw = bbu - bbl if (bbl and bbu and bbu > bbl) else 1
+            dlow_v = (price - bbl) / bw * 100
+            atr14 = hs.get('atr_14', 0)
+            nt = atr14 * 0.60 if atr14 and atr14 > 0 else bw * 0.10
+            near_top = (bbu - price) < nt
+            near_bottom = (price - bbl) < nt
+            if d == 'CALL':
+                if dlow_v > 80:
+                    tb = '高位暂缓'
+                elif '崩盘/MR层占用' in msg:
+                    tb = '三层互斥'
+                elif now_fp[1] is not None:
+                    tb = '已在TREND仓'
+                else:
+                    tb = '漏开'
+            elif d is None:
+                sc = r.get('score') or 0
+                tb = '融合吃掉' if sc >= 50 else '非趋势'
+            else:
+                tb = f'方向{d}'
+            trace_rows.append({'asof': asof, 'score': r.get('score'), 'direction': d,
+                               'reason': r.get('reason'), 'dlow': dlow_v,
+                               'near_top': near_top, 'near_bottom': near_bottom,
+                               'blocked': blocked, 'bucket': tb})
 
         ev = []
         # trend open/close (supports same-day close+reopen: prev_fp[1] != now_fp[1])
@@ -732,6 +764,47 @@ def main():
 
     stats['opens'] = sum(len(ledger[k]) for k in ledger)
     stats['closes'] = sum(1 for k in ledger for t in ledger[k] if t.get('close'))
+
+    # ═══════════════════════════════ 5.5 TREND 哑火诊断 (--trace-trend) ═══════════════════════════════
+    if TRACE_TREND:
+        from collections import Counter
+        tb_cnt = Counter(row['bucket'] for row in trace_rows)
+        byyr = {}
+        for row in trace_rows:
+            byyr.setdefault(row['asof'].year, Counter())[row['bucket']] += 1
+        print()
+        print('═' * 70)
+        print('TREND 哑火诊断 (逐日分类):')
+        print(f"  总交易日 {len(trace_rows)}")
+        print('  分桶合计:')
+        for k, v in sorted(tb_cnt.items()):
+            print(f"    {k:<10} {v:>4} 天")
+        print('  按年: 年 | 高位暂缓 | 三层互斥 | 已在仓 | 漏开 | 融合吃掉 | 非趋势')
+        for yr in sorted(byyr):
+            c = byyr[yr]
+            print(f"    {yr} | {c.get('高位暂缓',0):>5} | {c.get('三层互斥',0):>5} | {c.get('已在TREND仓',0):>5} | {c.get('漏开',0):>4} | {c.get('融合吃掉',0):>5} | {c.get('非趋势',0):>5}")
+        # CALL 连续段数(潜在 TREND 交易数): direction 从 None/非CALL → CALL 的切换次数
+        runs = 0
+        prev_call = False
+        for row in trace_rows:
+            is_call = row['direction'] == 'CALL'
+            if is_call and not prev_call:
+                runs += 1
+            prev_call = is_call
+        print(f"  CALL 连续段数(潜在TREND交易数): {runs}")
+        # 漏开明细
+        leaks = [row for row in trace_rows if row['bucket'] == '漏开']
+        print(f"  漏开明细: {len(leaks)} 天")
+        for row in leaks:
+            print(f"    {row['asof']}  dlow {row['dlow']:.1f}  reason {row['reason']}")
+        trace_path = os.path.join(RESULT_DIR, f'trend_trace_{PERIOD}.txt')
+        with open(trace_path, 'w') as f:
+            f.write(f"TREND 哑火诊断逐日明细 ({trading_days[0].date()} → {trading_days[-1].date()})\n")
+            f.write(f"列: asof score direction reason dlow near_top near_bottom blocked bucket\n")
+            for row in trace_rows:
+                f.write(f"{row['asof']}  sc={row['score']}  dir={row['direction']}  {row['reason']}  dlow={row['dlow']:.1f}  nt={row['near_top']} nb={row['near_bottom']} blk={row['blocked']} → {row['bucket']}\n")
+        print(f"  wrote {trace_path} ({len(trace_rows)} rows)")
+        print('═' * 70)
 
     # ═══════════════════════════════ 6. render batch files ═══════════════════════════════
     def _rec_lines(rec):
