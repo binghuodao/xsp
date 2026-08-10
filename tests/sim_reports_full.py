@@ -72,8 +72,9 @@ def _load(cache, ticker, period):
 ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
-ap.add_argument('--crash-mode', default='V9', help='crash exit variant: V9 止损日期权续持 (default, production: stop closes ETF only, option rides to 收复入场价 or T+21 expiry兜底, multiple residuals can coexist) | V5 首阴+盈利保护 (prior default) | V4 首阴 (optimal at $2k) | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
+ap.add_argument('--crash-mode', default='V9', help='crash exit variant: V9 止损日期权续持 (default, production) | V10 首阴清大半+收复再进 (首阴卖--crash-yin% ETF, 收复首阳买回满仓续持, 期权腿不变; research) | V5 首阴+盈利保护 (prior default) | V4 首阴 (optimal at $2k) | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
 ap.add_argument('--crash-half', type=float, default=0.0625, help='crash ETF fraction sold at 首阳 (default 0.0625 = sell $312 keep $4688; 0.125 V8d legacy sell $625 keep $4375, 0 = no half, ETF rides full $5k)')
+ap.add_argument('--crash-yin', type=float, default=0.75, help='V10 首阴清大半: crash ETF fraction sold at first red day (default 0.75 = sell $3750 keep $1250; 0 = off, V9 behavior)')
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
 ap.add_argument('--drop-thresh', type=float, default=0.005, help='crash signal XSP daily-drop threshold (default 0.005 = 0.5%%)')
 ap.add_argument('--stop-cooldown', type=int, default=0, help='days to block new crash entries after a crash stop-loss (default 0 = off)')
@@ -93,6 +94,7 @@ args = ap.parse_args()
 PERIOD = args.period
 CRASH_MODE = args.crash_mode
 CRASH_HALF = args.crash_half
+CRASH_YIN = args.crash_yin
 STOP_PCT = args.stop_pct
 REENTRY_PCT = args.reentry_pct
 DROP_THRESH = args.drop_thresh
@@ -290,6 +292,9 @@ def init_state():
     app._crash_reentry = False
     app._crash_exit_mode = CRASH_MODE
     app._crash_half_pct = CRASH_HALF
+    app._crash_yin_pct = CRASH_YIN
+    app._crash_yin_scaled = False
+    app._crash_yin_date = None
     app._crash_stop_pct = STOP_PCT
     app._crash_reentry_pct = REENTRY_PCT
     app._crash_dte = DTE
@@ -322,7 +327,8 @@ def state_fp():
             app._crash_entry_date,
             app._crash_etf_scaled,
             app._crash_reentry,
-            app._crash_etf_out)
+            app._crash_etf_out,
+            app._crash_yin_scaled)
 
 def infer_blocked(msg, r):
     return (r.get('direction') == 'CALL' and '暂缓' in msg and '★ 做多 ETF' not in msg)
@@ -590,9 +596,25 @@ def main():
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
                         rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
+                    elif t.get('yin_etf') is not None:
+                        yin_pct = t.get('yin_pct') or CRASH_YIN
+                        if t.get('re_yin_px'):
+                            rem = ETF_SIZE['CRASH'] * (1 - yin_pct) * (t['re_yin_px'] / t['etf_entry'] - 1) * sm
+                            full = ETF_SIZE['CRASH'] * (spxl_p / t['re_yin_px'] - 1) * sm
+                            t['etf_pnl'] = t['yin_etf'] + rem + full
+                        else:
+                            t['etf_pnl'] = t['yin_etf'] + ETF_SIZE['CRASH'] * (1 - yin_pct) * (spxl_p / t['etf_entry'] - 1) * sm
+                        if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                            if CRASH_MODE in ('V9', 'V10') and '崩盘跌穿' in msg:
+                                t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
+                                              'sigma': t.get('sigma') or 0.20,
+                                              'entry': t['resid_entry'], 'expiry': t['resid_expiry']}
+                            else:
+                                close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                                t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     else:
                         if t.get('k1') and t.get('k2') and t.get('debit') is not None:
-                            if CRASH_MODE == 'V9' and '崩盘跌穿' in msg:
+                            if CRASH_MODE in ('V9', 'V10') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
                                               'sigma': t.get('sigma') or 0.20,
                                               'entry': t['resid_entry'], 'expiry': t['resid_expiry']}
@@ -601,7 +623,7 @@ def main():
                                 t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                         if t.get('etf_entry'):
                             t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1) * sm
-                res = ('首阴清仓' if '崩盘首阴' in msg else '二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
+                res = ('首阴清仓' if ('崩盘首阴' in msg and '崩盘首阴续持' not in msg) else '二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
                        else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
                 close_trade('CRASH', asof, price, res)
                 ev.append(f'CRASH#{n} 平仓')
@@ -618,7 +640,17 @@ def main():
                 ev.append(f'CRASH#{n} 开仓')
             if not prev_fp[7] and now_fp[7]:
                 t = cur_trade('CRASH')
-                if t:
+                if t and prev_fp[10] is True:
+                    sm = t.get('size_mult', 1.0)
+                    osm = sm * OPT_MULT
+                    cal = (asof - t['open']).days
+                    T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
+                    if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                    t['re_yin_px'] = spxl_p
+                    ev.append('崩盘收复再进')
+                elif t:
                     sm = t.get('size_mult', 1.0)
                     osm = sm * OPT_MULT
                     cal = (asof - t['open']).days
@@ -629,7 +661,14 @@ def main():
                     if not t.get('etf_out') and t.get('etf_entry'):
                         t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1) * sm
                     t['half_date'] = asof
-                ev.append('崩盘退半')
+                    ev.append('崩盘退半')
+            if not prev_fp[10] and now_fp[10]:
+                t = cur_trade('CRASH')
+                if t and t.get('etf_entry'):
+                    sm = t.get('size_mult', 1.0)
+                    t['yin_pct'] = CRASH_YIN
+                    t['yin_etf'] = (ETF_SIZE['CRASH'] * CRASH_YIN) * (spxl_p / t['etf_entry'] - 1) * sm
+                    ev.append('崩盘首阴清')
             if not prev_fp[8] and now_fp[8]:
                 t = cur_trade('CRASH')
                 if t:
