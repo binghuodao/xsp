@@ -455,7 +455,16 @@ def send_market_report(report_type, force=False):
              f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | DI {hs.get('di_diff',0):+.2f}",
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
               f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
-               "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+                "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+
+    # ── 10Y 收益率 + 利率闸门状态 ──
+    _tnx_lvl = hs.get('y10_level')
+    _tnx_y = hs.get('y10_20d')
+    if _tnx_lvl is None or _tnx_y is None:
+        lines.append("⚠️ 10Y 不可用（闸门自动关，崩盘照常）")
+    else:
+        _g_on = _y10_gate_active()
+        lines.append(f"10Y {_tnx_lvl:.3f}% (20d {_tnx_y:+.2f}%) | 利率闸门 {'🚫 开(拦截崩盘)' if _g_on else '✓ 关'}")
 
     # ── 平仓提示 ──
     try:
@@ -1159,6 +1168,8 @@ def send_market_report(report_type, force=False):
     _cooldown_on = (_crash_stop_cooldown and _crash_stop_date
                     and (datetime.now(ET_TZ).date() - _crash_stop_date).days <= _crash_stop_cooldown)
     _crash_ok = _no_layer_open and is_crash_signal and not _cooldown_on and not (_crash_size_mult == 0 and _risk_off_active()) and not _y10_gate_active()
+    if is_crash_signal and _y10_gate_active():
+        lines.append(f"🚫 崩盘信号({xsp_chg_pct:.2f}%)被利率闸门拦截（10Y 20d {hs.get('y10_20d',0):+.2f}% ≥ {Y10_GATE_PP*100:.0f}bp）")
     _mr_ok = _no_layer_open and is_mr_signal
     if _crash_ok and not (_mr_ok and _layer_priority == 'mr_crash_trend'):
         _crash_entry_date = datetime.now(ET_TZ).date()
@@ -1594,6 +1605,7 @@ def update_historical_data():
                 if len(tnx_hist) >= 21:
                     tc = tnx_hist['Close']
                     historical_stats["y10_20d"] = float(tc.iloc[-1] - tc.iloc[-20])
+                    historical_stats["y10_level"] = float(tc.iloc[-1])
             except Exception as tnx_err:
                 print(f"⚠️  TNX download failed (gate stays off): {tnx_err}")
 

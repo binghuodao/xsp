@@ -763,9 +763,10 @@ def main():
         book_spread(asof, price, prev_spread_seg, now_spread_seg)
         ev.extend(settle_residuals(asof, price))
         fp_changed = (prev_fp is not None and now_fp != prev_fp)
+        gate_blocked = '被利率闸门拦截' in msg
 
         is_first = (i == 0)
-        if ev or fp_changed or is_first:
+        if ev or fp_changed or is_first or gate_blocked:
             check_day(asof, msg, r, price, blocked, failures)
             records.append({'asof': asof, 'full': True,
                             'tag': ' | '.join(ev) if ev else ('SEED' if is_first else '状态变化'),
