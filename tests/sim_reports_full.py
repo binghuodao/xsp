@@ -214,6 +214,7 @@ def build_snapshot(asof):
         i_i = irx[irx.index <= pd.Timestamp(asof)]
         y10_20d = float(t_i['Close'].iloc[-1] - t_i['Close'].iloc[-20])
         hs['y10_20d'] = y10_20d
+        hs['y10_level'] = float(t_i['Close'].iloc[-1])
         hs['y10_curve'] = float(t_i['Close'].iloc[-1]) - float(i_i['Close'].iloc[-1])
     hs['last_updated'] = 0
     app.historical_stats = hs
