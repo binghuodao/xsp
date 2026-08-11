@@ -85,6 +85,7 @@ ap.add_argument('--etf-stop', type=float, default=0.0, help='crash SPXL separate
 ap.add_argument('--layer-priority', default='crash_mr_trend', help='delayed-open priority: crash_mr_trend (default, 崩盘优先) | mr_crash_trend (MR 优先承接恐慌日)')
 ap.add_argument('--risk-gate', default='none', help='bear-regime gate (research): none | b200 (close<SMA200) | b200slope (close<SMA200 & SMA200 falling) | vix80 (VIX 252d pct>80) | macd (XSP MACD death cross) | engulf (bearish engulfing) | s3red (3 consecutive red days)')
 ap.add_argument('--risk-mult', type=float, default=1.0, help='crash size multiplier when gate ON: 0 = skip entry, 0<mult<1 = scale PnL (default 1.0 = gate inert)')
+ap.add_argument('--crash-y10-gate', type=float, default=0.0, help='research macro gate: skip crash entry when 10Y yield 20d change >= gate (pp, e.g. 0.4); 0 = off (default)')
 ap.add_argument('--opt-mult', type=float, default=1.0, help='crash option-leg PnL multiplier (ETF leg unchanged): 1.0 baseline, 0.5 half-size option, 0 = ETF-only')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
@@ -106,6 +107,7 @@ ETF_STOP = args.etf_stop
 LAYER_PRIORITY = args.layer_priority
 RISK_GATE = args.risk_gate
 RISK_MULT = args.risk_mult
+Y10_GATE = args.crash_y10_gate
 OPT_MULT = args.opt_mult
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
@@ -120,6 +122,19 @@ vix = _load(args.no_net, '^VIX', PERIOD)
 spy = _load(args.no_net, 'SPY', PERIOD)
 spxl = _load(args.no_net, 'SPXL', PERIOD)
 skew = _load(args.no_net, '^SKEW', PERIOD)
+
+# ── macro regime gate data (10Y yield 20d change; only needed when --crash-y10-gate>0) ──
+tnx = None
+irx = None
+if Y10_GATE > 0:
+    try:
+        tnx = _load(args.no_net, '^TNX', PERIOD)
+    except Exception:
+        tnx = None
+    try:
+        irx = _load(args.no_net, '^IRX', PERIOD)
+    except Exception:
+        irx = None
 
 adx_df = ta.adx(spy['High'], spy['Low'], spy['Close'], length=14)
 bb_df = ta.bbands(spy['Close'], length=20, std=2)
@@ -194,6 +209,12 @@ def build_snapshot(asof):
     hs['rsi_14'] = float(r_i.iloc[-1])
     ep_i = ema20p_s[ema20p_s.index <= pd.Timestamp(asof)]
     hs['price_ema20_pct'] = float((scl.iloc[-1] / ep_i.iloc[-1] - 1) * 100)
+    if tnx is not None and irx is not None and len(tnx[tnx.index <= pd.Timestamp(asof)]) >= 21 and len(irx[irx.index <= pd.Timestamp(asof)]) >= 21:
+        t_i = tnx[tnx.index <= pd.Timestamp(asof)]
+        i_i = irx[irx.index <= pd.Timestamp(asof)]
+        y10_20d = float(t_i['Close'].iloc[-1] - t_i['Close'].iloc[-20])
+        hs['y10_20d'] = y10_20d
+        hs['y10_curve'] = float(t_i['Close'].iloc[-1]) - float(i_i['Close'].iloc[-1])
     hs['last_updated'] = 0
     app.historical_stats = hs
     app.latest_data['index']['price'] = float(x_i['Close'].iloc[-1])
@@ -227,6 +248,7 @@ def build_snapshot(asof):
         else:
             raise ValueError(f'unknown --risk-gate {RISK_GATE}')
     app._risk_off_active = (lambda f=bool(flag): f)
+    app._y10_gate_active = (lambda: (False if Y10_GATE <= 0 else hs.get('y10_20d', 0.0) >= Y10_GATE))
     app._crash_etf_size = int(ETF_SIZE['CRASH'] * (RISK_MULT if flag else 1.0))
     sp = spxl[spxl.index <= pd.Timestamp(asof)]
     spxl_price = float(sp['Close'].iloc[-1])

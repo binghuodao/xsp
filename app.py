@@ -37,6 +37,7 @@ parser.add_argument("--floor", type=float, default=0.93, help="Floor percentage 
 parser.add_argument("--ceiling", type=float, default=1.03, help="Ceiling percentage (default: 1.03)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
 parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
+parser.add_argument("--y10-gate", type=float, default=0.4, help="Rates-rising crash gate (10Y yield 20-trading-day change in pp): skip crash entry when >= gate; 0 = off (default 0.4)")
 args, unknown = parser.parse_known_args()
 
 FLOOR_PERCENT = args.floor
@@ -119,11 +120,20 @@ _crash_yin_pct = 0.75             # V10: crash ETF fraction sold at 首阴 (0.75
 _crash_resids = []               # V9: riding crash options past XSP stop-loss, each = {'k1','k2','debit','sigma','entry','expiry','open'} (multiple can coexist)
 _layer_priority = 'crash_mr_trend'  # 三层延迟开仓优先级: crash_mr_trend (default) | mr_crash_trend (MR 优先承接恐慌日)
 _crash_size_mult = 1.0           # crash allocation multiplier (0 = risk-off skip entry; 0<mult<1 scale PnL; harness-injected for regime-gate research)
+Y10_GATE_PP = args.y10_gate       # rates-rising macro gate threshold (10Y 20d change, pp): 0 = off
 
 
 def _risk_off_active():
     """Research-only hook: True = risk-off regime flag ON (set by tests/sim_reports_full gate)."""
     return False
+
+
+def _y10_gate_active():
+    """RATES-RISING macro gate: skip new crash entry when 10Y yield 20-trading-day change >= Y10_GATE_PP.
+    Production reads historical_stats['y10_20d'] (TNX close now - close 20 days ago, pp).
+    TNX missing -> y10_20d None -> gate OFF (silent degradation, trades proceed). Harness may override this function."""
+    y = historical_stats.get("y10_20d")
+    return y is not None and y >= Y10_GATE_PP
 _trend_opt_expiry = None
 _trend_opt_strike = None
 _trend_opt_strike2 = None
@@ -1148,7 +1158,7 @@ def send_market_report(report_type, force=False):
                       and _trend_opt_expiry is None and _active_position_date is None)
     _cooldown_on = (_crash_stop_cooldown and _crash_stop_date
                     and (datetime.now(ET_TZ).date() - _crash_stop_date).days <= _crash_stop_cooldown)
-    _crash_ok = _no_layer_open and is_crash_signal and not _cooldown_on and not (_crash_size_mult == 0 and _risk_off_active())
+    _crash_ok = _no_layer_open and is_crash_signal and not _cooldown_on and not (_crash_size_mult == 0 and _risk_off_active()) and not _y10_gate_active()
     _mr_ok = _no_layer_open and is_mr_signal
     if _crash_ok and not (_mr_ok and _layer_priority == 'mr_crash_trend'):
         _crash_entry_date = datetime.now(ET_TZ).date()
@@ -1576,6 +1586,16 @@ def update_historical_data():
         except Exception as skew_err:
             print(f"⚠️  SKEW download failed: {skew_err}")
             historical_stats["skew_index"] = 146.0  # fallback to mean
+
+        # 10Y yield 20-trading-day change (y10_20d macro gate; only when Y10_GATE_PP > 0)
+        if Y10_GATE_PP > 0:
+            try:
+                tnx_hist = yf.Ticker("^TNX").history(period="6mo")
+                if len(tnx_hist) >= 21:
+                    tc = tnx_hist['Close']
+                    historical_stats["y10_20d"] = float(tc.iloc[-1] - tc.iloc[-20])
+            except Exception as tnx_err:
+                print(f"⚠️  TNX download failed (gate stays off): {tnx_err}")
 
         # XSP ATR 14 & EMA 20 & SMA50
         xsp_ticker = yf.Ticker("^XSP")
