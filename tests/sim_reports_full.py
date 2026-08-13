@@ -338,6 +338,7 @@ def init_state():
     app._crash_etf_stop_pct = ETF_STOP
     app._crash_etf_out = False
     app._layer_priority = LAYER_PRIORITY
+    app.OPT_TP = 0              # suppress app.py-layer option TP (harness uses its own OPT_STANDALONE/OPT_TP accounting, avoids double-settle)
     app._crash_stop_cooldown = STOP_COOLDOWN
     app._crash_stop_date = None
     app._crash_size_mult = RISK_MULT
