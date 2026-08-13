@@ -87,6 +87,10 @@ ap.add_argument('--risk-gate', default='none', help='bear-regime gate (research)
 ap.add_argument('--risk-mult', type=float, default=1.0, help='crash size multiplier when gate ON: 0 = skip entry, 0<mult<1 = scale PnL (default 1.0 = gate inert)')
 ap.add_argument('--crash-y10-gate', type=float, default=0.0, help='research macro gate: skip crash entry when 10Y yield 20d change >= gate (pp, e.g. 0.4); 0 = off (default)')
 ap.add_argument('--opt-mult', type=float, default=1.0, help='crash option-leg PnL multiplier (ETF leg unchanged): 1.0 baseline, 0.5 half-size option, 0 = ETF-only')
+ap.add_argument('--opt-standalone', default='off', help='crash option management (research): off (default, V9 shared exit) | tp (option rides independent: TP/SL/expiry, ETF unchanged) | tp-v9 (V9 shared exit retained, option ALSO takes profit at TP)')
+ap.add_argument('--opt-tp', type=float, default=1.70, help='standalone option take-profit line = debit*this (default 1.70 = +70%; sweep 1.6/1.7/1.75)')
+ap.add_argument('--opt-sl-resid', type=float, default=0.0, help='standalone option stop-loss at residual = debit*this (default 0 = off; sweep 0.3/0.5)')
+ap.add_argument('--opt-sl-adaptive', action='store_true', help='standalone option stop needs XSP <= entry (阴跌确认) to trigger; else ride to TP/expiry (default off)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
@@ -109,6 +113,10 @@ RISK_GATE = args.risk_gate
 RISK_MULT = args.risk_mult
 Y10_GATE = args.crash_y10_gate
 OPT_MULT = args.opt_mult
+OPT_STANDALONE = args.opt_standalone
+OPT_TP = args.opt_tp
+OPT_SL_RESID = args.opt_sl_resid
+OPT_SL_ADAPTIVE = args.opt_sl_adaptive
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
 TRACE_TREND = args.trace_trend
@@ -374,6 +382,7 @@ def open_trade(kind, asof):
                          'mr_K': None, 'mr_sigma': None, 'mr_expiry': None, 'mr_opt_entry': None,
                          'k1': None, 'k2': None, 'debit': None, 'sigma': None,
                          'half_etf': 0.0, 'half_date': None, 'etf_out': False, 'size_mult': 1.0,
+                         'opt_closed': False,
                          'resid_entry': None, 'resid_expiry': None, 'resid': None})
     _open_ref[kind] = n
     return n
@@ -436,6 +445,10 @@ def close_trade(kind, asof, price, result):
         t['hold_days'] = max(len(pd.bdate_range(t['open'], asof)) - 1, 0)
     _open_ref[kind] = None
 
+def _opt_done(t):
+    """Option already settled independently (TP) → skip shared-close settlement."""
+    return OPT_STANDALONE in ('tp', 'tp-v9') and bool(t.get('opt_closed'))
+
 def settle_residuals(asof, price):
     """V9: settle any crash options riding past their XSP stop-loss (close on 收复入场价/首阳 or T+21 expiry)."""
     done = []
@@ -444,6 +457,30 @@ def settle_residuals(asof, price):
         if not r:
             continue
         days_left = (r['expiry'] - asof).days
+        if OPT_STANDALONE == 'tp':
+            # standalone mode: settle on TP / residual SL / 21DTE expiry, independent of XSP 收复
+            if t.get('opt_closed'):
+                continue
+            T_rem = max(days_left / 365.0, 1 / 365.0)
+            close_d = _bs_spread(price, r['k1'], r['k2'], T_rem, r['sigma'])
+            tp_line = r['debit'] * OPT_TP
+            sl_line = r['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
+            if close_d >= tp_line:
+                t['opt_pnl'] = max((close_d - r['debit']), -r['debit']) * 100 * t.get('size_mult', 1.0) * OPT_MULT
+                t['opt_closed'] = True
+                t['resid'] = None
+                done.append(f'CRASH#{t["n"]} 期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
+            elif sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= r['entry']):
+                t['opt_pnl'] = max((close_d - r['debit']), -r['debit']) * 100 * t.get('size_mult', 1.0) * OPT_MULT
+                t['opt_closed'] = True
+                t['resid'] = None
+                done.append(f'CRASH#{t["n"]} 期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
+            elif days_left <= 0:
+                t['opt_pnl'] = max((close_d - r['debit']), -r['debit']) * 100 * t.get('size_mult', 1.0) * OPT_MULT
+                t['opt_closed'] = True
+                t['resid'] = None
+                done.append(f'CRASH#{t["n"]} 期权到期结算 (价值${close_d:.2f})')
+            continue
         if price <= r['entry'] and days_left > 0:
             continue
         T_rem = max(days_left / 365.0, 1 / 365.0)
@@ -645,8 +682,28 @@ def main():
                     osm = sm * OPT_MULT
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
+                    if OPT_STANDALONE == 'tp' and not t.get('opt_closed') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        # standalone: option rides independent of ETF. On shared-exit day:
+                        #  - TP/SL hit now → settle option, keep ETF logic below
+                        #  - not hit → option goes to residual (independent TP/SL/expiry later)
+                        close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                        tp_line = t['debit'] * OPT_TP
+                        sl_line = t['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
+                        if close_d >= tp_line:
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                            t['opt_closed'] = True
+                            ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
+                        elif sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= t.get('resid_entry', price)):
+                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                            t['opt_closed'] = True
+                            ev.append(f'期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
+                        else:
+                            t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
+                                          'sigma': t.get('sigma') or 0.20,
+                                          'entry': t['resid_entry'], 'expiry': t['resid_expiry']}
+                            ev.append('期权转残值续持 (独立TP/SL/到期)')
                     if t.get('etf_out'):
-                        if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
                             close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                             t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     elif t.get('half_date'):
@@ -661,7 +718,7 @@ def main():
                             t['etf_pnl'] = t['yin_etf'] + rem + full
                         else:
                             t['etf_pnl'] = t['yin_etf'] + ETF_SIZE['CRASH'] * (1 - yin_pct) * (spxl_p / t['etf_entry'] - 1) * sm
-                        if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
                                               'sigma': t.get('sigma') or 0.20,
@@ -670,7 +727,7 @@ def main():
                                 close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                                 t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     else:
-                        if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        if t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
                                               'sigma': t.get('sigma') or 0.20,
@@ -708,7 +765,7 @@ def main():
                     osm = sm * OPT_MULT
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
-                    if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                    if t.get('k1') and t.get('k2') and t.get('debit') is not None and OPT_STANDALONE != 'tp':
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     t['re_yin_px'] = spxl_p
@@ -718,7 +775,7 @@ def main():
                     osm = sm * OPT_MULT
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
-                    if t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                    if t.get('k1') and t.get('k2') and t.get('debit') is not None and OPT_STANDALONE != 'tp':
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     if not t.get('etf_out') and t.get('etf_entry'):
@@ -762,6 +819,27 @@ def main():
         if sig_alerts:
             ev.append('平仓提示')
         book_spread(asof, price, prev_spread_seg, now_spread_seg)
+        if OPT_STANDALONE in ('tp', 'tp-v9'):
+            t = cur_trade('CRASH')
+            if t and not t.get('opt_closed') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                if OPT_STANDALONE == 'tp' and t.get('resid'):
+                    pass  # resid handled by settle_residuals
+                else:
+                    sm = t.get('size_mult', 1.0)
+                    osm = sm * OPT_MULT
+                    cal = (asof - t['open']).days
+                    T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
+                    close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                    tp_line = t['debit'] * OPT_TP
+                    sl_line = t['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
+                    if close_d >= tp_line:
+                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                        t['opt_closed'] = True
+                        ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
+                    elif OPT_STANDALONE == 'tp' and sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= t.get('resid_entry', price)):
+                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                        t['opt_closed'] = True
+                        ev.append(f'期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
         ev.extend(settle_residuals(asof, price))
         fp_changed = (prev_fp is not None and now_fp != prev_fp)
         gate_blocked = '被利率闸门拦截' in msg
