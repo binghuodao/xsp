@@ -4,8 +4,8 @@ For EVERY trading day we rebuild app state (indicators +
 BS option chain + mock evening clock) and call app.send_market_report('evening'),
 so the app's position state machine runs continuously exactly like production.
 
-Canonical backtest: python3 tests/sim_reports_full.py --no-net --period 7y
-  = full data window (2021-06-01 -> today, ~5.4y; ^XSP data caps at 2021-03-01).
+Canonical backtest: python3 tests/sim_reports_full.py --no-net --period 7y --crash-y10-gate 0.4
+  = full data window (2021-06-01 -> today, ~5.4y; ^XSP data caps at 2021-03-01) + production crash y10 gate.
   Default --period 3y keeps the daily-review window used for day-to-day checks.
 
 Output — batched into tests/sim_reports_full/ for easy lookup:
