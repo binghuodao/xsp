@@ -38,7 +38,6 @@ parser.add_argument("--ceiling", type=float, default=1.03, help="Ceiling percent
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
 parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
 parser.add_argument("--y10-gate", type=float, default=0.4, help="Rates-rising crash gate (10Y yield 20-trading-day change in pp): skip crash entry when >= gate; 0 = off (default 0.4)")
-parser.add_argument("--opt-tp", type=float, default=1.5, help="Crash option independent take-profit: close option when BS spread value >= debit * N (ETF keeps riding, V9 shared exits unchanged); 0 = off (default 1.5)")
 args, unknown = parser.parse_known_args()
 
 FLOOR_PERCENT = args.floor
@@ -122,7 +121,6 @@ _crash_resids = []               # V9: riding crash options past XSP stop-loss, 
 _layer_priority = 'crash_mr_trend'  # 三层延迟开仓优先级: crash_mr_trend (default) | mr_crash_trend (MR 优先承接恐慌日)
 _crash_size_mult = 1.0           # crash allocation multiplier (0 = risk-off skip entry; 0<mult<1 scale PnL; harness-injected for regime-gate research)
 Y10_GATE_PP = args.y10_gate       # rates-rising macro gate threshold (10Y 20d change, pp): 0 = off
-OPT_TP = args.opt_tp              # crash option independent take-profit multiple of debit (0 = off)
 
 
 def _risk_off_active():
@@ -914,7 +912,7 @@ def send_market_report(report_type, force=False):
         _crash_keep = _crash_etf_size * (1 - _crash_half_pct)
         if _crash_yin_scaled:
             lines.append(f"📋 期权续持(首阴不动) | SPXL 已退 ${_crash_etf_size*_crash_yin_pct:.0f}(首阴清{_crash_yin_pct:.0%}), 剩 ${_crash_etf_size*(1-_crash_yin_pct):.0f} 续持")
-        elif not _crash_etf_scaled and _crash_k1:
+        elif not _crash_etf_scaled:
             lines.append(f"价差 ${_crash_k1}C / ${_crash_k2}C  成本${_crash_debit*100:.0f}/口")
         if _crash_etf_scaled:
             if _crash_exit_mode == 'V10' and _crash_reentry and _crash_half_date:
@@ -922,10 +920,7 @@ def send_market_report(report_type, force=False):
             else:
                 lines.append(f"📋 期权已平 | SPXL 已退 ${_crash_sold:.0f}, 剩 ${_crash_keep:.0f} 续持 (入场${_crash_etf_entry:.2f})")
         elif _crash_etf_entry and not _crash_yin_scaled:
-            if _crash_k1:
-                lines.append(f"📋 工具: CALL价差 + SPXL ${_crash_etf_size//1000}k (入场${_crash_etf_entry:.2f})")
-            else:
-                lines.append(f"📋 期权已止盈 | SPXL ${_crash_etf_size//1000}k 续持 (入场${_crash_etf_entry:.2f})")
+            lines.append(f"📋 工具: CALL价差 + SPXL ${_crash_etf_size//1000}k (入场${_crash_etf_entry:.2f})")
         _crash_stop = _crash_entry_price * (1 - _crash_stop_pct)
         _crash_green = _crash_entry_price * 1.0
         if _crash_etf_stop_pct > 0 and _crash_etf_entry:
@@ -1121,17 +1116,6 @@ def send_market_report(report_type, force=False):
             _crash_yin_scaled = False; _crash_yin_date = None
             _crash_green_streak = 0
         else:
-            if OPT_TP > 0 and not _crash_etf_scaled and not _crash_yin_scaled and _crash_k1 and _crash_k2 and _crash_debit is not None and _crash_sigma:
-                T_rem = max(_crash_dte / 365.0 - crash_cal_days / 365.0, 1 / 365.0)
-                _e1 = pricing.black_scholes(price, _crash_k1, T_rem, 0.05, _crash_sigma, 'C')
-                _e2 = pricing.black_scholes(price, _crash_k2, T_rem, 0.05, _crash_sigma, 'C')
-                _spread = _e1 - _e2
-                _tp_line = _crash_debit * OPT_TP
-                if _spread >= _tp_line:
-                    _tp_pnl = max((_spread - _crash_debit) * 100, -_crash_debit * 100)
-                    lines.append(f"💰 期权独立止盈: 平CALL价差 (价值${_spread:.2f}≥${_tp_line:.2f}, 估${_tp_pnl:.0f}), ETF续持")
-                    close_lines.append(f"  💰 崩盘期权止盈 {crash_days}d (价值${_spread:.2f}≥${_tp_line:.2f}), 平期权, ETF续持")
-                    _crash_k1 = None; _crash_k2 = None; _crash_debit = None; _crash_sigma = None
             lines.append(f"⏳ 崩盘等待中 ({4 - crash_days}d最多 | 止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f})")
         _latest_report['crash_force_days'] = _force_days
         _latest_report['crash_reentry'] = _crash_reentry

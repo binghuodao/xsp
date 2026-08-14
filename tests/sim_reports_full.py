@@ -90,6 +90,7 @@ ap.add_argument('--opt-mult', type=float, default=1.0, help='crash option-leg Pn
 ap.add_argument('--opt-standalone', default='off', help='crash option management (research): off (default, V9 shared exit) | tp (option rides independent: TP/SL/expiry, ETF unchanged) | tp-v9 (V9 shared exit retained, option ALSO takes profit at TP)')
 ap.add_argument('--opt-tp', type=float, default=1.70, help='standalone option take-profit line = debit*this (default 1.70 = +70%; sweep 1.6/1.7/1.75)')
 ap.add_argument('--opt-sl-resid', type=float, default=0.0, help='standalone option stop-loss at residual = debit*this (default 0 = off; sweep 0.3/0.5)')
+ap.add_argument('--opt-sl-decay', type=float, default=0.0, help='time-decay early exit for standalone resid: pts past half-life (hold_days > DTE*this) AND value < debit*this fallback exit before 21D cliff (default 0 = off)')
 ap.add_argument('--opt-sl-adaptive', action='store_true', help='standalone option stop needs XSP <= entry (阴跌确认) to trigger; else ride to TP/expiry (default off)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
@@ -116,6 +117,7 @@ OPT_MULT = args.opt_mult
 OPT_STANDALONE = args.opt_standalone
 OPT_TP = args.opt_tp
 OPT_SL_RESID = args.opt_sl_resid
+OPT_SL_DECAY = args.opt_sl_decay
 OPT_SL_ADAPTIVE = args.opt_sl_adaptive
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
@@ -338,7 +340,6 @@ def init_state():
     app._crash_etf_stop_pct = ETF_STOP
     app._crash_etf_out = False
     app._layer_priority = LAYER_PRIORITY
-    app.OPT_TP = 0              # suppress app.py-layer option TP (harness uses its own OPT_STANDALONE/OPT_TP accounting, avoids double-settle)
     app._crash_stop_cooldown = STOP_COOLDOWN
     app._crash_stop_date = None
     app._crash_size_mult = RISK_MULT
@@ -458,8 +459,9 @@ def settle_residuals(asof, price):
         if not r:
             continue
         days_left = (r['expiry'] - asof).days
-        if OPT_STANDALONE == 'tp':
-            # standalone mode: settle on TP / residual SL / 21DTE expiry, independent of XSP 收复
+        if OPT_STANDALONE == 'tp' and r.get('indep'):
+            # standalone (研究): resid 按独立 TP / residual SL / 21DTE expiry 三段式结算,
+            # independent of XSP 收复.  V9 语义的 resid(无 `indep`)落回下方收复/到期逻辑.
             if t.get('opt_closed'):
                 continue
             T_rem = max(days_left / 365.0, 1 / 365.0)
@@ -476,6 +478,13 @@ def settle_residuals(asof, price):
                 t['opt_closed'] = True
                 t['resid'] = None
                 done.append(f'CRASH#{t["n"]} 期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
+            elif OPT_SL_DECAY > 0 and (r['expiry'] - t['open']).days > 0 \
+                    and (r['expiry'] - t['open']).days - days_left > DTE * OPT_SL_DECAY \
+                    and close_d < r['debit'] * OPT_SL_DECAY:
+                t['opt_pnl'] = max((close_d - r['debit']), -r['debit']) * 100 * t.get('size_mult', 1.0) * OPT_MULT
+                t['opt_closed'] = True
+                t['resid'] = None
+                done.append(f'CRASH#{t["n"]} 期权时间风华早退 (价值${close_d:.2f}<保本${r["debit"]:.2f})')
             elif days_left <= 0:
                 t['opt_pnl'] = max((close_d - r['debit']), -r['debit']) * 100 * t.get('size_mult', 1.0) * OPT_MULT
                 t['opt_closed'] = True
@@ -683,28 +692,22 @@ def main():
                     osm = sm * OPT_MULT
                     cal = (asof - t['open']).days
                     T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
-                    if OPT_STANDALONE == 'tp' and not t.get('opt_closed') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
-                        # standalone: option rides independent of ETF. On shared-exit day:
-                        #  - TP/SL hit now → settle option, keep ETF logic below
-                        #  - not hit → option goes to residual (independent TP/SL/expiry later)
-                        close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
-                        tp_line = t['debit'] * OPT_TP
-                        sl_line = t['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
-                        if close_d >= tp_line:
-                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
-                            t['opt_closed'] = True
-                            ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
-                        elif sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= t.get('resid_entry', price)):
-                            t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
-                            t['opt_closed'] = True
-                            ev.append(f'期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
-                        else:
-                            t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
-                                          'sigma': t.get('sigma') or 0.20,
-                                          'entry': t['resid_entry'], 'expiry': t['resid_expiry']}
-                            ev.append('期权转残值续持 (独立TP/SL/到期)')
+                    if OPT_STANDALONE == 'tp' and not t.get('opt_closed') and not t.get('resid') \
+                            and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                        # 纯独立(研究基线): 共享出场日(ETF 平仓)期权一律转独立 resid,
+                        # 后续由 settle_residuals 的独立 TP/SL/到期结算.
+                        # 历史试验(均已记录 RULES.md):
+                        #   score>=50 震荡护栏 / XSP>=开仓价反弹护栏 → 过度压制 2021-25 增益弃用;
+                        #   SL 提升(0.5~1.2)/时间风化早退 → 割伤 21-25 TP 增益弃用;
+                        #   止损同步ETF(全部共享出场 value<保本即跟 ETF 止损) → 三层最优
+                        #   $28,231 但 2026 仍 -1,156, 用户否决 → 退回 off baseline.
+                        t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
+                                      'sigma': t.get('sigma') or 0.20,
+                                      'entry': t['resid_entry'], 'expiry': t['resid_expiry'],
+                                      'indep': True}
+                        ev.append('期权转残值续持 (独立TP/SL/到期)')
                     if t.get('etf_out'):
-                        if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
+                        if t.get('half_date') is None and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t) and not t.get('resid'):
                             close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                             t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     elif t.get('half_date'):
@@ -719,7 +722,7 @@ def main():
                             t['etf_pnl'] = t['yin_etf'] + rem + full
                         else:
                             t['etf_pnl'] = t['yin_etf'] + ETF_SIZE['CRASH'] * (1 - yin_pct) * (spxl_p / t['etf_entry'] - 1) * sm
-                        if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
+                        if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t) and not t.get('resid'):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
                                               'sigma': t.get('sigma') or 0.20,
@@ -728,7 +731,7 @@ def main():
                                 close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                                 t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     else:
-                        if t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t):
+                        if t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t) and not t.get('resid'):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
                                               'sigma': t.get('sigma') or 0.20,
@@ -769,6 +772,9 @@ def main():
                     if t.get('k1') and t.get('k2') and t.get('debit') is not None and OPT_STANDALONE != 'tp':
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                        # shared-exit day terminates the option (mirrors production 收复再进 p80 期权结算)
+                        t['opt_closed'] = True
+                        t['k1'] = None; t['k2'] = None; t['debit'] = None
                     t['re_yin_px'] = spxl_p
                     ev.append('崩盘收复再进')
                 elif t:
@@ -779,6 +785,11 @@ def main():
                     if t.get('k1') and t.get('k2') and t.get('debit') is not None and OPT_STANDALONE != 'tp':
                         close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                         t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                        # shared-exit day (首阳) terminates the option — production 首阳平CALL价差.
+                        # Previously the option stayed alive and the daily TP block could later
+                        # re-settle it (phantom +TP on an option that production closed at 首阳).
+                        t['opt_closed'] = True
+                        t['k1'] = None; t['k2'] = None; t['debit'] = None
                     if not t.get('etf_out') and t.get('etf_entry'):
                         t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1) * sm
                     t['half_date'] = asof
@@ -820,27 +831,42 @@ def main():
         if sig_alerts:
             ev.append('平仓提示')
         book_spread(asof, price, prev_spread_seg, now_spread_seg)
-        if OPT_STANDALONE in ('tp', 'tp-v9'):
+        if OPT_STANDALONE == 'tp':
+            # 纯独立: 期权独立续持, 每日评估 TP / 残值止损 / 到期, 独立于 ETF 共享出场.
+            # (防 2026 高位横盘期权死扛到 21DTE 的护栏, 当前由 OPT_SL_RESID 提高残值止损
+            # 承担; 曾试 score>=50 震荡与 XSP>=开仓价反弹护栏, 均过度压制 2021-25 增益.)
             t = cur_trade('CRASH')
-            if t and not t.get('opt_closed') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
-                if OPT_STANDALONE == 'tp' and t.get('resid'):
-                    pass  # resid handled by settle_residuals
-                else:
-                    sm = t.get('size_mult', 1.0)
-                    osm = sm * OPT_MULT
-                    cal = (asof - t['open']).days
-                    T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
-                    close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
-                    tp_line = t['debit'] * OPT_TP
-                    sl_line = t['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
-                    if close_d >= tp_line:
-                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
-                        t['opt_closed'] = True
-                        ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
-                    elif OPT_STANDALONE == 'tp' and sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= t.get('resid_entry', price)):
-                        t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
-                        t['opt_closed'] = True
-                        ev.append(f'期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
+            if t and not t.get('opt_closed') and not t.get('resid') and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                sm = t.get('size_mult', 1.0)
+                osm = sm * OPT_MULT
+                cal = (asof - t['open']).days
+                T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
+                close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                tp_line = t['debit'] * OPT_TP
+                sl_line = t['debit'] * OPT_SL_RESID if OPT_SL_RESID > 0 else 0
+                if close_d >= tp_line:
+                    t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                    t['opt_closed'] = True
+                    ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
+                elif sl_line > 0 and close_d <= sl_line and (not OPT_SL_ADAPTIVE or price <= t.get('resid_entry', price)):
+                    t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                    t['opt_closed'] = True
+                    ev.append(f'期权残值止损 (价值${close_d:.2f}≤${sl_line:.2f})')
+        elif OPT_STANDALONE == 'tp-v9':
+            # tp-v9 (作废参考): 保留共享出场优先语义 + 首阳退半/首阴后冻结窗口.
+            t = cur_trade('CRASH')
+            scaled_away = t and (bool(t.get('half_date')) or t.get('yin_etf') is not None)
+            if t and not t.get('opt_closed') and not scaled_away and t.get('k1') and t.get('k2') and t.get('debit') is not None:
+                sm = t.get('size_mult', 1.0)
+                osm = sm * OPT_MULT
+                cal = (asof - t['open']).days
+                T_rem = max(DTE / 365.0 - cal / 365.0, 1 / 365.0)
+                close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
+                tp_line = t['debit'] * OPT_TP
+                if close_d >= tp_line:
+                    t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
+                    t['opt_closed'] = True
+                    ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
         ev.extend(settle_residuals(asof, price))
         fp_changed = (prev_fp is not None and now_fp != prev_fp)
         gate_blocked = '被利率闸门拦截' in msg
