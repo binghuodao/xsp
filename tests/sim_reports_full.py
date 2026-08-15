@@ -729,7 +729,7 @@ def main():
                             t['keep_sh'] = keep
                         rem = keep * (spxl_p - base) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
-                    elif t.get('yin_etf') is not None:
+                    elif t.get('yin_sh') is not None:
                         yin_pct = t.get('yin_pct') or CRASH_YIN
                         sh = t.get('etf_shares') or 0
                         yin_sh = t.get('yin_sh')
@@ -891,7 +891,7 @@ def main():
         elif OPT_STANDALONE == 'tp-v9':
             # tp-v9 (作废参考): 保留共享出场优先语义 + 首阳退半/首阴后冻结窗口.
             t = cur_trade('CRASH')
-            scaled_away = t and (bool(t.get('half_date')) or t.get('yin_etf') is not None)
+            scaled_away = t and (bool(t.get('half_date')) or t.get('yin_sh') is not None)
             if t and not t.get('opt_closed') and not scaled_away and t.get('k1') and t.get('k2') and t.get('debit') is not None:
                 sm = t.get('size_mult', 1.0)
                 osm = sm * OPT_MULT
