@@ -380,10 +380,12 @@ def open_trade(kind, asof):
     ledger[kind].append({'n': n, 'kind': kind, 'open': asof, 'open_p': None,
                          'close': None, 'close_p': None, 'result': None,
                          'file': None, 'line': None, 'rolls': 0,
-                         'etf_entry': None, 'etf_pnl': 0.0, 'opt_pnl': 0.0, 'segs': [],
+                         'etf_entry': None, 'etf_close': None, 'etf_shares': None, 'etf_pnl': 0.0, 'opt_pnl': 0.0, 'segs': [],
+                         'half_etf': 0.0, 'half_sh': None, 'keep_sh': None, 'half_date': None,
+                         'yin_etf': 0.0, 'yin_sh': None, 'yin_keep_sh': None,
                          'mr_K': None, 'mr_sigma': None, 'mr_expiry': None, 'mr_opt_entry': None,
                          'k1': None, 'k2': None, 'debit': None, 'sigma': None,
-                         'half_etf': 0.0, 'half_date': None, 'etf_out': False, 'size_mult': 1.0,
+                         'etf_out': False, 'size_mult': 1.0,
                          'opt_closed': False,
                          'resid_entry': None, 'resid_expiry': None, 'resid': None})
     _open_ref[kind] = n
@@ -430,6 +432,9 @@ def book_spread(asof, price, prev_seg, now_seg):
     if now_seg and not same:
         t['segs'] = list(t.get('segs') or []) + [now_seg]
 
+def _leg_round(shares, frac):
+    return max(round(shares * frac), 0)
+
 def cur_trade(kind):
     if _open_ref[kind] is None:
         return None
@@ -438,12 +443,14 @@ def cur_trade(kind):
             return t
     return None
 
-def close_trade(kind, asof, price, result):
+def close_trade(kind, asof, price, result, etf_p=None):
     t = cur_trade(kind)
     if t:
         t['close'] = asof
         t['close_p'] = price
         t['result'] = result
+        if etf_p is not None:
+            t['etf_close'] = etf_p
         t['hold_days'] = max(len(pd.bdate_range(t['open'], asof)) - 1, 0)
     _open_ref[kind] = None
 
@@ -642,14 +649,16 @@ def main():
                 n = cur_trade('TREND')['n'] if cur_trade('TREND') else None
                 t = cur_trade('TREND')
                 if t and t.get('etf_entry'):
-                    t['etf_pnl'] = ETF_SIZE['TREND'] * (spxl_p / t['etf_entry'] - 1)
+                    t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry'])
                 book_spread(asof, price, prev_spread_seg, now_spread_seg)
-                close_trade('TREND', asof, price, trend_close_result(alerts))
+                close_trade('TREND', asof, price, trend_close_result(alerts), spxl_p)
                 ev.append(f'TREND#{n} 平仓')
             if tr_changed and now_fp[1] is not None:
                 n = open_trade('TREND', asof)
                 t = cur_trade('TREND')
-                if t: t['etf_entry'] = spxl_p
+                if t:
+                    t['etf_entry'] = spxl_p
+                    t['etf_shares'] = max(round(ETF_SIZE['TREND'] / spxl_p), 1)
                 ev.append(f'TREND#{n} 开仓')
             if prev_fp[2] is None and now_fp[2] is not None:
                 ev.append('价差开')
@@ -669,15 +678,16 @@ def main():
                         exit_opt = _bs_call(price, t['mr_K'], T_rem, t.get('mr_sigma'))
                         t['opt_pnl'] = max((exit_opt - t['mr_opt_entry']), -t['mr_opt_entry']) * 100
                     if t.get('etf_entry'):
-                        t['etf_pnl'] = ETF_SIZE['MR'] * (spxl_p / t['etf_entry'] - 1)
+                        t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry'])
                 res = ('首阳+0.3%' if 'MR首阳' in msg else '止损-2%' if 'MR跌穿' in msg else '3天强制平')
-                close_trade('MR', asof, price, res)
+                close_trade('MR', asof, price, res, spxl_p)
                 ev.append(f'MR#{n} 平仓')
             if mr_changed and now_fp[5] is not None:
                 n = open_trade('MR', asof)
                 t = cur_trade('MR')
                 if t:
                     t['etf_entry'] = spxl_p
+                    t['etf_shares'] = max(round(ETF_SIZE['MR'] / spxl_p), 1)
                     t['mr_K'] = app._s5(app._mr_entry_price or price)
                     t['mr_sigma'] = vix_p / 100.0
                     t['mr_expiry'] = asof + timedelta(days=7)
@@ -712,16 +722,30 @@ def main():
                             t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                     elif t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
-                        rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
+                        keep = t.get('keep_sh')
+                        if keep is None:
+                            sh = t.get('etf_shares') or 0
+                            keep = sh - _leg_round(sh, CRASH_HALF)
+                            t['keep_sh'] = keep
+                        rem = keep * (spxl_p - base) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     elif t.get('yin_etf') is not None:
                         yin_pct = t.get('yin_pct') or CRASH_YIN
+                        sh = t.get('etf_shares') or 0
+                        yin_sh = t.get('yin_sh')
+                        if yin_sh is None:
+                            yin_sh = _leg_round(sh, yin_pct)
+                            t['yin_sh'] = yin_sh
+                            t['yin_keep_sh'] = sh - yin_sh
+                        keep = t.get('yin_keep_sh')
+                        if keep is None:
+                            keep = sh - yin_sh
                         if t.get('re_yin_px'):
-                            rem = ETF_SIZE['CRASH'] * (1 - yin_pct) * (t['re_yin_px'] / t['etf_entry'] - 1) * sm
-                            full = ETF_SIZE['CRASH'] * (spxl_p / t['re_yin_px'] - 1) * sm
+                            rem = keep * (t['re_yin_px'] - t['etf_entry']) * sm
+                            full = sh * (spxl_p - t['re_yin_px']) * sm
                             t['etf_pnl'] = t['yin_etf'] + rem + full
                         else:
-                            t['etf_pnl'] = t['yin_etf'] + ETF_SIZE['CRASH'] * (1 - yin_pct) * (spxl_p / t['etf_entry'] - 1) * sm
+                            t['etf_pnl'] = t['yin_etf'] + keep * (spxl_p - t['etf_entry']) * sm
                         if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t) and not t.get('resid'):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
@@ -740,7 +764,7 @@ def main():
                                 close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                                 t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                         if t.get('etf_entry'):
-                            t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1) * sm
+                            t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry']) * sm
                     if t.get('reopened'):
                         rcal = (asof - t['reopen_date']).days
                         rT_rem = max(DTE / 365.0 - rcal / 365.0, 1 / 365.0)
@@ -749,13 +773,14 @@ def main():
                         t['opt_pnl'] = (t.get('opt_pnl') or 0) + ropnl
                 res = ('首阴清仓' if ('崩盘首阴' in msg and '崩盘首阴续持' not in msg) else '二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
                        else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
-                close_trade('CRASH', asof, price, res)
+                close_trade('CRASH', asof, price, res, spxl_p)
                 ev.append(f'CRASH#{n} 平仓')
             if cr_changed and now_fp[6] is not None:
                 n = open_trade('CRASH', asof)
                 t = cur_trade('CRASH')
                 if t:
                     t['etf_entry'] = spxl_p
+                    t['etf_shares'] = max(round(ETF_SIZE['CRASH'] / spxl_p), 1)
                     t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
                     t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
                     t['size_mult'] = RISK_MULT if app._risk_off_active() else 1.0
@@ -791,7 +816,11 @@ def main():
                         t['opt_closed'] = True
                         t['k1'] = None; t['k2'] = None; t['debit'] = None
                     if not t.get('etf_out') and t.get('etf_entry'):
-                        t['half_etf'] = (ETF_SIZE['CRASH'] * CRASH_HALF) * (spxl_p / t['etf_entry'] - 1) * sm
+                        sh = t.get('etf_shares') or 0
+                        half_sh = _leg_round(sh, CRASH_HALF)
+                        t['half_sh'] = half_sh
+                        t['keep_sh'] = sh - half_sh
+                        t['half_etf'] = half_sh * (spxl_p - t['etf_entry']) * sm
                     t['half_date'] = asof
                     ev.append('崩盘退半')
             if not prev_fp[10] and now_fp[10]:
@@ -799,7 +828,11 @@ def main():
                 if t and t.get('etf_entry'):
                     sm = t.get('size_mult', 1.0)
                     t['yin_pct'] = CRASH_YIN
-                    t['yin_etf'] = (ETF_SIZE['CRASH'] * CRASH_YIN) * (spxl_p / t['etf_entry'] - 1) * sm
+                    sh = t.get('etf_shares') or 0
+                    yin_sh = _leg_round(sh, CRASH_YIN)
+                    t['yin_sh'] = yin_sh
+                    t['yin_keep_sh'] = sh - yin_sh
+                    t['yin_etf'] = yin_sh * (spxl_p - t['etf_entry']) * sm
                     ev.append('崩盘首阴清')
             if not prev_fp[8] and now_fp[8]:
                 t = cur_trade('CRASH')
@@ -818,10 +851,13 @@ def main():
                     sm = t.get('size_mult', 1.0)
                     if t.get('half_date'):
                         base = t.get('re_entry_spxl') or t.get('etf_entry')
-                        rem = (ETF_SIZE['CRASH'] * (1 - CRASH_HALF)) * (spxl_p / base - 1) if base else 0
+                        keep = t.get('keep_sh')
+                        if keep is None:
+                            keep = (t.get('etf_shares') or 0) - _leg_round(t.get('etf_shares') or 0, CRASH_HALF)
+                        rem = keep * (spxl_p - base) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     elif t.get('etf_entry'):
-                        t['etf_pnl'] = ETF_SIZE['CRASH'] * (spxl_p / t['etf_entry'] - 1) * sm
+                        t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry']) * sm
                     t['etf_out'] = True
                 ev.append('崩盘ETF止损')
             if prev_blocked is not None and prev_blocked != blocked:
@@ -1029,7 +1065,7 @@ def main():
     idx.append('查找: 定位列给出 文件:行号; 全部为盘后晚报(16:30 ET)')
     idx.append('═' * 70)
     idx.append('')
-    idx.append(f'── TREND 趋势 ETF($5k SPXL)+14DTE CALL价差  共 {len(ledger["TREND"])} 笔 ──')
+    idx.append(f'── TREND 趋势 ETF(整股 SPXL ≈$5k)+14DTE CALL价差  共 {len(ledger["TREND"])} 笔 ──')
     idx.append('  #  开仓日        入场价    平仓日        出场价    天数  滚仓  结果            定位')
     for t in ledger['TREND']:
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
@@ -1043,7 +1079,7 @@ def main():
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
         idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {str(t.get('result','')):<14} {fl}")
     idx.append('')
-    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+$5k SPXL  共 {len(ledger["CRASH"])} 笔 ──')
+    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+整股 SPXL(≈$5k)  共 {len(ledger["CRASH"])} 笔 ──')
     idx.append('  #  开仓日        入场价    平仓日        出场价    天数  结果            定位')
     for t in ledger['CRASH']:
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
@@ -1059,14 +1095,17 @@ def main():
     # ═══════════════════════════════ 7.6 per-trade PnL ledger ═══════════════════════════════
     trade_path = os.path.join(RESULT_DIR, f'trades_{PERIOD}.csv')
     with open(trade_path, 'w') as f:
-        f.write('kind,n,open,open_p,close,close_p,hold_days,result,opt_pnl,etf_pnl,total_pnl\n')
+        f.write('kind,n,open,open_p,close,close_p,etf_open,etf_close,etf_shares,hold_days,result,opt_pnl,etf_pnl,total_pnl\n')
         for t in ledger['TREND'] + ledger['MR'] + ledger['CRASH']:
             op = t.get('open_p') or 0
             cp = t.get('close_p') or 0
+            eo = t.get('etf_entry') or 0
+            ec = t.get('etf_close') or 0
+            es = t.get('etf_shares') or 0
             hd = t.get('hold_days', '')
             opt = t.get('opt_pnl') or 0
             etf = t.get('etf_pnl') or 0
-            f.write(f"{t['kind']},{t['n']},{t['open']},{op:.2f},{str(t.get('close'))},{cp:.2f},{hd},{t.get('result')},{opt:.2f},{etf:.2f},{opt + etf:.2f}\n")
+            f.write(f"{t['kind']},{t['n']},{t['open']},{op:.2f},{str(t.get('close'))},{cp:.2f},{eo:.2f},{ec:.2f},{es},{hd},{t.get('result')},{opt:.2f},{etf:.2f},{opt + etf:.2f}\n")
     print(f"  wrote trades_{PERIOD}.csv: {len(ledger['TREND']) + len(ledger['MR']) + len(ledger['CRASH'])} trades")
 
     # ═══════════════════════════════ 7.5 backtest stats ═══════════════════════════════
@@ -1136,8 +1175,8 @@ def main():
     bt.append(f'── 三层合计  共 {len(allt)} 笔 (已平 {len(tot_closed)})  总PnL ${tot_pnl:,.0f}  胜率 {w}/{len(tot_closed)} ──')
     bt.append('')
     bt.append('说明:')
-    bt.append('  · PnL = ETF仓位($5k/$2k/$5k SPXL) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
-    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退 {CRASH_HALF:.0%}(${ETF_SIZE["CRASH"]*CRASH_HALF:.0f}); 首阴(V4)/二次首阳(V6-8)/止损/4天 再结剩余 ${ETF_SIZE["CRASH"]*(1-CRASH_HALF):.0f}')
+    bt.append('  · PnL = ETF仓位(整股 SPXL, 按$5k/$2k/$5k预算取整股) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
+    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退半(整股约 {CRASH_HALF:.0%}); 首阴(V4)/二次首阳(V6-8)/止损/4天 再结剩余')
     bt.append('  · MR 信号日=恐慌日(RSI<30+VIX>20), 与崩盘开仓日高度重叠; app 有 direction 闸+崩盘互斥')
     bt.append('    +2026-07-31 强制互斥, 故 MR 低频属结构性(panic 日优先被崩盘层承接), 非回测误差')
     bt_stats_path = os.path.join(RESULT_DIR, f'backtest_stats_{PERIOD}.txt')
