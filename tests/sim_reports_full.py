@@ -435,6 +435,24 @@ def book_spread(asof, price, prev_seg, now_seg):
 def _leg_round(shares, frac):
     return max(round(shares * frac), 0)
 
+def _etf_stop_fill(entry_px, asof):
+    """SPXL 止损单触价结算 (生产开仓提示挂 -7.5% 止损市价单):
+    当日开盘价 ≤ 止损线 → 跳空按开盘价成交; 否则盘中 Low ≤ 止损线 → 按止损线成交;
+    兜底按收盘价 (理论不触发). 止损线 = entry*0.925, 与 app._crash_etf_stop 一致."""
+    line = entry_px * 0.925
+    try:
+        row = spxl.loc[pd.Timestamp(asof)]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[-1]
+    except KeyError:
+        sp = spxl[spxl.index <= pd.Timestamp(asof)]
+        row = sp.iloc[-1]
+    if row['Open'] <= line:
+        return float(row['Open'])
+    if row['Low'] <= line:
+        return line
+    return float(row['Close'])
+
 def cur_trade(kind):
     if _open_ref[kind] is None:
         return None
@@ -727,7 +745,8 @@ def main():
                             sh = t.get('etf_shares') or 0
                             keep = sh - _leg_round(sh, CRASH_HALF)
                             t['keep_sh'] = keep
-                        rem = keep * (spxl_p - base) if base else 0
+                        fill = _etf_stop_fill(base, asof) if ('崩盘跌穿' in msg and base) else spxl_p
+                        rem = keep * (fill - base) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     elif t.get('yin_sh') is not None:
                         yin_pct = t.get('yin_pct') or CRASH_YIN
@@ -742,10 +761,12 @@ def main():
                             keep = sh - yin_sh
                         if t.get('re_yin_px'):
                             rem = keep * (t['re_yin_px'] - t['etf_entry']) * sm
-                            full = sh * (spxl_p - t['re_yin_px']) * sm
+                            full_fill = _etf_stop_fill(t['re_yin_px'], asof) if '崩盘跌穿' in msg else spxl_p
+                            full = sh * (full_fill - t['re_yin_px']) * sm
                             t['etf_pnl'] = t['yin_etf'] + rem + full
                         else:
-                            t['etf_pnl'] = t['yin_etf'] + keep * (spxl_p - t['etf_entry']) * sm
+                            final = _etf_stop_fill(t['etf_entry'], asof) if '崩盘跌穿' in msg else spxl_p
+                            t['etf_pnl'] = t['yin_etf'] + keep * (final - t['etf_entry']) * sm
                         if not t.get('re_yin_px') and t.get('k1') and t.get('k2') and t.get('debit') is not None and not _opt_done(t) and not t.get('resid'):
                             if CRASH_MODE in ('V9', 'V10', 'V11') and '崩盘跌穿' in msg:
                                 t['resid'] = {'k1': t['k1'], 'k2': t['k2'], 'debit': t['debit'],
@@ -764,7 +785,8 @@ def main():
                                 close_d = _bs_spread(price, t['k1'], t['k2'], T_rem, t.get('sigma'))
                                 t['opt_pnl'] = max((close_d - t['debit']), -t['debit']) * 100 * osm
                         if t.get('etf_entry'):
-                            t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry']) * sm
+                            final = _etf_stop_fill(t['etf_entry'], asof) if '崩盘跌穿' in msg else spxl_p
+                            t['etf_pnl'] = (t.get('etf_shares') or 0) * (final - t['etf_entry']) * sm
                     if t.get('reopened'):
                         rcal = (asof - t['reopen_date']).days
                         rT_rem = max(DTE / 365.0 - rcal / 365.0, 1 / 365.0)
@@ -854,10 +876,11 @@ def main():
                         keep = t.get('keep_sh')
                         if keep is None:
                             keep = (t.get('etf_shares') or 0) - _leg_round(t.get('etf_shares') or 0, CRASH_HALF)
-                        rem = keep * (spxl_p - base) if base else 0
+                        fill = _etf_stop_fill(base, asof) if base else spxl_p
+                        rem = keep * (fill - base) if base else 0
                         t['etf_pnl'] = ((t.get('half_etf') or 0) + rem) * sm
                     elif t.get('etf_entry'):
-                        t['etf_pnl'] = (t.get('etf_shares') or 0) * (spxl_p - t['etf_entry']) * sm
+                        t['etf_pnl'] = (t.get('etf_shares') or 0) * (_etf_stop_fill(t['etf_entry'], asof) - t['etf_entry']) * sm
                     t['etf_out'] = True
                 ev.append('崩盘ETF止损')
             if prev_blocked is not None and prev_blocked != blocked:
