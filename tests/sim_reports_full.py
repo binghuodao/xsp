@@ -576,8 +576,8 @@ def check_day(asof, msg, r, price, blocked, failures):
     if r.get('crash_entry_price'):
         exp_stop = r['crash_entry_price'] * (1 - STOP_PCT)
         exp_green = r['crash_entry_price'] * 1.0
-        if f"止损 ${exp_stop:.2f} (-{STOP_PCT:.1%})" not in msg: f.append('崩盘止损值不符')
-        if f"首阳 ${exp_green:.2f}" not in msg: f.append('崩盘首阳值不符')
+        if f"止损 XSP ${exp_stop:.2f} (-{STOP_PCT:.1%})" not in msg: f.append('崩盘止损值不符')
+        if f"首阳 XSP ${exp_green:.2f}" not in msg: f.append('崩盘首阳值不符')
         cf = r.get('crash_force_days')
         if cf is None:
             cf = r.get('crash_days')
