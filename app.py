@@ -936,7 +936,7 @@ def send_market_report(report_type, force=False):
         _crash_spxl = ""
         if _crash_etf_stop:
             _crash_spxl = f" | SPXL止损 ${_crash_etf_stop:.2f}"
-        lines.append(f"止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f}{_crash_spxl}")
+        lines.append(f"止损 XSP ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) / SPXL ${_crash_etf_stop:.2f} (-7.5%) | 首阳 XSP ${_crash_green:.2f} / SPXL ${_crash_etf_green:.2f} | 限价单 触发 ${_crash_etf_stop:.2f} → 限价 ${_crash_etf_stop*0.975:.2f} (缓冲 2.5%)")
 
         opt_value = 0
         if not _crash_etf_scaled and _crash_sigma and _crash_debit:
@@ -1227,7 +1227,7 @@ def send_market_report(report_type, force=False):
         lines.append(f"🚀 崩盘开仓 {_crash_entry_date} {_crash_k1}C/{_crash_k2}C + SPXL {_crash_shares}股")
         _crash_stop = _crash_entry_price * (1 - _crash_stop_pct)
         _crash_green = _crash_entry_price * 1.0
-        lines.append(f"止损 ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) | 首阳 ${_crash_green:.2f}")
+        lines.append(f"止损 XSP ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) / SPXL ${_crash_etf_entry*0.925:.2f} (-7.5%) | 首阳 XSP ${_crash_green:.2f} / SPXL ${_crash_etf_entry:.2f} | 限价单 触发 ${_crash_etf_entry*0.925:.2f} → 限价 ${_crash_etf_entry*0.975:.2f} (缓冲 2.5%)")
         _latest_report['crash_entry_date'] = str(_crash_entry_date)
         _latest_report['crash_entry_price'] = _crash_entry_price
         _latest_report['crash_days'] = 0
