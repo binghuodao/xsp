@@ -1227,7 +1227,7 @@ def send_market_report(report_type, force=False):
         lines.append(f"🚀 崩盘开仓 {_crash_entry_date} {_crash_k1}C/{_crash_k2}C + SPXL {_crash_shares}股")
         _crash_stop = _crash_entry_price * (1 - _crash_stop_pct)
         _crash_green = _crash_entry_price * 1.0
-        lines.append(f"止损 XSP ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) / SPXL ${_crash_etf_entry*0.925:.2f} (-7.5%) | 首阳 XSP ${_crash_green:.2f} / SPXL ${_crash_etf_entry:.2f} | 限价单 触发 ${_crash_etf_entry*0.925:.2f} → 限价 ${_crash_etf_entry*0.975:.2f} (缓冲 2.5%)")
+        lines.append(f"止损 XSP ${_crash_stop:.2f} (-{_crash_stop_pct:.1%}) / SPXL ${_crash_etf_entry*0.925:.2f} (-7.5%) | 首阳 XSP ${_crash_green:.2f} / SPXL ${_crash_etf_entry:.2f} | 限价单 触发 ${_crash_etf_entry*0.925:.2f} → 限价 ${_crash_etf_entry*0.925*0.975:.2f} (缓冲 2.5%)")
         _latest_report['crash_entry_date'] = str(_crash_entry_date)
         _latest_report['crash_entry_price'] = _crash_entry_price
         _latest_report['crash_days'] = 0
