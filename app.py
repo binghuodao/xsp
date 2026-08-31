@@ -45,6 +45,13 @@ CEILING_PERCENT = args.ceiling
 REF_SYMBOL = 'US.SPY'
 MES_SYMBOL = 'US.MESmain'  
 REFRESH_INTERVAL = args.refresh
+
+# Apply refresh_override for test environment (rate limit protection)
+if ENV == 'test':
+    refresh_override = CONFIG.get('refresh_override')
+    if refresh_override:
+        REFRESH_INTERVAL = refresh_override
+        print(f"▶ TEST mode: refresh interval overridden to {REFRESH_INTERVAL}s (rate limit protection)")
 OPTION_DAYS = args.option_days
 WATCHLIST_FILE = 'watchlist.json'
 POSITION_FILE = 'position_tracker.json'
