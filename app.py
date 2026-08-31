@@ -269,11 +269,31 @@ def _find_delta_strike(expiry, target_delta, opt_type='P'):
     return best_s, best_d
 
 
+# Global function for getting current time - can be mocked in tests
+_test_time_override = None
+
+def _get_current_time(tz=None):
+    """Get current time, using app.datetime if available, otherwise datetime.datetime.
+    
+    Can be overridden in tests by setting _test_time_override on the app module.
+    """
+    global _test_time_override
+    if _test_time_override is not None:
+        return _test_time_override(tz)
+    if hasattr(app, 'datetime') and hasattr(app.datetime, 'now'):
+        return app.datetime.now(tz)
+    return datetime.datetime.now(tz)
+
+
 def _dte_from_yyyymmdd(yymmdd):
     try:
         exp = datetime.strptime('20' + yymmdd, '%Y%m%d')
-        return (exp - datetime.now(ET_TZ).replace(tzinfo=None)).days
-    except:
+        now = _get_current_time(ET_TZ)
+        return (exp - now.replace(tzinfo=None)).days
+    except Exception as e:
+        print(f'ERROR in _dte_from_yyyymmdd: {e}')
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -1346,6 +1366,7 @@ def _mark_report_dedupe(report_type, today):
 
 app = Flask(__name__)
 app.secret_key = CONFIG.get('secret_key') or secrets.token_hex(32)
+app.datetime = datetime  # for test time mocking
 
 # Proxy fix so url_for(_external=True) generates correct https:// behind nginx
 from werkzeug.middleware.proxy_fix import ProxyFix

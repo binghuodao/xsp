@@ -19,6 +19,7 @@ sys.modules['moomoo'] = _FakeMoomoo()
 import app
 from tests.helpers import make_option_chain, std_hs
 
+
 @pytest.fixture(autouse=True)
 def reset_globals(monkeypatch):
     """Reset all module-level globals before each test."""
@@ -60,6 +61,9 @@ def reset_globals(monkeypatch):
     app.historical_stats = std_hs()
     app.TELEGRAM_TOKEN = ""
     app.TELEGRAM_CHAT_ID = ""
+    # Ensure app.datetime exists for _dte_from_yyyymmdd
+    if not hasattr(app, 'datetime') or not hasattr(app.datetime, 'now'):
+        app.datetime = datetime
 
 
 @pytest.fixture
@@ -84,17 +88,45 @@ def mock_now():
     mn = MockNow()
     mn.set()
 
-    real_dt = app.datetime
+    # Use the test override mechanism in app module
+    app._test_time_override = lambda tz=None: mn.et_dt.replace(tzinfo=app.ET_TZ) if tz is app.ET_TZ else (mn.syd_dt.replace(tzinfo=app.S_TZ) if tz is app.S_TZ else datetime.datetime.now(tz))
+    print(f"FIXTURE: Set _test_time_override = {app._test_time_override}")
+    print(f"FIXTURE: _test_time_override in app.__dict__: {app.__dict__.get('_test_time_override')}")
+
+    # Also patch app.datetime for other uses
     class _FakeDatetime:
-        def __getattr__(self, name):
-            if name == 'now':
-                def _now(tz=None):
-                    if tz is app.ET_TZ:
-                        return mn.et_dt.replace(tzinfo=app.ET_TZ)
-                    if tz is app.S_TZ:
-                        return mn.syd_dt.replace(tzinfo=app.S_TZ)
-                    return datetime.datetime.now(tz)
-                return _now
-            return getattr(real_dt, name)
-    with patch.object(app, 'datetime', _FakeDatetime()):
+        def __init__(self, mock_now):
+            self._mock_now = mock_now
+        
+        def now(self, tz=None):
+            if tz is app.ET_TZ:
+                return self._mock_now.et_dt.replace(tzinfo=app.ET_TZ)
+            if tz is app.S_TZ:
+                return self._mock_now.syd_dt.replace(tzinfo=app.S_TZ)
+            return datetime.datetime.now(tz)
+        
+        @property
+        def datetime(self):
+            return datetime.datetime
+        
+        def strptime(self, *args, **kwargs):
+            return datetime.datetime.strptime(*args, **kwargs)
+    
+    fake_datetime = _FakeDatetime(mn)
+    
+    with patch.object(app, 'datetime', fake_datetime):
+        print("FIXTURE: Patched app.datetime, yielding mn")
         yield mn
+        print("FIXTURE: Cleaning up _test_time_override")
+        app._test_time_override = None
+    
+    # Cleanup
+    app._test_time_override = None
+
+
+@pytest.fixture
+def mock_sio():
+    """Mock socketio to capture emitted events."""
+    sio = MagicMock()
+    with patch.object(app, 'socketio', sio):
+        yield sio
