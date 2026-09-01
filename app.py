@@ -324,9 +324,9 @@ def _get_etf_price(ticker):
 
 
 def _get_xsp_closes():
-    """Return (close_t, close_t1) for ^XSP收盘对收盘. close_t=当日收盘(未收盘时为昨收), close_t1=前一日收盘."""
+    """Return (close_t, close_t1) for ^XSP收盘对收盘. 10d兜底."""
     try:
-        xsp = yf.download('^XSP', period='5d', interval='1d', progress=False)
+        xsp = yf.download('^XSP', period='10d', interval='1d', progress=False)
         if isinstance(xsp.columns, pd.MultiIndex):
             xsp = xsp.droplevel('Ticker', axis=1)
         if len(xsp) >= 2:
@@ -340,9 +340,9 @@ def _get_xsp_closes():
 
 
 def _get_xsp_closes_with_dates():
-    """Return (close_t, date_t, close_t1, date_t1) for asof对齐."""
+    """Return (close_t, date_t, close_t1, date_t1) for asof对齐. 10d兜底防丢数据."""
     try:
-        xsp = yf.download('^XSP', period='5d', interval='1d', progress=False)
+        xsp = yf.download('^XSP', period='10d', interval='1d', progress=False)
         if isinstance(xsp.columns, pd.MultiIndex):
             xsp = xsp.droplevel('Ticker', axis=1)
         xsp = xsp.sort_index()
@@ -444,11 +444,39 @@ def send_market_report(report_type, force=False):
     # 开仓延迟到收盘平仓处理之后执行（close-before-open；优先级 崩盘>MR>趋势，三层互斥）
     _asof = datetime.now(ET_TZ).date()
     _yf_close_t, _yf_date_t, _yf_prev, _yf_date_prev = _get_xsp_closes_with_dates()
+    # 缺 T-1 回溯挖: 若 yf 最新非 asof 前一交易日, 用 SPY chg 代理 (yf ^XSP 丢 0828 时)
+    _spy_proxy = None
+    try:
+        _exp_prev = pd.bdate_range(end=pd.Timestamp(_asof), periods=2)[0].date() if _asof else None
+        if _yf_date_prev is not None and _exp_prev is not None and _yf_date_prev != _exp_prev:
+            spy = yf.download('SPY', period='10d', interval='1d', progress=False)
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy = spy.droplevel('Ticker', axis=1)
+            spy = spy.sort_index()
+            spy_t = spy[spy.index <= pd.Timestamp(_asof)]
+            if len(spy_t) >= 2:
+                _spy_chg = (float(spy_t['Close'].iloc[-1]) - float(spy_t['Close'].iloc[-2])) / float(spy_t['Close'].iloc[-2])
+                _spy_proxy = (_spy_chg, _exp_prev)
+                print(f"🔧 yf ^XSP 缺 {_exp_prev} (现 {_yf_date_prev}) 用 SPY chg {_spy_chg:.4%} 补")
+    except Exception as e:
+        print(f"⚠️ SPY 补缺失败: {e}")
     # price 为 moomoo 实时收盘 (latest_data)
     _moomoo_close = price
-    _xsp_close_t, _xsp_prev_close, xsp_chg_pct, is_crash_signal, _xsp_src = resolve_xsp_closes(
-        _asof, xsp_yf=None, moomoo_close=_moomoo_close, yf_download_closes=(_yf_close_t, _yf_prev), drop_thresh=_crash_drop_thresh
-    )
+    if _spy_proxy is not None:
+        # 直接用 SPY chg 代理 XSP chg, 不依赖 XSP close 数值
+        _spy_chg, _exp_prev = _spy_proxy
+        xsp_chg_pct, is_crash_signal = _spy_chg, _spy_chg < -_crash_drop_thresh
+        _xsp_close_t, _xsp_prev_close, _xsp_src = _yf_close_t, None, 'spy-proxy'
+        # 构造虚拟 prev 供日志 display: prev = close_t / (1+chg)
+        try:
+            if _xsp_close_t is not None:
+                _xsp_prev_close = float(_xsp_close_t) / (1 + _spy_chg) if (1 + _spy_chg) != 0 else None
+        except:
+            pass
+    else:
+        _xsp_close_t, _xsp_prev_close, xsp_chg_pct, is_crash_signal, _xsp_src = resolve_xsp_closes(
+            _asof, xsp_yf=None, moomoo_close=_moomoo_close, yf_download_closes=(_yf_close_t, _yf_prev), yf_download_dates=(_yf_date_t, _yf_date_prev), drop_thresh=_crash_drop_thresh
+        )
     # 若 resolve 未能利用日期对齐 (yf dates 缺失), 兜底用原 yf 同源
     if _xsp_src == 'unavailable' and _yf_close_t is not None and _yf_prev is not None:
         # 尝试日期对齐兜底: 若 yf 最新日期 == asof 则用 yf 同源, 否则 mix
