@@ -19,6 +19,8 @@ from flask_login import LoginManager, UserMixin, login_required, login_user, log
 import pricing
 import pandas_ta as ta
 import requests
+from engine.signals import calc_crash  # Canonical 收盘对收盘
+from engine.data import resolve_xsp_closes  # 混合收盘业务
 
 # --- CONFIGURATION ---
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -103,6 +105,7 @@ _crash_k2 = None
 _crash_debit = None
 _crash_sigma = None
 _crash_etf_entry = None
+_crash_etf_scaled = False         # V9: ETF half scaled at 首阳 (default False, loaded from position_tracker.json)
 _crash_opt_reopened = False        # V11: crash option reopened at 再进 (reentry) after 首阳 exit
 _crash_opt_reopen_date = None
 _crash_exit_mode = 'V9'          # operative rule: V9 止损日期权续持 (default) | V5 首阴+盈利保护 (V5 was default; V9 wins by +$1,583 7y with 2022 −$120→+$890, tail risk maxLoss −$952→−$1,134) | V4 首阴 | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close
@@ -320,19 +323,43 @@ def _get_etf_price(ticker):
     return None
 
 
-def _get_xsp_prev_close():
-    """Return yesterday's XSP close price."""
+def _get_xsp_closes():
+    """Return (close_t, close_t1) for ^XSP收盘对收盘. close_t=当日收盘(未收盘时为昨收), close_t1=前一日收盘."""
     try:
         xsp = yf.download('^XSP', period='5d', interval='1d', progress=False)
         if isinstance(xsp.columns, pd.MultiIndex):
             xsp = xsp.droplevel('Ticker', axis=1)
         if len(xsp) >= 2:
-            return float(xsp['Close'].iloc[-2])
+            return float(xsp['Close'].iloc[-1]), float(xsp['Close'].iloc[-2])
         elif len(xsp) >= 1:
-            return float(xsp['Close'].iloc[-1])
+            c = float(xsp['Close'].iloc[-1])
+            return c, c
     except:
         pass
-    return None
+    return None, None
+
+
+def _get_xsp_closes_with_dates():
+    """Return (close_t, date_t, close_t1, date_t1) for asof对齐."""
+    try:
+        xsp = yf.download('^XSP', period='5d', interval='1d', progress=False)
+        if isinstance(xsp.columns, pd.MultiIndex):
+            xsp = xsp.droplevel('Ticker', axis=1)
+        xsp = xsp.sort_index()
+        if len(xsp) >= 2:
+            return float(xsp['Close'].iloc[-1]), xsp.index[-1].date(), float(xsp['Close'].iloc[-2]), xsp.index[-2].date()
+        elif len(xsp) >= 1:
+            c = float(xsp['Close'].iloc[-1]); d = xsp.index[-1].date()
+            return c, d, c, d
+    except:
+        pass
+    return None, None, None, None
+
+
+def _get_xsp_prev_close():
+    """Backward compat: return close_t1."""
+    _, prev = _get_xsp_closes()
+    return prev
 
 
 def send_market_report(report_type, force=False):
@@ -413,10 +440,38 @@ def send_market_report(report_type, force=False):
     _closed_crash_sh = None   # 当日崩盘清仓平的 SPXL 股数（开盘同价再入场时提示免平重开）
 
     # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
+    # Canonical 收盘对收盘: Close[T]/Close[T-1]-1 < -0.5% (混合: yf Close[T-1] + moomoo Close[T] 当日触发)
     # 开仓延迟到收盘平仓处理之后执行（close-before-open；优先级 崩盘>MR>趋势，三层互斥）
-    _xsp_prev_close = _get_xsp_prev_close()
-    xsp_chg_pct = (price - _xsp_prev_close) / _xsp_prev_close if _xsp_prev_close else 0
-    is_crash_signal = _xsp_prev_close and xsp_chg_pct < -_crash_drop_thresh
+    _asof = datetime.now(ET_TZ).date()
+    _yf_close_t, _yf_date_t, _yf_prev, _yf_date_prev = _get_xsp_closes_with_dates()
+    # price 为 moomoo 实时收盘 (latest_data)
+    _moomoo_close = price
+    _xsp_close_t, _xsp_prev_close, xsp_chg_pct, is_crash_signal, _xsp_src = resolve_xsp_closes(
+        _asof, xsp_yf=None, moomoo_close=_moomoo_close, yf_download_closes=(_yf_close_t, _yf_prev), drop_thresh=_crash_drop_thresh
+    )
+    # 若 resolve 未能利用日期对齐 (yf dates 缺失), 兜底用原 yf 同源
+    if _xsp_src == 'unavailable' and _yf_close_t is not None and _yf_prev is not None:
+        # 尝试日期对齐兜底: 若 yf 最新日期 == asof 则用 yf 同源, 否则 mix
+        try:
+            if _yf_date_t == _asof:
+                _xsp_close_t, _xsp_prev_close = _yf_close_t, _yf_prev
+                xsp_chg_pct, is_crash_signal = calc_crash(_xsp_close_t, _xsp_prev_close, _crash_drop_thresh)
+                _xsp_src = 'yf'
+            else:
+                _xsp_close_t, _xsp_prev_close = _moomoo_close, _yf_close_t if _yf_close_t is not None else _yf_prev
+                xsp_chg_pct, is_crash_signal = calc_crash(_xsp_close_t, _xsp_prev_close, _crash_drop_thresh)
+                _xsp_src = 'mix'
+        except:
+            pass
+    # 调试日志：收盘对收盘明细（含来源与日期）
+    _xsp_dbg = f"XSP收盘 {(_xsp_close_t if _xsp_close_t is not None else 'NA')} 前收 {(_xsp_prev_close if _xsp_prev_close is not None else 'NA')} chg {(xsp_chg_pct if xsp_chg_pct is not None else 0):.4%} sig {is_crash_signal} thr -0.5% src {_xsp_src} yf[{_yf_date_t}/{_yf_date_prev}] asof {_asof}"
+    print(f"🔍 {_xsp_dbg}")
+    if _xsp_prev_close is None:
+        print("⚠️ XSP昨收 unavailable, 跳过崩盘判断")
+    # 兼容 display: xsp_chg_pct 为 None 时按 0 处理
+    if xsp_chg_pct is None:
+        xsp_chg_pct = 0
+    _xsp_dbg_logged = _xsp_dbg  # 供下方 lines 构造后追加
 
     # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰崩盘) ──
     is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
@@ -484,6 +539,14 @@ def send_market_report(report_type, force=False):
              f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
               f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
                 "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+
+    # 调试：收盘对收盘明细进报告
+    try:
+        lines.append(f"🔍 {_xsp_dbg_logged}")
+        if _xsp_prev_close is None:
+            lines.append("⚠️ XSP昨收 unavailable, 跳过崩盘判断")
+    except:
+        pass
 
     # ── 10Y 收益率 + 利率闸门状态 ──
     _tnx_lvl = hs.get('y10_level')
@@ -1211,10 +1274,7 @@ def send_market_report(report_type, force=False):
         lines.append(f"🚫 崩盘信号({xsp_chg_pct:.2f}%)被利率闸门拦截（10Y 20d {hs.get('y10_20d',0):+.2f}% ≥ {Y10_GATE_PP*100:.0f}bp）")
     _mr_ok = _no_layer_open and is_mr_signal
     if _crash_ok and not (_mr_ok and _layer_priority == 'mr_crash_trend'):
-        # Only set crash_entry_date if there was already a crash state from the file
-        # (i.e., _crash_entry_date was loaded from position_tracker.json and is not None)
-        if _crash_entry_date is not None:
-            _crash_entry_date = datetime.now(ET_TZ).date()
+        _crash_entry_date = datetime.now(ET_TZ).date()
         _crash_half_date = None
         _crash_reentry = False
         _crash_reentry_date = None
@@ -1345,7 +1405,7 @@ def send_market_report(report_type, force=False):
         }
         # Conditionally add fields only when they have actual values
         if _crash_entry_date is not None:
-            _save['crash_entry_date'] = _crash_entry_date
+            _save['crash_entry_date'] = str(_crash_entry_date)
         if _crash_entry_price is not None:
             _save['crash_entry_price'] = _crash_entry_price
         if _crash_k1 is not None:
@@ -1362,6 +1422,8 @@ def send_market_report(report_type, force=False):
             _save['crash_etf_scaled'] = _crash_etf_scaled
         if _crash_yin_scaled is not None:
             _save['crash_yin_scaled'] = _crash_yin_scaled
+        if _crash_yin_date is not None:
+            _save['crash_yin_date'] = str(_crash_yin_date)
         _save['crash_resids'] = [{k: (v.strftime('%Y-%m-%d') if k in ('expiry', 'open') and v else v) for k, v in r.items()} for r in _crash_resids]
         _save['trend_opt_expiry'] = _trend_opt_expiry
         _save['trend_opt_strike'] = _trend_opt_strike
@@ -1370,7 +1432,8 @@ def send_market_report(report_type, force=False):
         _save['trend_opt_entry_date'] = str(_trend_opt_entry_date) if _trend_opt_entry_date else None
         _save['trend_opt_sigma'] = _trend_opt_sigma
         _save['trend_opt_pnl'] = _trend_opt_pnl
-        json.dump(_save, f)
+        with open(POSITION_FILE, 'w') as f:
+            json.dump(_save, f)
     except Exception as e:
         print(f"⚠️ Position tracker save failed: {e}")
     if not force:

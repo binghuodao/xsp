@@ -59,8 +59,14 @@ def _s5(v: float) -> int:
 
 
 def _check_crash_signal(inputs: ReportInputs, config: PositionConfig) -> bool:
-    """EXACT logic from app.py: is_crash_signal = _xsp_prev_close and xsp_chg_pct < -drop_thresh"""
-    return inputs.xsp_chg_pct < -config.drop_thresh
+    """Canonical: 收盘对收盘 Close[T]/Close[T-1]-1 < -drop_thresh. None/缺数 → False (保守不误开)."""
+    chg = inputs.xsp_chg_pct
+    if chg is None:
+        return False
+    try:
+        return float(chg) < -float(config.drop_thresh)
+    except Exception:
+        return False
 
 
 def _check_mr_signal(inputs: ReportInputs, config: PositionConfig) -> bool:
@@ -242,7 +248,13 @@ def _compute_risk_gate(hs: dict, config: PositionConfig) -> bool:
 
 
 def _check_crash_signal(inputs: ReportInputs, config: PositionConfig) -> bool:
-    return inputs.xsp_chg_pct < -config.drop_thresh
+    chg = inputs.xsp_chg_pct
+    if chg is None:
+        return False
+    try:
+        return float(chg) < -float(config.drop_thresh)
+    except Exception:
+        return False
 
 
 def _check_mr_signal(inputs: ReportInputs, config: PositionConfig) -> bool:

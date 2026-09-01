@@ -24,6 +24,8 @@ from tests.helpers import make_option_chain, std_hs
 def reset_globals(monkeypatch):
     """Reset all module-level globals before each test."""
     monkeypatch.setattr(app, '_get_xsp_prev_close', lambda: None)
+    monkeypatch.setattr(app, '_get_xsp_closes', lambda: (None, None))
+    monkeypatch.setattr(app, '_get_xsp_closes_with_dates', lambda: (None, None, None, None))
     app._latest_report = {}
     app._morning_report_date = ""
     app._evening_report_date = ""

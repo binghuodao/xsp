@@ -256,7 +256,13 @@ def build_snapshot(asof, xsp, vix, spy, spxl, skew, adx_df, bb_df, rsi_s, sma20_
     app.historical_stats = hs
     app.latest_data['index']['price'] = float(x_i['Close'].iloc[-1])
     p_prev = xsp[xsp.index < pd.Timestamp(asof)]
-    app._get_xsp_prev_close = lambda: float(p_prev['Close'].iloc[-1])
+    _prev_c = float(p_prev['Close'].iloc[-1]) if len(p_prev) else None
+    _curr_c = float(x_i['Close'].iloc[-1]) if len(x_i) else None
+    _curr_d = x_i.index[-1].date() if len(x_i) else None
+    _prev_d = p_prev.index[-1].date() if len(p_prev) else None
+    app._get_xsp_prev_close = lambda _pc=_prev_c: _pc
+    app._get_xsp_closes = lambda _cc=_curr_c, _pc=_prev_c: (_cc, _pc)
+    app._get_xsp_closes_with_dates = lambda _cc=_curr_c, _cd=_curr_d, _pc=_prev_c, _pd=_prev_d: (_cc, _cd, _pc, _pd)
     sp = spxl[spxl.index <= pd.Timestamp(asof)]
     spxl_price = float(sp['Close'].iloc[-1])
     return float(x_i['Close'].iloc[-1]), spxl_price, float(cv)
