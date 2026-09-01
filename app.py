@@ -1327,37 +1327,47 @@ def send_market_report(report_type, force=False):
     msg = "\n".join(lines)
     socketio.emit('market_report', _latest_report)
     try:
-        with open(POSITION_FILE, 'w') as f:
-            json.dump({
-                'active_position_date': str(_active_position_date) if _active_position_date else None,
-                'prev_report_direction': _prev_report_direction,
-                'prev_report_score': _prev_report_score,
-                'entry_price': _entry_price,
-                'peak_price': _peak_price,
-                'etf_entry_price': _etf_entry_price,
-                'etf_peak_price': _etf_peak_price,
-                'mr_entry_date': str(_mr_entry_date) if _mr_entry_date else None,
-                'mr_entry_price': _mr_entry_price,
-                'mr_etf_entry_price': _mr_etf_entry_price,
-                'crash_entry_date': str(_crash_entry_date) if _crash_entry_date else None,
-                'crash_entry_price': _crash_entry_price,
-                'crash_k1': _crash_k1,
-                'crash_k2': _crash_k2,
-                'crash_debit': _crash_debit,
-                'crash_sigma': _crash_sigma,
-                'crash_etf_entry': _crash_etf_entry,
-                'crash_etf_scaled': _crash_etf_scaled,
-                'crash_yin_scaled': _crash_yin_scaled,
-                'crash_yin_date': str(_crash_yin_date) if _crash_yin_date else None,
-                'crash_resids': [{k: (v.strftime('%Y-%m-%d') if k in ('expiry', 'open') and v else v) for k, v in r.items()} for r in _crash_resids],
-                'trend_opt_expiry': _trend_opt_expiry,
-                'trend_opt_strike': _trend_opt_strike,
-                'trend_opt_strike2': _trend_opt_strike2,
-                'trend_opt_entry': _trend_opt_entry,
-                'trend_opt_entry_date': str(_trend_opt_entry_date) if _trend_opt_entry_date else None,
-                'trend_opt_sigma': _trend_opt_sigma,
-                'trend_opt_pnl': _trend_opt_pnl,
-            }, f)
+        # Only persist crash_entry_date if a crash was actually opened this session
+        _save = {
+            'active_position_date': str(_active_position_date) if _active_position_date else None,
+            'prev_report_direction': _prev_report_direction,
+            'prev_report_score': _prev_report_score,
+            'entry_price': _entry_price,
+            'peak_price': _peak_price,
+            'etf_entry_price': _etf_entry_price,
+            'etf_peak_price': _etf_peak_price,
+            'mr_entry_date': str(_mr_entry_date) if _mr_entry_date else None,
+            'mr_entry_price': _mr_entry_price,
+            'mr_etf_entry_price': _mr_etf_entry_price,
+        }
+        # Conditionally add fields only when they have actual values
+        if _crash_entry_date is not None:
+            _save['crash_entry_date'] = _crash_entry_date
+        if _crash_entry_price is not None:
+            _save['crash_entry_price'] = _crash_entry_price
+        if _crash_k1 is not None:
+            _save['crash_k1'] = _crash_k1
+        if _crash_k2 is not None:
+            _save['crash_k2'] = _crash_k2
+        if _crash_debit is not None:
+            _save['crash_debit'] = _crash_debit
+        if _crash_sigma is not None:
+            _save['crash_sigma'] = _crash_sigma
+        if _crash_etf_entry is not None:
+            _save['crash_etf_entry'] = _crash_etf_entry
+        if _crash_etf_scaled is not None:
+            _save['crash_etf_scaled'] = _crash_etf_scaled
+        if _crash_yin_scaled is not None:
+            _save['crash_yin_scaled'] = _crash_yin_scaled
+        _save['crash_resids'] = [{k: (v.strftime('%Y-%m-%d') if k in ('expiry', 'open') and v else v) for k, v in r.items()} for r in _crash_resids]
+        _save['trend_opt_expiry'] = _trend_opt_expiry
+        _save['trend_opt_strike'] = _trend_opt_strike
+        _save['trend_opt_strike2'] = _trend_opt_strike2
+        _save['trend_opt_entry'] = _trend_opt_entry
+        _save['trend_opt_entry_date'] = str(_trend_opt_entry_date) if _trend_opt_entry_date else None
+        _save['trend_opt_sigma'] = _trend_opt_sigma
+        _save['trend_opt_pnl'] = _trend_opt_pnl
+        json.dump(_save, f)
     except Exception as e:
         print(f"⚠️ Position tracker save failed: {e}")
     if not force:
