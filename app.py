@@ -1211,7 +1211,10 @@ def send_market_report(report_type, force=False):
         lines.append(f"🚫 崩盘信号({xsp_chg_pct:.2f}%)被利率闸门拦截（10Y 20d {hs.get('y10_20d',0):+.2f}% ≥ {Y10_GATE_PP*100:.0f}bp）")
     _mr_ok = _no_layer_open and is_mr_signal
     if _crash_ok and not (_mr_ok and _layer_priority == 'mr_crash_trend'):
-        _crash_entry_date = datetime.now(ET_TZ).date()
+        # Only set crash_entry_date if there was already a crash state from the file
+        # (i.e., _crash_entry_date was loaded from position_tracker.json and is not None)
+        if _crash_entry_date is not None:
+            _crash_entry_date = datetime.now(ET_TZ).date()
         _crash_half_date = None
         _crash_reentry = False
         _crash_reentry_date = None
