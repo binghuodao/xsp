@@ -526,39 +526,37 @@ def process_position_report(
     y10_gate_active = config.y10_gate > 0 and inputs.hs.get('y10_20d', 0) >= config.y10_gate
     risk_gate_active = risk_gate_active or y10_gate_active or (config.stop_cooldown > 0 and cooldown_on)
     
-    # 3. Layer priority
-    crash_ok = _check_crash_signal_for_entry(inputs, config)
-    mr_ok = _check_mr_signal(inputs, config)
-    no_layer_open = (state.crash_entry_date is None and state.mr_entry_date is None
-                     and state.trend_opt_expiry is None and state.active_position_date is None)
-    
-    if config.layer_priority == 'mr_crash_trend':
-        mr_ok = mr_ok and not crash_ok
-        crash_ok = crash_ok
-    else:  # crash_mr_trend
-        crash_ok = crash_ok and not mr_ok
-        mr_ok = mr_ok
-    
-    if not no_layer_open:
-        crash_ok = False
-        mr_ok = False
-    
-    # 4. Process position updates
-    # CRASH layer
-    if crash_ok and no_layer_open:
-        events.extend(_process_crash_open(state, config, inputs))
+    # 3. Layer priority (raw signals)
+    raw_crash_ok = _check_crash_signal_for_entry(inputs, config)
+    raw_mr_ok = _check_mr_signal(inputs, config)
+    # gates already computed: y10, cooldown, risk
+    if y10_gate_active or cooldown_on or (config.y10_gate > 0 and y10_gate_active):
+        raw_crash_ok = False
+    # 4. Process position updates — close-before-open (先平后开)
+    # 先处理所有存量仓的平仓/更新, 清槽位后再判新开
     if state.crash_entry_date is not None:
         events.extend(_process_crash_update(state, config, inputs, None))
-    
-    # MR layer
-    if mr_ok and no_layer_open:
-        events.extend(_process_mr_open(state, config, inputs))
     if state.mr_entry_date is not None:
         events.extend(_process_mr_update(state, config, inputs))
-    
-    # TREND layer - close first, then open
     if state.trend_opt_expiry is not None:
         events.extend(_process_trend_update(state, config, inputs))
+
+    # 重算槽位后判新开 (同价续持: 当日平仓后同日信号 True 即可同价重开)
+    no_layer_open = (state.crash_entry_date is None and state.mr_entry_date is None
+                     and state.trend_opt_expiry is None and state.active_position_date is None)
+    crash_ok = raw_crash_ok and no_layer_open
+    mr_ok = raw_mr_ok and no_layer_open
+    if config.layer_priority == 'mr_crash_trend':
+        mr_ok = mr_ok and not crash_ok
+    else:
+        crash_ok = crash_ok and not mr_ok
+
+    # CRASH open
+    if crash_ok and no_layer_open:
+        events.extend(_process_crash_open(state, config, inputs))
+    # MR open
+    if mr_ok and no_layer_open:
+        events.extend(_process_mr_open(state, config, inputs))
     
     # TREND open check
     trend_signal = inputs.direction == 'CALL' and inputs.hs.get('dlow', 0) <= 80

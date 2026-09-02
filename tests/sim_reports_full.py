@@ -632,9 +632,80 @@ def main():
     prev_blocked = None
     prev_spread_seg = None
 
+    def _clock_for_morning(asof_prev):
+        # 晨报 21:30 Syd = 07:30 ET 次日
+        nxt = asof_prev + timedelta(days=1)
+        # 跳过周末
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        mn = type('MN', (), {})()
+        mn.syd_dt = datetime.datetime.combine(nxt, datetime.time(21, 30, 0))
+        mn.et_dt = datetime.datetime.combine(nxt, datetime.time(7, 30, 0))
+        real_dt = datetime.datetime
+        class _FakeDatetimeM:
+            def __getattr__(self, name):
+                if name == 'now':
+                    def _now(tz=None):
+                        if tz is app.ET_TZ:
+                            return mn.et_dt.replace(tzinfo=app.ET_TZ)
+                        if tz is app.S_TZ:
+                            return mn.syd_dt.replace(tzinfo=app.S_TZ)
+                        return datetime.datetime.now(tz)
+                    return _now
+                return getattr(real_dt, name)
+        return _FakeDatetimeM(), nxt
+
     for i, day in enumerate(trading_days):
         asof = day.date()
         price, spxl_p, vix_p = build_snapshot(asof)
+        # 同价续持用前一日收盘信号
+        is_crash_prev = False
+        _is_crash_prev_dbg = ""
+        try:
+            asof_ts = pd.Timestamp(asof)
+            if asof_ts in xsp.index:
+                cur_idx = xsp.index.get_loc(asof_ts)
+                if isinstance(cur_idx, slice):
+                    cur_idx = cur_idx.stop - 1
+                if cur_idx >= 1:
+                    close_prev = float(xsp['Close'].iloc[cur_idx - 1])
+                    if cur_idx >= 2:
+                        close_prev2 = float(xsp['Close'].iloc[cur_idx - 2])
+                        is_crash_prev = (close_prev - close_prev2) / close_prev2 < -DROP_THRESH if close_prev2 else False
+                        _is_crash_prev_dbg = f"{close_prev:.2f}/{close_prev2:.2f} {(close_prev-close_prev2)/close_prev2:.4%}"
+                    else:
+                        _is_crash_prev_dbg = f"prev {close_prev:.2f} no prev2"
+                else:
+                    _is_crash_prev_dbg = "no prev"
+            else:
+                # asof 可能为非交易日(周末), 取 <= asof 的最近交易日
+                xi = xsp[xsp.index <= asof_ts]
+                if len(xi) >= 2:
+                    close_prev = float(xi['Close'].iloc[-1])
+                    close_prev2 = float(xi['Close'].iloc[-2])
+                    is_crash_prev = (close_prev - close_prev2) / close_prev2 < -DROP_THRESH if close_prev2 else False
+                    _is_crash_prev_dbg = f"xi {close_prev:.2f}/{close_prev2:.2f} {(close_prev-close_prev2)/close_prev2:.4%}"
+                else:
+                    _is_crash_prev_dbg = f"asof {asof} not in xsp, xi len {len(xi) if 'xi' in locals() else 'na'}"
+        except Exception as e:
+            _is_crash_prev_dbg = f"err {e}"
+            pass
+        if asof == date(2026, 8, 21):
+            print(f"DEBUG 0821 is_crash_prev={is_crash_prev} dbg {_is_crash_prev_dbg} xsp len {len(xsp)}")
+        # 同价续持: 晨报信号(前一日收盘) 触发当日同价重开
+        # 计算 is_crash_prev (asof-1 vs asof-2) 用于当日平后同价重开
+        is_crash_prev = False
+        try:
+            if asof in xsp.index:
+                cur_idx = xsp.index.get_loc(pd.Timestamp(asof))
+                if cur_idx >= 1:
+                    close_prev = float(xsp['Close'].iloc[cur_idx - 1])
+                    # 前一交易日的前一日
+                    if cur_idx >= 2:
+                        close_prev2 = float(xsp['Close'].iloc[cur_idx - 2])
+                        is_crash_prev = (close_prev - close_prev2) / close_prev2 < -DROP_THRESH if close_prev2 else False
+        except Exception:
+            pass
         make_chain(price, vix_p / 100.0, asof)
         app.latest_data['index']['price'] = price
         app._etf_price_cache['SPXL'] = spxl_p
@@ -977,6 +1048,63 @@ def main():
                     t['opt_closed'] = True
                     ev.append(f'期权独立止盈 (价值${close_d:.2f}≥${tp_line:.2f})')
         ev.extend(settle_residuals(asof, price))
+        # 同价续持 via 前一日收盘 (晨报) — 0821晨 0820/0819 True 触发当日同价重开
+        # 若当日已平仓且前一日为崩盘信号, 则同价重开 (收盘对收盘, 晨报口径)
+        # 重算 is_crash_prev 直接取 xsp, 避免变量被覆盖
+        _is_crash_prev_re = False
+        try:
+            asof_ts_r = pd.Timestamp(asof)
+            if asof_ts_r in xsp.index:
+                cur_idx_r = xsp.index.get_loc(asof_ts_r)
+                if isinstance(cur_idx_r, slice):
+                    cur_idx_r = cur_idx_r.stop - 1
+                if cur_idx_r >= 1:
+                    cp_r = float(xsp['Close'].iloc[cur_idx_r - 1])
+                    if cur_idx_r >= 2:
+                        cp2_r = float(xsp['Close'].iloc[cur_idx_r - 2])
+                        _is_crash_prev_re = (cp_r - cp2_r) / cp2_r < -DROP_THRESH if cp2_r else False
+            else:
+                xi_r = xsp[xsp.index <= asof_ts_r]
+                if len(xi_r) >= 2:
+                    cp_r = float(xi_r['Close'].iloc[-1])
+                    cp2_r = float(xi_r['Close'].iloc[-2])
+                    _is_crash_prev_re = (cp_r - cp2_r) / cp2_r < -DROP_THRESH if cp2_r else False
+        except Exception:
+            pass
+        try:
+            cr_closed = prev_fp is not None and prev_fp[6] is not None and now_fp[6] is None
+            no_layer_after_close = now_fp[0] is None and now_fp[1] is None and now_fp[5] is None and now_fp[6] is None
+            if asof == date(2026, 8, 21):
+                print(f"DEBUG 0821 cr_closed={cr_closed} is_crash_prev={is_crash_prev} is_crash_prev_re={_is_crash_prev_re} no_layer={no_layer_after_close} prev_fp6={prev_fp[6] if prev_fp else None} now_fp6={now_fp[6]}")
+            if cr_closed and _is_crash_prev_re and no_layer_after_close:
+                app._crash_entry_date = asof
+                app._crash_entry_price = price
+                app._crash_k1 = app._s5(price)
+                app._crash_k2 = app._crash_k1 + SPREAD_W
+                app._crash_sigma = vix_p / 100.0
+                if app._crash_sigma > 0.01:
+                    T = DTE / 365.0
+                    e1 = pricing.black_scholes(price, app._crash_k1, T, 0.05, app._crash_sigma, 'C')
+                    e2 = pricing.black_scholes(price, app._crash_k2, T, 0.05, app._crash_sigma, 'C')
+                    app._crash_debit = e1 - e2
+                app._crash_etf_entry = spxl_p
+                app._crash_half_date = None
+                app._crash_reentry = False
+                app._crash_reentry_date = None
+                app._crash_opt_reopened = False
+                app._crash_opt_reopen_date = None
+                app._crash_yin_scaled = False
+                app._crash_yin_date = None
+                app._crash_green_streak = 0
+                n = open_trade('CRASH', asof)
+                t = cur_trade('CRASH')
+                if t:
+                    t['etf_entry'] = spxl_p
+                    t['etf_shares'] = max(round(ETF_SIZE['CRASH'] / spxl_p), 1)
+                ev.append(f'CRASH#{n} 开仓(同价续持)')
+                now_fp = state_fp()
+        except Exception as e:
+            print(f"⚠️ 同价续持失败 {asof}: {e}")
         fp_changed = (prev_fp is not None and now_fp != prev_fp)
         gate_blocked = '被利率闸门拦截' in msg
 

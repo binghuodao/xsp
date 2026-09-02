@@ -441,8 +441,17 @@ def send_market_report(report_type, force=False):
 
     # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
     # Canonical 收盘对收盘: Close[T]/Close[T-1]-1 < -0.5% (混合: yf Close[T-1] + moomoo Close[T] 当日触发)
-    # 开仓延迟到收盘平仓处理之后执行（close-before-open；优先级 崩盘>MR>趋势，三层互斥）
-    _asof = datetime.now(ET_TZ).date()
+    # 晨报 asof=昨收交易日, 晚报 asof=当日交易日
+    if report_type == 'morning':
+        # 21:30 Syd = 07:30 ET 当日晨, 最新收盘为上一交易日
+        _asof_raw = datetime.now(ET_TZ).date()
+        # 回溯到前一交易日
+        try:
+            _asof = pd.bdate_range(end=pd.Timestamp(_asof_raw), periods=2)[0].date()
+        except:
+            _asof = _asof_raw - timedelta(days=1)
+    else:
+        _asof = datetime.now(ET_TZ).date()
     _yf_close_t, _yf_date_t, _yf_prev, _yf_date_prev = _get_xsp_closes_with_dates()
     # 缺 T-1 回溯挖: 若 yf 最新非 asof 前一交易日, 用 SPY chg 代理 (yf ^XSP 丢 0828 时)
     _spy_proxy = None
