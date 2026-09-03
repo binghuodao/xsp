@@ -413,30 +413,9 @@ def send_market_report(report_type, force=False):
         return
 
     hs = historical_stats
-    ema20 = hs.get("ema_20", 0)
-    bbl = hs.get("support", 0)
-    bbu = hs.get("resistance", 0)
-    bw = bbu - bbl if (bbl and bbu and bbu > bbl) else 1
-
-    # Trend composite
-    W = {'adx': .3, 'er': .2, 'bbw': .15, 'dev': .15, 'vr': .1}
-    T = {'adx': [30, 25, 20, 15, 0], 'er': [.7, .55, .35, .2, 0],
-         'bbw': [45, 30, 18, 10, 0], 'dev': [3.0, 1.5, 0.8, 0.3, 0],
-         'vr': [2.0, 1.3, .8, .5, 0]}
-    total = 5
-    for k, w in W.items():
-        v = hs.get(k)
-        if v is None:
-            total += 5
-            continue
-        val = abs(v) if k == 'dev' else v
-        total += _score_ts(val, T.get(k, [0])) * w
-    score = round(total)
-    icon = '🟢' if score >= 65 else '🟡' if score >= 35 else '🔴'
-    slbl = 'Trending' if score >= 65 else 'Mixed' if score >= 35 else 'Ranging'
-    is_trend = score >= 50
-
-    direction, reason = None, None
+    # Delegated to engine/report for single source (UI/生产/模拟同调)
+    from engine.report import build_score_direction
+    score, icon, slbl, is_trend, direction, reason, trend_entry_blocked = build_score_direction(price, hs, _active_position_date, _trend_opt_expiry)
     _closed_crash_sh = None   # 当日崩盘清仓平的 SPXL 股数（开盘同价再入场时提示免平重开）
 
     # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
@@ -513,69 +492,20 @@ def send_market_report(report_type, force=False):
     # ── Mean Reversion 裸买CALL (RSI<30 + VIX>20, 不干扰崩盘) ──
     is_mr_signal = hs.get('rsi_14', 50) < 30 and hs.get('vix', 0) > 20
 
-    # Direction — Phase 1 Fusion
-    dup = (bbu - price) / bw * 100
-    dlow = (price - bbl) / bw * 100
-    di_diff = hs.get('di_diff', 0)
-    vix_pct = hs.get('vix_percentile', 50)
-    adx = hs.get('adx', 18)
-    rsi_14 = hs.get('rsi_14', 50)
-    atr14 = hs.get("atr_14")
-    if atr14 and atr14 > 0:
-        near_threshold = atr14 * 0.60
-    else:
-        near_threshold = bw * 0.10
-    near_top = (bbu - price) < near_threshold
-    near_bottom = (price - bbl) < near_threshold
-    near_bb_overall = near_top or near_bottom
-
-    # Level 1: 趋势 (非近轨时)
-    if not near_bb_overall and is_trend:
-        if di_diff > 0 and hs.get('di_diff_prev', 0) > 0 and price > hs.get('sma50', 0):
-            if hs.get('sma50', 0) < hs.get('sma200', 0) and price > hs.get('sma200', 0) and hs.get('sma50_slope', 999) < 2:
-                direction, reason = None, 'BB 中段'
-            else:
-                direction, reason = 'CALL', f'DI+({di_diff:.2f})'
-        elif di_diff > 0:
-            direction, reason = None, 'BB 中段'
-        elif di_diff < 0:
-            direction, reason = None, 'BB 中段'
-        else:
-            direction, reason = None, 'BB 中段'
-    # Level 2: 近轨 + VIX高 → 确认反转（只做CALL反转，不做空）
-    elif near_top and score >= 50 and vix_pct > 75:
-        direction, reason = None, 'BB 中段'
-    elif near_bottom and score >= 50 and vix_pct > 75:
-        direction, reason = 'CALL', f'贴BB下+VIX({vix_pct:.0f}%)'
-    # Level 3: 矛盾过滤
-    elif near_top and di_diff > 0:
-        direction, reason = None, 'BB 中段'
-    # (L3 near-bottom removed: let L4 handle nb+DI-)
-    elif near_bottom and False:
-        pass
-    # Level 4: 近轨（只做CALL，不做空）
-    elif near_top and score >= 50:
-        direction, reason = None, 'BB 中段'
-    elif near_bottom and score >= 35 and (adx < 25 or rsi_14 < 35) and not (adx >= 25 and price < hs.get('sma50', 0)):
-        direction, reason = 'CALL', f'贴BB下轨({dlow:.0f}%)'
-    elif near_top or near_bottom:
-        direction, reason = None, 'BB 中段'
-    else:
-        direction, reason = None, 'BB 中段'
+    # Direction 已由 engine/report 统一，此处仅保留趋势高位过滤及树行权价所需变量
+    ema20 = hs.get("ema_20", 0)
+    bbl = hs.get("support", 0)
+    bbu = hs.get("resistance", 0)
+    bw = bbu - bbl if (bbl and bbu and bbu > bbl) else 1
+    dlow = (price - bbl) / bw * 100 if bw else 0
 
     # ── 趋势高位过滤: BB%>80 暂缓趋势新开仓 (对齐 RULES 2026-07-31; 已有持仓不受影响) ──
     trend_entry_blocked = (is_trend and direction == 'CALL' and dlow > 80
                            and _active_position_date is None and _trend_opt_expiry is None)
 
+    from engine.report import build_report_header
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
-    lines = [f"{title} — {now_et_str}",
-             "━━━━━━━━━━━━━━━━━━━━━",
-             f"{icon} 综合 {score} / {slbl}",
-             f"ADX {hs.get('adx',0):.1f} | ER {hs.get('er',0):.2f} | BBW {hs.get('bbw',0):.1f}% | Dev {hs.get('dev',0):+.1f}% | VR {hs.get('vr',0):.1f}x",
-             f"VIX {hs.get('vix',0):.1f} ({hs.get('vix_rank',0):.0f}%) | DI {hs.get('di_diff',0):+.2f}",
-             f"EMA20 ${ema20:.2f} | 现价 ${price:.2f}",
-              f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
-                "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
+    lines = build_report_header(title, price, hs, direction, reason, score, icon, slbl, now_et_str)
 
     # 调试：收盘对收盘明细进报告
     try:
@@ -2097,6 +2027,9 @@ def start_moomoo():
                 
                 price = get_xsp_anchor_price()
                 if price > 0:
+                    # UI index_update 与 market_report 同 engine 源 (四端一致)
+                    from engine.report import build_score_direction as _ui_build
+                    _sc, _ic, _sl, _tr, _dir, _rs, _blk = _ui_build(price, historical_stats, _active_position_date, _trend_opt_expiry)
                     mes_price = latest_data["index"].get("mes_price")
                     mes_change = latest_data["index"].get("mes_change")
                     mes_change_pct = latest_data["index"].get("mes_change_pct")
@@ -2120,7 +2053,9 @@ def start_moomoo():
                         "resistance": historical_stats["resistance"],
                         "rsi_14": historical_stats.get("rsi_14", 50),
                         "price_ema20_pct": historical_stats.get("price_ema20_pct", 0),
-                        "skew_index": historical_stats.get("skew_index", 146)
+                        "skew_index": historical_stats.get("skew_index", 146),
+                        "score": _sc, "icon": _ic, "slbl": _sl, "is_trend": _tr,
+                        "direction": _dir, "reason": _rs, "trend_entry_blocked": _blk
                     }
                     if mes_price is not None:
                         latest_data["index"]["mes_price"] = mes_price
