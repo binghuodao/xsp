@@ -140,3 +140,21 @@ def build_report_header(title: str, price: float, hs: Dict[str, Any], direction:
              f"BBL ${bbl:.2f} | BBU ${bbu:.2f} | ATR14 ${hs.get('atr_14',0):.2f}",
              "", f"→ 方向: {direction} ({reason})" if direction else "→ BB中段，不开仓，等待方向明确", ""]
     return lines
+
+
+def build_full_report(title: str, price: float, hs: Dict[str, Any], direction: Optional[str], reason: Optional[str], score: int, icon: str, slbl: str, now_et_str: str, xsp_dbg: str = "", y10_level=None, y10_20d=None, y10_gate_active: bool = False, y10_gate_pp: float = 0.0, close_lines: list = None) -> list:
+    """Full report lines — header + XSP dbg + 10Y + close_lines. Pure, no side effects."""
+    lines = build_report_header(title, price, hs, direction, reason, score, icon, slbl, now_et_str)
+    # XSP 调试明细
+    if xsp_dbg:
+        lines.append(f"🔍 {xsp_dbg}")
+    # 10Y
+    if y10_level is None or y10_20d is None:
+        lines.append("⚠️ 10Y 不可用（闸门自动关，崩盘照常）")
+    else:
+        lines.append(f"10Y {y10_level:.3f}% (20d {y10_20d:+.2f}%) | 利率闸门 {'🚫 开(拦截崩盘)' if y10_gate_active else '✓ 关'}")
+    if close_lines:
+        lines.append("")
+        lines.append("━━━ 平仓提示 ━━━")
+        lines.extend(close_lines)
+    return lines

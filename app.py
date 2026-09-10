@@ -503,26 +503,15 @@ def send_market_report(report_type, force=False):
     trend_entry_blocked = (is_trend and direction == 'CALL' and dlow > 80
                            and _active_position_date is None and _trend_opt_expiry is None)
 
-    from engine.report import build_report_header
+    from engine.report import build_full_report
     now_et_str = datetime.now(ET_TZ).strftime('%a %Y-%m-%d %H:%M ET')
-    lines = build_report_header(title, price, hs, direction, reason, score, icon, slbl, now_et_str)
-
-    # 调试：收盘对收盘明细进报告
-    try:
-        lines.append(f"🔍 {_xsp_dbg_logged}")
-        if _xsp_prev_close is None:
-            lines.append("⚠️ XSP昨收 unavailable, 跳过崩盘判断")
-    except:
-        pass
-
-    # ── 10Y 收益率 + 利率闸门状态 ──
     _tnx_lvl = hs.get('y10_level')
     _tnx_y = hs.get('y10_20d')
-    if _tnx_lvl is None or _tnx_y is None:
-        lines.append("⚠️ 10Y 不可用（闸门自动关，崩盘照常）")
-    else:
-        _g_on = _y10_gate_active()
-        lines.append(f"10Y {_tnx_lvl:.3f}% (20d {_tnx_y:+.2f}%) | 利率闸门 {'🚫 开(拦截崩盘)' if _g_on else '✓ 关'}")
+    _y10_active = _y10_gate_active()
+    # close_lines 尚未生成, 先占位, 后面 close_lines 构造后补入 full report
+    # 此处先用空 close_lines 生成 header+10Y+XSP, 后面再 extend close_lines
+    lines = build_full_report(title, price, hs, direction, reason, score, icon, slbl, now_et_str,
+                              xsp_dbg=_xsp_dbg_logged, y10_level=_tnx_lvl, y10_20d=_tnx_y, y10_gate_active=_y10_active, y10_gate_pp=Y10_GATE_PP, close_lines=[])
 
     # ── 平仓提示 ──
     try:
@@ -607,6 +596,13 @@ def send_market_report(report_type, force=False):
     except Exception as e:
         print(f"⚠️ close_lines error: {e}")
         close_lines = []
+    # 补入 close_lines 到 lines (与 engine/report:build_full_report 同源)
+    if close_lines:
+        lines.extend(["", "━━━ 平仓提示 ━━━"] + close_lines)
+        try:
+            _latest_report['close_alerts'] = close_lines
+        except:
+            pass
 
     # ── 信号强度 + 持有天数 ──
     hs = historical_stats
@@ -1355,6 +1351,8 @@ def send_market_report(report_type, force=False):
         _latest_report['close_alerts'] = close_lines
 
     msg = "\n".join(lines)
+    _latest_report['lines'] = lines
+    _latest_report['msg'] = msg
     socketio.emit('market_report', _latest_report)
     try:
         # Only persist crash_entry_date if a crash was actually opened this session
