@@ -96,6 +96,7 @@ ap.add_argument('--opt-sl-adaptive', action='store_true', help='standalone optio
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
+ap.add_argument('--backfill', action='store_true', help='load indicator frames from longest available cache (7y>3y) and replay only the --period window with warmup 0 (default off; 7y unaffected)')
 ap.add_argument('--trace-trend', action='store_true', help='diagnose why TREND layer rarely opens: per-day classify 高位暂缓/三层互斥/已在仓/漏开/融合吃掉/非趋势, write trend_trace_{PERIOD}.txt')
 args = ap.parse_args()
 
@@ -135,16 +136,52 @@ spy = _load(args.no_net, 'SPY', PERIOD)
 spxl = _load(args.no_net, 'SPXL', PERIOD)
 skew = _load(args.no_net, '^SKEW', PERIOD)
 
+# ── backfill: 1y/3y 用更长 cache 倒灌指标, 交易窗不动, warmup 可省 (7y 本身最长, 不受影响) ──
+BACKFILL = args.backfill
+WIN_START = xsp.index[0]  # replay window floor = period cache start (backfill 时交易窗仍从此起)
+BF_OK = False
+BF_SRC = None
+if BACKFILL:
+    _bf_ok = False
+    for _bp in ('7y', '3y'):
+        if _bp == PERIOD:
+            continue
+        try:
+            if not all(os.path.exists(os.path.join(OUT_DIR, f'_{t}_{_bp}.csv')) for t in ('^XSP', '^VIX', 'SPY', 'SPXL', '^SKEW')):
+                continue
+            _bx = _load(True, '^XSP', _bp)
+            if _bx.index[0] > WIN_START or _bx.index[-1] < xsp.index[-1]:
+                continue  # 覆盖不全, 换下一档
+            xsp = _bx
+            vix = _load(True, '^VIX', _bp)
+            spy = _load(True, 'SPY', _bp)
+            spxl = _load(True, 'SPXL', _bp)
+            skew = _load(True, '^SKEW', _bp)
+            print(f"Backfill: indicator frames from {_bp} cache ({xsp.index[0].date()} → {xsp.index[-1].date()}), replay window from {WIN_START.date()}")
+            _bf_ok = True
+            BF_OK = True
+            BF_SRC = _bp
+            break
+        except Exception as e:
+            print(f"Backfill {_bp} failed ({e}), trying next")
+            continue
+    if BACKFILL and not BF_OK:
+        print("Backfill: no longer cache available, fallback to period frames + warmup")
+if BF_OK and '--warmup' not in sys.argv:
+    WARMUP_DAYS = 0
+    print("Backfill active: warmup skipped (indicators pre-warmed from longer cache)")
+
 # ── macro regime gate data (10Y yield 20d change; only needed when --crash-y10-gate>0) ──
 tnx = None
 irx = None
 if Y10_GATE > 0:
+    _mp = BF_SRC if (BF_OK and BF_SRC) else PERIOD  # backfill 时宏观帧同跟长 cache, 闸门尾部不冻结
     try:
-        tnx = _load(args.no_net, '^TNX', PERIOD)
+        tnx = _load(args.no_net, '^TNX', _mp)
     except Exception:
         tnx = None
     try:
-        irx = _load(args.no_net, '^IRX', PERIOD)
+        irx = _load(args.no_net, '^IRX', _mp)
     except Exception:
         irx = None
 
@@ -620,6 +657,8 @@ def main():
     trading_days = list(xsp.index)
     if REPLAY_START is not None:
         trading_days = [d for d in trading_days if d >= REPLAY_START]
+    if BACKFILL and BF_OK:
+        trading_days = [d for d in trading_days if d >= WIN_START]  # 交易窗仍为 period 窗, 长帧只供指标
     if len(trading_days) <= WARMUP_DAYS:
         sys.exit('not enough history')
     trading_days = trading_days[WARMUP_DAYS:]
