@@ -78,6 +78,7 @@ ap.add_argument('--crash-yin', type=float, default=0.75, help='V10 首阴清大�
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
 ap.add_argument('--drop-thresh', type=float, default=0.005, help='crash signal XSP daily-drop threshold (default 0.005 = 0.5%%)')
 ap.add_argument('--stop-cooldown', type=int, default=0, help='days to block new crash entries after a crash stop-loss (default 0 = off)')
+ap.add_argument('--force-days', type=int, default=4, help='crash T+N horizon: 首阳有效期 + 强制平时限 in trading days (default 4 = production)')
 ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')
 ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-expiry (default 21)')
 ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
@@ -106,6 +107,7 @@ STOP_PCT = args.stop_pct
 REENTRY_PCT = args.reentry_pct
 DROP_THRESH = args.drop_thresh
 STOP_COOLDOWN = args.stop_cooldown
+FORCE_DAYS = args.force_days
 DTE = args.dte
 SPREAD_W = args.spread_w
 ETF_STOP = args.etf_stop
@@ -350,6 +352,7 @@ def init_state():
     app._crash_etf_out = False
     app._layer_priority = LAYER_PRIORITY
     app._crash_stop_cooldown = STOP_COOLDOWN
+    app._crash_force_days = FORCE_DAYS
     app._crash_stop_date = None
     app._crash_size_mult = RISK_MULT
     app._crash_etf_size = int(ETF_SIZE['CRASH'] * RISK_MULT)
@@ -603,8 +606,8 @@ def check_day(asof, msg, r, price, blocked, failures):
         cf = r.get('crash_force_days')
         if cf is None:
             cf = r.get('crash_days')
-        if cf is not None and cf >= 4:
-            if not any(x in msg for x in ('已持4天', '跌穿止损', '首阳', '首阴', '二次首阳')):
+        if cf is not None and cf >= FORCE_DAYS:
+            if not any(x in msg for x in (f'已持{FORCE_DAYS}天', '跌穿止损', '首阳', '首阴', '二次首阳')):
                 f.append('崩盘到期未平仓')
     for x in f:
         failures.append(f"[{asof}] {x}")
@@ -904,7 +907,7 @@ def main():
                         ropnl = max((rclose - t['reopen_debit']), -t['reopen_debit']) * 100 * osm
                         t['opt_pnl'] = (t.get('opt_pnl') or 0) + ropnl
                 res = ('首阴清仓' if ('崩盘首阴' in msg and '崩盘首阴续持' not in msg) else '二次首阳清仓' if '崩盘二次首阳' in msg else '首阳退半' if '崩盘首阳' in msg
-                       else '止损-2.5%' if '崩盘跌穿' in msg else '4天强制平')
+                       else '止损-2.5%' if '崩盘跌穿' in msg else f'{FORCE_DAYS}天强制平')
                 close_trade('CRASH', asof, price, res, spxl_p)
                 ev.append(f'CRASH#{n} 平仓')
             if cr_changed and now_fp[6] is not None:
@@ -1377,7 +1380,7 @@ def main():
     bt.append('')
     bt.append('说明:')
     bt.append('  · PnL = ETF仓位(整股 SPXL, 按$5k/$2k/$5k预算取整股) + 期权仓位(BS 重定价); 期权段滚动以滚仓日结算旧段')
-    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退半(整股约 {CRASH_HALF:.0%}); 首阴(V4)/二次首阳(V6-8)/止损/4天 再结剩余')
+    bt.append(f'  · 首阳退半: 崩盘期权当日全额结算, ETF 退半(整股约 {CRASH_HALF:.0%}); 首阴(V4)/二次首阳(V6-8)/止损/{FORCE_DAYS}天 再结剩余')
     bt.append('  · MR 信号日=恐慌日(RSI<30+VIX>20), 与崩盘开仓日高度重叠; app 有 direction 闸+崩盘互斥')
     bt.append('    +2026-07-31 强制互斥, 故 MR 低频属结构性(panic 日优先被崩盘层承接), 非回测误差')
     bt_stats_path = os.path.join(RESULT_DIR, f'backtest_stats_{PERIOD}.txt')

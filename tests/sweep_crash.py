@@ -24,7 +24,8 @@ SCRIPT = os.path.join(os.path.dirname(__file__), 'sim_reports_full.py')
 STATS = os.path.join(os.path.dirname(__file__), 'sim_reports_full', 'backtest_stats_7y.txt')
 ALIAS = {'half': '--crash-half', 'reentry': '--reentry-pct', 'stop_pct': '--stop-pct',
          'drop_thresh': '--drop-thresh', 'stop_cooldown': '--stop-cooldown', 'mode': '--crash-mode',
-         'dte': '--dte', 'spread_w': '--spread-w', 'etf_stop': '--etf-stop', 'priority': '--layer-priority'}
+         'dte': '--dte', 'spread_w': '--spread-w', 'etf_stop': '--etf-stop', 'priority': '--layer-priority',
+         'force_days': '--force-days'}
 
 def run_once(cfg):
     extra = []
