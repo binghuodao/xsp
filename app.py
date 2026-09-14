@@ -113,8 +113,8 @@ _crash_half_pct = 0.0625         # crash ETF fraction sold at 首阳 (0.0625 opt
 _crash_etf_size = 5000           # crash SPXL allocation (matched to TREND $5k)
 _crash_stop_pct = 0.025          # crash XSP stop line = entry*(1-pct) (default -2.5%)
 _crash_reentry_pct = 1.0         # V4 re-entry trigger: price <= entry*this
-_crash_dte = 21                  # crash CALL spread days-to-expiry
-_crash_spread_w = 15             # crash CALL spread width (k2 = k1 + w)
+_crash_dte = 7                   # crash CALL spread days-to-expiry (21→7 @ 7x2 landing 2026-09-11)
+_crash_spread_w = 2              # crash CALL spread width, k2 = k1 + w (15→2 @ 7x2 landing)
 _crash_drop_thresh = 0.005       # crash signal: XSP daily drop must exceed this (default 0.5%)
 _crash_etf_stop_pct = 0.0        # crash SPXL separate stop: exit ETF when SPXL <= entry*(1-pct), option keeps riding (0 = off, display-only)
 _crash_etf_out = False           # ETF leg already exited via the separate SPXL stop (option may still be open)
@@ -229,6 +229,11 @@ S_TZ = pytz.timezone('Australia/Sydney')
 
 def _s5(v):
     return round(v / 5) * 5
+
+
+def _s1(v):
+    """1-point strike rounding (crash leg since 7x2 landing; trend/MR keep _s5)."""
+    return int(round(v))
 
 def _score_ts(v, th):
     for t, s in zip(th, [100, 75, 50, 25, 0]):
@@ -428,7 +433,7 @@ def send_market_report(report_type, force=False):
     score, icon, slbl, is_trend, direction, reason, trend_entry_blocked = build_score_direction(price, hs, _active_position_date, _trend_opt_expiry)
     _closed_crash_sh = None   # 当日崩盘清仓平的 SPXL 股数（开盘同价再入场时提示免平重开）
 
-    # ── Crash bounce: CALL价差15点 21DTE + $2k SPXL (XSP跌>0.5%, 无VIX要求) ──
+    # ── Crash bounce: CALL价差2点 7DTE + $5k SPXL (XSP跌>0.5%, 无VIX要求) ──
     # Canonical 收盘对收盘: Close[T]/Close[T-1]-1 < -0.5% (混合: yf Close[T-1] + moomoo Close[T] 当日触发)
     # 晨报 asof=昨收交易日, 晚报 asof=当日交易日
     if report_type == 'morning':
@@ -1138,7 +1143,7 @@ def send_market_report(report_type, force=False):
                 lines.append(f"🔁 崩盘跌回入场价(${_crash_entry_price:.2f}): 买回SPXL {_crash_half_sh}股, T+4自{_today}重算")
                 close_lines.append(f"  🔁 崩盘再进 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} ≤ 入场价), 买回ETF {_crash_half_sh}股")
                 if _crash_exit_mode == 'V11' and _crash_k1 is None:
-                    _crash_k1 = _s5(price)
+                    _crash_k1 = _s1(price)
                     _crash_k2 = _crash_k1 + _crash_spread_w
                     _crash_sigma = hs.get('vix', 20) / 100.0
                     if _crash_sigma > 0.01:
@@ -1257,7 +1262,7 @@ def send_market_report(report_type, force=False):
         _crash_yin_date = None
         _crash_green_streak = 0
         _crash_entry_price = price
-        _crash_k1 = _s5(price)
+        _crash_k1 = _s1(price)
         _crash_k2 = _crash_k1 + _crash_spread_w
         _crash_sigma = hs.get('vix', 20) / 100.0
         if _crash_sigma > 0.01:

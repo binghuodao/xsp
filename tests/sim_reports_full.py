@@ -6,6 +6,8 @@ so the app's position state machine runs continuously exactly like production.
 
 Canonical backtest: python3 tests/sim_reports_full.py --no-net --period 7y --crash-y10-gate 0.4
   = full data window (2021-06-01 -> today, ~5.4y; ^XSP data caps at 2021-03-01) + production crash y10 gate.
+  其余默认即生产 (V9 + 7DTE×2宽 + 1点k1 + half 0.0625).
+  旧 21x15 研究基线: 追加 --dte 21 --spread-w 15 --strike-step 5 (已提交产物为此口径, 不再覆盖).
   Default --period 3y keeps the daily-review window used for day-to-day checks.
 
 Output — batched into tests/sim_reports_full/ for easy lookup:
@@ -72,7 +74,7 @@ def _load(cache, ticker, period):
 ap = argparse.ArgumentParser()
 ap.add_argument('--no-net', action='store_true', help='use cached CSV only, no downloads')
 ap.add_argument('--period', default='3y', help='yfinance download period (3y default; use 7y for the 6y backtest window)')
-ap.add_argument('--crash-mode', default='V9', help='crash exit variant: V9 止损日期权续持 (default, production) | V10 首阴清大半+收复再进 (首阴卖--crash-yin% ETF, 收复首阳买回满仓续持, 期权腿不变; research) | V11 首阳退半+再进期权重开 (V9基础上: 回踩入场价再进时21DTE CALL价差重开; research) | V5 首阴+盈利保护 (prior default) | V4 首阴 (optimal at $2k) | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
+ap.add_argument('--crash-mode', default='V9', help='crash exit variant: V9 止损日期权续持 (default, production) | V10 首阴清大半+收复再进 (首阴卖--crash-yin% ETF, 收复首阳买回满仓续持, 期权腿不变; research) | V11 首阳退半+再进期权重开 (V9基础上: 回踩入场价再进时 CALL价差重开(DTE跟--dte); research) | V5 首阴+盈利保护 (prior default) | V4 首阴 (optimal at $2k) | V6 首阴+3天限 | V7 首阴+连阳2 | V8 首阴/二次首阳混合 | V0 baseline | V1 strict T+4 | V2 half-reset | V3 full-close')
 ap.add_argument('--crash-half', type=float, default=0.0625, help='crash ETF fraction sold at 首阳 (default 0.0625 = sell $312 keep $4688; 0.125 V8d legacy sell $625 keep $4375, 0 = no half, ETF rides full $5k)')
 ap.add_argument('--crash-yin', type=float, default=0.75, help='V10 首阴清大半: crash ETF fraction sold at first red day (default 0.75 = sell $3750 keep $1250; 0 = off, V9 behavior)')
 ap.add_argument('--stop-pct', type=float, default=0.025, help='crash XSP stop line = entry*(1-pct) (default 0.025 = -2.5%%)')
@@ -80,8 +82,9 @@ ap.add_argument('--drop-thresh', type=float, default=0.005, help='crash signal X
 ap.add_argument('--stop-cooldown', type=int, default=0, help='days to block new crash entries after a crash stop-loss (default 0 = off)')
 ap.add_argument('--force-days', type=int, default=4, help='crash T+N horizon: 首阳有效期 + 强制平时限 in trading days (default 4 = production)')
 ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trigger: price <= entry*this (default 1.0 = retrace to entry)')
-ap.add_argument('--dte', type=int, default=21, help='crash CALL spread days-to-expiry (default 21)')
-ap.add_argument('--spread-w', type=int, default=15, help='crash CALL spread width k2-k1 (default 15)')
+ap.add_argument('--dte', type=int, default=7, help='crash CALL spread days-to-expiry (default 7 = production 7x2)')
+ap.add_argument('--spread-w', type=int, default=2, help='crash CALL spread width k2-k1 (default 2 = production 7x2)')
+ap.add_argument('--strike-step', type=int, default=1, help='strike rounding grid: 1 = 1-point grid production 7x2 (default) | 5 = _s5 legacy (research; 21x15 era)')
 ap.add_argument('--etf-stop', type=float, default=0.0, help='crash SPXL separate stop pct: exit ETF leg when SPXL <= entry*(1-pct), option rides (default 0 = off)')
 ap.add_argument('--layer-priority', default='crash_mr_trend', help='delayed-open priority: crash_mr_trend (default, 崩盘优先) | mr_crash_trend (MR 优先承接恐慌日)')
 ap.add_argument('--risk-gate', default='none', help='bear-regime gate (research): none | b200 (close<SMA200) | b200slope (close<SMA200 & SMA200 falling) | vix80 (VIX 252d pct>80) | macd (XSP MACD death cross) | engulf (bearish engulfing) | s3red (3 consecutive red days)')
@@ -111,6 +114,8 @@ STOP_COOLDOWN = args.stop_cooldown
 FORCE_DAYS = args.force_days
 DTE = args.dte
 SPREAD_W = args.spread_w
+STRIKE_STEP = args.strike_step
+_orig_s5 = app._s5  # production 5-point rounding (restored when STRIKE_STEP != 1)
 ETF_STOP = args.etf_stop
 LAYER_PRIORITY = args.layer_priority
 RISK_GATE = args.risk_gate
@@ -384,6 +389,7 @@ def init_state():
     app._crash_reentry_pct = REENTRY_PCT
     app._crash_dte = DTE
     app._crash_spread_w = SPREAD_W
+    app._s5 = (lambda v: int(round(v))) if STRIKE_STEP == 1 else _orig_s5
     app._crash_drop_thresh = DROP_THRESH
     app._crash_etf_stop_pct = ETF_STOP
     app._crash_etf_out = False
@@ -965,6 +971,7 @@ def main():
                         t['etf_shares'] = max(round(ETF_SIZE['CRASH'] / spxl_p), 1)
                     t['k1'] = app._crash_k1; t['k2'] = app._crash_k2
                     t['debit'] = app._crash_debit; t['sigma'] = app._crash_sigma
+                    t['open_debit'] = app._crash_debit  # 首阳结算后 debit 置 None, 成本统计用开仓值
                     t['size_mult'] = RISK_MULT if app._risk_off_active() else 1.0
                     t['resid_entry'] = price
                     t['resid_expiry'] = asof + timedelta(days=DTE)
@@ -1322,7 +1329,7 @@ def main():
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
         idx.append(f"  {t['n']:<3}{t['open']}  {t['open_p'] or 0:8.2f}  {str(t['close']):<10}  {t['close_p'] or 0:8.2f}  {t.get('hold_days','-'):>4}  {str(t.get('result','')):<14} {fl}")
     idx.append('')
-    idx.append(f'── CRASH 崩盘 CALL价差15点21DTE+整股 SPXL(≈$5k)  共 {len(ledger["CRASH"])} 笔 ──')
+    idx.append(f'── CRASH 崩盘 CALL价差{DTE}DTE {SPREAD_W}点宽+整股 SPXL(≈$5k)  共 {len(ledger["CRASH"])} 笔 ──')
     idx.append('  #  开仓日        入场价    平仓日        出场价    天数  结果            定位')
     for t in ledger['CRASH']:
         fl = f"{t.get('file')}:{t.get('line')}" if t.get('file') else '-'
@@ -1363,7 +1370,7 @@ def main():
             return sum((seg.get('debit') or 0) for seg in segs) / len(segs) * 100
         if t['kind'] == 'MR':
             return (t.get('mr_opt_entry') or 0) * 100
-        return (t.get('debit') or 0) * 100 * t.get('size_mult', 1.0)
+        return (t.get('open_debit') if t.get('open_debit') is not None else (t.get('debit') or 0)) * 100 * t.get('size_mult', 1.0)
 
     bt = []
     bt.append('═' * 70)
@@ -1376,7 +1383,7 @@ def main():
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
                   'MR': 'MR 裸买CALL 7DTE ($2k SPXL)',
-                  'CRASH': '崩盘 CALL价差15点21DTE+$5k SPXL'}
+                  'CRASH': f'崩盘 CALL价差{DTE}DTE {SPREAD_W}点宽+$5k SPXL'}
     for kind in ('TREND', 'MR', 'CRASH'):
         trs = ledger[kind]
         closed = [t for t in trs if t.get('close')]

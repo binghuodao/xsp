@@ -32,6 +32,8 @@ import pricing
 # Output directory
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'sim_reports_full')
 os.makedirs(OUT_DIR, exist_ok=True)
+# 注意: 数据 cache 与 sim_reports_full 共用目录! 无 --no-net 运行会刷新共享 7y cache
+# (窗口平移+复权漂移), 导致已提交回测产物不可复现。只在有意刷新 canonical 时才联网跑。
 
 
 def _cols(df):
@@ -80,8 +82,8 @@ PROD_CONFIG = {
     'STOP_PCT': 0.025,
     'DROP_THRESH': 0.005,
     'REENTRY_PCT': 1.0,
-    'DTE': 21,
-    'SPREAD_W': 15,
+    'DTE': 7,
+    'SPREAD_W': 2,
     'ETF_STOP': 0.0,
     'LAYER_PRIORITY': 'crash_mr_trend',
     'RISK_GATE': 'b200slope',
