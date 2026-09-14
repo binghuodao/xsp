@@ -85,6 +85,7 @@ ap.add_argument('--reentry-pct', type=float, default=1.0, help='V4 re-entry trig
 ap.add_argument('--dte', type=int, default=7, help='crash CALL spread days-to-expiry (default 7 = production 7x2)')
 ap.add_argument('--spread-w', type=int, default=2, help='crash CALL spread width k2-k1 (default 2 = production 7x2)')
 ap.add_argument('--strike-step', type=int, default=1, help='strike rounding grid: 1 = 1-point grid production 7x2 (default) | 5 = _s5 legacy (research; 21x15 era)')
+ap.add_argument('--k1-off', type=int, default=0, help='crash k1 offset in points: 0 = ATM (default, production) | +N = OTM open (research)')
 ap.add_argument('--etf-stop', type=float, default=0.0, help='crash SPXL separate stop pct: exit ETF leg when SPXL <= entry*(1-pct), option rides (default 0 = off)')
 ap.add_argument('--layer-priority', default='crash_mr_trend', help='delayed-open priority: crash_mr_trend (default, 崩盘优先) | mr_crash_trend (MR 优先承接恐慌日)')
 ap.add_argument('--risk-gate', default='none', help='bear-regime gate (research): none | b200 (close<SMA200) | b200slope (close<SMA200 & SMA200 falling) | vix80 (VIX 252d pct>80) | macd (XSP MACD death cross) | engulf (bearish engulfing) | s3red (3 consecutive red days)')
@@ -115,6 +116,7 @@ FORCE_DAYS = args.force_days
 DTE = args.dte
 SPREAD_W = args.spread_w
 STRIKE_STEP = args.strike_step
+K1_OFF = args.k1_off
 _orig_s5 = app._s5  # production 5-point rounding (restored when STRIKE_STEP != 1)
 ETF_STOP = args.etf_stop
 LAYER_PRIORITY = args.layer_priority
@@ -396,6 +398,7 @@ def init_state():
     app._layer_priority = LAYER_PRIORITY
     app._crash_stop_cooldown = STOP_COOLDOWN
     app._crash_force_days = FORCE_DAYS
+    app._crash_k1_off = K1_OFF
     app._crash_stop_date = None
     app._crash_size_mult = RISK_MULT
     app._crash_etf_size = int(ETF_SIZE['CRASH'] * RISK_MULT)

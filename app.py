@@ -121,6 +121,7 @@ _crash_etf_out = False           # ETF leg already exited via the separate SPXL 
 _crash_stop_cooldown = 0         # days to block new crash entries after a crash stop-loss (0 = off)
 _crash_force_days = 4          # 崩盘 T+N 强平时限: 首阳有效期 + 强制平仓 (默认 4; harness --force-days 扫参)
 _fetch_batch = 0               # 期权链交替拉取状态: 偶/奇到期日轮替 (40 strikes × 20 expiries = 800 > 单 request 400 上限)
+_crash_k1_off = 0              # 崩盘 k1 偏移 (点): 0=ATM (生产) | +N=OTM 开 (研究, harness --k1-off)
 _chain_cache = {}              # ds -> (mills_set, ts, day): YF 链缓存 (日内并集只增不减, 次日重置)
 _verified = {}                 # ds -> (set_mills, ts, day): 快照实测存在的行权价 (零容忍下唯一可信增补源)
 _verified_bad = {}             # ds -> (set_mills, ts, day): 实测不存在的行权价 (失败要记, 否则每轮重烧额度饿死别的到期)
@@ -1143,7 +1144,7 @@ def send_market_report(report_type, force=False):
                 lines.append(f"🔁 崩盘跌回入场价(${_crash_entry_price:.2f}): 买回SPXL {_crash_half_sh}股, T+4自{_today}重算")
                 close_lines.append(f"  🔁 崩盘再进 {crash_days}d (入场${_crash_entry_price:.2f}→现价${price:.2f} ≤ 入场价), 买回ETF {_crash_half_sh}股")
                 if _crash_exit_mode == 'V11' and _crash_k1 is None:
-                    _crash_k1 = _s1(price)
+                    _crash_k1 = _s1(price) + _crash_k1_off
                     _crash_k2 = _crash_k1 + _crash_spread_w
                     _crash_sigma = hs.get('vix', 20) / 100.0
                     if _crash_sigma > 0.01:
@@ -1262,7 +1263,7 @@ def send_market_report(report_type, force=False):
         _crash_yin_date = None
         _crash_green_streak = 0
         _crash_entry_price = price
-        _crash_k1 = _s1(price)
+        _crash_k1 = _s1(price) + _crash_k1_off
         _crash_k2 = _crash_k1 + _crash_spread_w
         _crash_sigma = hs.get('vix', 20) / 100.0
         if _crash_sigma > 0.01:
