@@ -38,7 +38,7 @@ parser = argparse.ArgumentParser(description="XSP Options Monitor")
 parser.add_argument("--floor", type=float, default=0.93, help="Floor percentage (default: 0.93)")
 parser.add_argument("--ceiling", type=float, default=1.03, help="Ceiling percentage (default: 1.03)")
 parser.add_argument("--refresh", type=int, default=5, help="Refresh frequency in seconds (default: 5)")
-parser.add_argument("--option-days", type=int, default=15, help="Option days (default: 15)")
+parser.add_argument("--option-days", type=int, default=20, help="Option days (default: 20)")
 parser.add_argument("--y10-gate", type=float, default=0.4, help="Rates-rising crash gate (10Y yield 20-trading-day change in pp): skip crash entry when >= gate; 0 = off (default 0.4)")
 args, unknown = parser.parse_known_args()
 
@@ -120,6 +120,15 @@ _crash_etf_stop_pct = 0.0        # crash SPXL separate stop: exit ETF when SPXL 
 _crash_etf_out = False           # ETF leg already exited via the separate SPXL stop (option may still be open)
 _crash_stop_cooldown = 0         # days to block new crash entries after a crash stop-loss (0 = off)
 _crash_force_days = 4          # 崩盘 T+N 强平时限: 首阳有效期 + 强制平仓 (默认 4; harness --force-days 扫参)
+_fetch_batch = 0               # 期权链交替拉取状态: 偶/奇到期日轮替 (40 strikes × 20 expiries = 800 > 单 request 400 上限)
+_chain_cache = {}              # ds -> (mills_set, ts, day): YF 链缓存 (日内并集只增不减, 次日重置)
+_verified = {}                 # ds -> (set_mills, ts, day): 快照实测存在的行权价 (零容忍下唯一可信增补源)
+_verified_bad = {}             # ds -> (set_mills, ts, day): 实测不存在的行权价 (失败要记, 否则每轮重烧额度饿死别的到期)
+_VERIFY_BUDGET = 6             # 每 generate 调用最多花几次快照做存在性验证
+_VERIFY_BAD_TTL = 1800         # 负缓存存活秒数 (CBOE 盘中加挂时靠此过期重探)
+_CHAIN_TTL = 1800              # 阳性缓存存活秒数 (CBOE 盘中会加挂行权价, 定期重探)
+_CHAIN_NEG_TTL = 600           # 阴性缓存存活秒数
+_good_ds = set()               # 跨批已知有效到期日 (供 valid_dates, 前端卡片不闪烁)
 _crash_stop_date = None          # date of most recent crash stop-loss (cooldown anchor)
 _crash_half_date = None          # V2: date the ETF half was scaled
 _crash_reentry = False           # V4: re-bought the $1k half after retrace
@@ -1873,88 +1882,168 @@ def format_row(row):
     }
     return result
     
-def generate_xsp_symbols(current_price, floor_price, ceiling_price):
+def _yf_strikes_for_ds(ds, ymd):
+    """YF 唯一源: 某到期日 CALL 行权价 (毫单位 set)；失败返回 None.
+    (moomoo OpenD 指数期权链不可用已证实: US.XSP/US.SPX 均 Unknown stock.)
+    """
+    try:
+        ticker = yf.Ticker("^XSP")
+        opt_chain = ticker.option_chain(ymd)
+        if opt_chain is None or opt_chain.calls is None:
+            return None
+        return set(int(round(float(s) * 1000)) for s in opt_chain.calls['strike'].values)
+    except Exception as e:
+        print(f"⚠️ 跳过 {ds}: YF option_chain 异常 {e}")
+        return None
+
+
+def _verify_gaps(quote_ctx, ds, gaps, budget):
+    """用快照实测 gaps 行权价存在性；整批失败则二分隔离坏 symbol.
+    budget=[n] 单轮剩余额度 (耗尽即停). 返回 (ok_set, bad_set);
+    额度耗尽而未证伪的归 unknown (调用方不缓存, 下轮继续, 不得误记为 bad).
+    成功批里没返回的 = 实测不存在 (网关对未知 symbol 整批失败, 成功即代表全认识).
+    """
+    gaps = set(gaps)
+    if not gaps or budget[0] <= 0 or quote_ctx is None:
+        return set(), set()
+    try:
+        syms = ['US.XSP%sC%d' % (ds, m) for m in sorted(gaps)]
+        budget[0] -= 1
+        ret, data = quote_ctx.get_market_snapshot(syms)
+        if ret == RET_OK and data is not None and not getattr(data, 'empty', True):
+            got = set()
+            for _, r in data.iterrows():
+                try:
+                    got.add(int(str(r['code']).split('C')[1]))
+                except Exception:
+                    continue
+            ok = set(g for g in gaps if g in got)
+            return ok, gaps - ok
+    except Exception as e:
+        print(f"⚠️ 验证 {ds} 异常: {e}")
+    if len(gaps) <= 1:
+        return set(), set(gaps)
+    gl = sorted(gaps)
+    mid = len(gl) // 2
+    ok1, bad1 = _verify_gaps(quote_ctx, ds, set(gl[:mid]), budget)
+    ok2, bad2 = _verify_gaps(quote_ctx, ds, set(gl[mid:]), budget)
+    return ok1 | ok2, bad1 | bad2
+
+
+def _reset_verified(symbols):
+    """整批快照失败时清实测正/负缓存 (只清实测集, YF 并集保留), 下轮重验.
+    防某个实测行权价盘中摘牌后永久拖死整批.
+    """
+    try:
+        _dss = set()
+        for s in symbols or []:
+            if isinstance(s, str) and s.startswith('US.XSP') and len(s) > 12:
+                _dss.add(s[6:12])
+        for _d in _dss:
+            _verified.pop(_d, None)
+            _verified_bad.pop(_d, None)
+        if _dss:
+            print(f"🧹 快照整批失败, 已清 {sorted(_dss)} 实测缓存下轮重验")
+    except Exception as e:
+        print(f"⚠️ 清验证缓存异常: {e}")
+
+
+def generate_xsp_symbols(current_price, batch=0, quote_ctx=None):
+    """CALL-only 期权链符号生成: 现价±20点、1点步长(40 strikes) × OPTION_DAYS 到期日.
+    40×20=800 symbols 超过单 request 400 上限 → 到期日按奇偶分两批, 调用方每轮交替取一批.
+    存在性: YF 为基础名单 (moomoo 零容忍, YF 没列的不取); 窗内 YF 缺口用快照实测补
+    (746C 这类 YF 漏列但真实挂牌的, 实测后加入; 失败二分隔离, 结果按天缓存).
+    Returns: (batch_symbols, good_dates_YYMMDD).
+    """
     if current_price <= 0:
-        return []
-    
+        return [], []
+
     symbols = []
     tz = pytz.timezone('Australia/Sydney')
     now = datetime.now(tz)
+    today_str = now.strftime('%y%m%d')
 
     # 2026 US Market Holidays (YYMMDD format)
     # Source: NYSE/CBOE 2026 Holiday Calendar
     holidays = [
         # 2026
-        '260101', '260119', '260216', '260403', '260525', 
+        '260101', '260119', '260216', '260403', '260525',
         '260619', '260703', '260907', '261126', '261225',
         # 2027
-        '270101', '270118', '270215', '270326', '270531', 
+        '270101', '270118', '270215', '270326', '270531',
         '270618', '270705', '270906', '271125', '271224'
     ]
-    
+
     dates = []
     check_date = now
     while len(dates) < OPTION_DAYS:
         # Step 1: Define date_str FIRST
         date_str = check_date.strftime('%y%m%d')
-        
+
         # Step 2: Check if it's a weekday AND not a holiday
-        if check_date.weekday() < 5 and date_str not in holidays: 
+        if check_date.weekday() < 5 and date_str not in holidays:
             dates.append(date_str)
-            
+
         # Step 3: Always move to the next day
         check_date += timedelta(days=1)
 
-    # --- Robust Strike Logic ---
-    # Put Range: From Floor up to Current Price + 2 ticks
-    p_start = int((floor_price // 5) * 5) + 5
-    p_end = int((current_price // 5) * 5) + 25
-    
-    # Call Range: From Current -25 up to Ceiling (mirrors Put's +25 ITM coverage)
-    c_start = int((current_price // 5) * 5) - 25
-    c_end = int((ceiling_price // 5) * 5)
+    # --- CALL-only Strike Logic: 现价±20点窗口 (整数行权价, 毫单位与挂牌精确交集防 float 误差) ---
+    base = int(round(current_price))
+    window_mills = set((base + i) * 1000 for i in range(-20, 20))  # 40 strikes
 
-    ticker = yf.Ticker("^XSP")
-    for ds in dates:
-        # get option chain from yfinance
-        try:
-            opt_chain = ticker.option_chain(datetime.strptime(ds, "%y%m%d").strftime("%Y-%m-%d"))
-            if opt_chain is None or opt_chain.puts is None or opt_chain.calls is None:
-                print(f"⚠️ 跳过 {ds}: option chain 数据不完整")
-                continue
-        except Exception as e:
-            print(f"⚠️ 跳过 {ds}: YF option_chain 异常 {e}")
+    # 交替批次: 偶/奇到期日 (每批 ≤10 expiries × 40 strikes = 400)
+    batch_dates = dates[batch::2]
+
+    good = []
+    _budget = [_VERIFY_BUDGET]  # 本轮存在性验证额度 (快照次数)
+    for ds in batch_dates:
+        ymd = datetime.strptime(ds, "%y%m%d").strftime("%Y-%m-%d")
+        # YF 链缓存 (阳性 30min/阴性 10min, 按天失效; 日内并集只增不减, 次日重置)
+        hit = _chain_cache.get(ds)
+        _now_ts = time.time()
+        if hit is not None and len(hit) >= 3 and hit[2] == today_str and (_now_ts - hit[1] < (_CHAIN_TTL if hit[0] else _CHAIN_NEG_TTL)):
+            listed = set(hit[0])
+        else:
+            _yf = _yf_strikes_for_ds(ds, ymd)
+            _base = set(hit[0]) if (hit is not None and len(hit) >= 3 and hit[2] == today_str) else set()
+            listed = _base | (_yf if _yf is not None else set())
+            _chain_cache[ds] = (listed, _now_ts, today_str, 'yf')
+        take = window_mills & listed
+        # gaps 实测: 窗内 YF 没有的, 用快照验存在性 (当日验证过好/坏都不重复验)
+        _vhit = _verified.get(ds)
+        _vfresh = set(_vhit[0]) if (_vhit and len(_vhit) >= 3 and _vhit[2] == today_str) else set()
+        _bhit = _verified_bad.get(ds)
+        _bfresh = set(_bhit[0]) if (_bhit and len(_bhit) >= 3 and _bhit[2] == today_str
+                                    and (time.time() - _bhit[1] < _VERIFY_BAD_TTL)) else set()
+        _gaps = set(window_mills - listed - _vfresh - _bfresh)
+        if _gaps and _budget[0] > 0:
+            _new_ok, _new_bad = _verify_gaps(quote_ctx, ds, _gaps, _budget)
+            if _new_ok:
+                _vfresh |= _new_ok
+                _verified[ds] = (set(_vfresh), time.time(), today_str)
+            if _new_bad:
+                _bfresh |= _new_bad
+                _verified_bad[ds] = (set(_bfresh), time.time(), today_str)
+        take = window_mills & (listed | _vfresh)
+        if not take:
             continue
-        # Generate Puts (ensure start < end)
-        if p_start <= p_end:
-            for strike in range(p_start, p_end + 5, 5):
-                if strike in opt_chain.puts['strike'].values:
-                    symbols.append(f"US.XSP{ds}P{int(strike * 1000)}")
-        
-        # Generate Calls (ensure start < end)
-        if c_start <= c_end:
-            for strike in range(c_start, c_end + 5, 5):
-                if strike in opt_chain.calls['strike'].values:
-                    symbols.append(f"US.XSP{ds}C{int(strike * 1000)}")
-        
-        # Force-add ATM option(s) for SKEW calculation (verify strike exists in YF)
-        atm_strike = round(current_price / 5) * 5
-        for t in ('P', 'C'):
-            sym = f"US.XSP{ds}{t}{int(atm_strike * 1000)}"
-            if sym not in symbols:
-                df = opt_chain.puts if t == 'P' else opt_chain.calls
-                if atm_strike in df['strike'].values:
-                    symbols.append(sym)
-        
-        if len(symbols) >= 399: break
-    
-    print(f"📊 Generated {len(symbols)} total contracts (Puts & Calls)")
-    return symbols[:399]
+        good.append(ds)
+        for m in sorted(take):
+            symbols.append(f"US.XSP{ds}C{m}")
+
+    # 跨批记忆 + 剪掉过期日期 (供 valid_dates, 轮替时前端卡片不闪烁)
+    _good_ds.update(good)
+    for _d in [d for d in _good_ds if d < today_str or d not in dates]:
+        _good_ds.discard(_d)
+
+    print(f"📊 Generated {len(symbols)} CALL contracts (batch {batch}, {len(good)}/{len(batch_dates)} expiries ok)")
+    return symbols[:400], sorted(_good_ds)
 
 
 def calc_skew_from_options():
-    """Calculate SKEW = 4% deep Put IV - ATM IV using cached Moomoo option data.
-    Finds the expiry closest to 5 trading days out.
+    """Calculate SKEW from CALLs = ATM Call IV - 2% OTM Call IV (5th expiry).
+    CALL-only 口径 (PUT 已停取): 同到期日 ATM Call 与 +2% OTM Call 的 IV 差 (points).
+    注: 量级与旧 PUT 版 (ATM Put - 4% OTM Put) 不同, 前端颜色阈值待实盘校准.
     """
     global latest_data, historical_stats
     price = latest_data["index"].get("price", 0)
@@ -1978,31 +2067,29 @@ def calc_skew_from_options():
     exp_opts = [opt for opt in options.values() if opt['expiry'] == expiry_str]
 
     # Find ATM strike (closest to current price)
-    strikes = sorted(set(opt['strike'] for opt in exp_opts))
+    strikes = sorted(set(opt['strike'] for opt in exp_opts if opt['opt_type'] == 'C'))
     if not strikes:
         return
     atm_strike = min(strikes, key=lambda s: abs(s - price))
-    atm_put = next((opt for opt in exp_opts if opt['strike'] == atm_strike and opt['opt_type'] == 'P'), None)
+    atm_call = next((opt for opt in exp_opts if opt['strike'] == atm_strike and opt['opt_type'] == 'C'), None)
 
-    if not atm_put or atm_put['iv'] <= 0:
+    if not atm_call or atm_call['iv'] <= 0:
         return
 
-    # Find 4% deep OTM put
-    deep_target = price * 0.96
-    puts = [opt for opt in exp_opts if opt['opt_type'] == 'P']
-    if not puts:
-        return
-    deep_put = min(puts, key=lambda p: abs(p['strike'] - deep_target))
-    if deep_put['iv'] <= 0:
+    # Find 2% OTM call (fits ±20 window; fallback: highest strike in window)
+    otm_target = price * 1.02
+    cands = [opt for opt in exp_opts if opt['opt_type'] == 'C' and opt['strike'] >= otm_target and opt['iv'] > 0]
+    otm_call = min(cands, key=lambda o: o['strike']) if cands else None
+    if not otm_call:
         return
 
-    skew_val = (deep_put['iv'] - atm_put['iv'])  # in decimal (0.15 = 15 points)
+    skew_val = atm_call['iv'] - otm_call['iv']  # in points (call skew: ATM richer than OTM)
 
     historical_stats["skew"] = round(skew_val, 1)
     latest_data["index"]["skew"] = historical_stats["skew"]
 
 def start_moomoo():
-    global latest_data, user_watchlist
+    global latest_data, user_watchlist, _fetch_batch
     print(f"🚀 Unified Snapshot Loop Active (Interval: {REFRESH_INTERVAL}s)...")
     
     with OpenQuoteContext(host=OPEND_ADDR, port=OPEND_PORT) as quote_ctx:
@@ -2088,23 +2175,26 @@ def start_moomoo():
                 except Exception as e:
                     print(f"⚠️ Failed to fetch MES from yfinance: {e}")
 
-                # 1. 动态确定本次需要拉取的代码列表
+                # 1. 动态确定本次需要拉取的代码列表 (CALL-only, 偶/奇到期日交替取)
                 current_price = latest_data["index"].get("price", 0)
                 valid_dates = []
                 if current_price <= 0:
                     # 第一次运行或没拿到价格：只请求 SPY
                     all_symbols = [REF_SYMBOL]
                 else:
-                    # 已有价格：请求 SPY + 生成的期权列表
-                    floor = latest_data["index"]["floor"]
-                    ceiling = latest_data["index"]["ceiling"]
-                    opt_symbols = generate_xsp_symbols(current_price, floor, ceiling)
-                    
-                    # 提取当前所有有效的到期日 (YYYY-MM-DD 格式)
-                    valid_dates = sorted(list(set([
-                        f"20{s[6:8]}-{s[8:10]}-{s[10:12]}" for s in opt_symbols
-                    ])))
-                    all_symbols = opt_symbols
+                    # 已有价格：请求 SPY + 本轮到期日批次的 CALL 链 (40×20=800 分两批交替)
+                    # 链生成失败只影响期权链显示, 不许拖死指数/报告 (fallback 仅请求 SPY)
+                    try:
+                        _batch = _fetch_batch % 2
+                        opt_symbols, _all_ds = generate_xsp_symbols(current_price, batch=_batch, quote_ctx=quote_ctx)
+                        _fetch_batch += 1
+
+                        # 提取全量有效到期日 (YYYY-MM-DD 格式, 轮替时前端卡片不闪烁)
+                        valid_dates = sorted([f"20{ds[0:2]}-{ds[2:4]}-{ds[4:6]}" for ds in _all_ds])
+                        all_symbols = opt_symbols
+                    except Exception as _gen_e:
+                        print(f"⚠️ 期权链生成失败 (仅 SPY): {_gen_e}")
+                        all_symbols = [REF_SYMBOL]
 
                 # 注入 Watchlist 中的期权，确保一定能请求到快照数据
                 for group in user_watchlist:
@@ -2702,6 +2792,7 @@ def start_moomoo():
                         
                 else:
                     print(f"⚠️ API 请求未返回数据: {data}")
+                    _reset_verified(all_symbols)
 
                 # 4. 从现有 Moomoo 期权链计算 SKEW 并更新显示
                 calc_skew_from_options()

@@ -387,7 +387,7 @@
         <div id="report-card" style="display:block; margin-bottom:20px; background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:15px;">
             <pre id="report-pre" style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; line-height:1.5; color:#c9d1d9;">报告加载中...</pre>
         </div>
-        <div id="header" style="display:none">
+        <div id="header">
             <div class="stat"><span class="label">REF PRICE</span><span id="p-idx" class="val">--</span></div>
             <div class="stat"><span class="label">{{ (floor_pct*100)|int }}% FLOOR</span><span id="p-floor" class="val" style="color:#f0883e">--</span></div>
             <div class="stat"><span class="label">{{ (ceiling_pct*100)|int }}% CEILING</span><span id="p-ceil" class="val" style="color:var(--green)">--</span></div>
@@ -514,7 +514,7 @@
                 div.className = 'input-group';
                 div.innerHTML = `
                     <label>GROUP ${i}</label>
-                    <input type="text" id="sml-${i}" placeholder="YYMMDD S P/C or S/M/L P/C (e.g. 260717 750P or 750/740/735P)">
+                    <input type="text" id="sml-${i}" placeholder="YYMMDD S/C or S/M/L C (e.g. 260717 750C or 750/740/735C)">
                     <input type="number" step="0.01" id="entry-${i}" placeholder="Entry Premium (e.g. 1.20)">
                     <select id="strategy-${i}" style="width:100%;padding:6px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-size:12px;">
                         <option value="xmas">🎄 +1S/-3M/+2L</option>
@@ -634,6 +634,7 @@
         });
 
         socket.on('index_update', d => {
+            window._lastPrice = d.price;
             document.getElementById('p-idx').innerText = d.price.toFixed(2);
             document.getElementById('p-floor').innerText = d.floor.toFixed(2);
             document.getElementById('p-ceil').innerText = d.ceiling.toFixed(2);
@@ -731,6 +732,12 @@
 
         socket.on('option_update', d => {
 
+            // CALL-only 期权链: 非 CALL 行直接清掉 (老 PUT 持仓走组合卡片, 不走链表)
+            if (d.opt_type !== 'C') {
+                const stale = document.getElementById(`r-${d.symbol.replace(/\./g,'_')}`);
+                if (stale) stale.remove();
+                return;
+            }
             const container = document.getElementById('container');
             const cardId = `c-${d.expiry}`;
             let card = document.getElementById(cardId);
@@ -773,7 +780,7 @@
             row.innerHTML = `
                 <td style="vertical-align: middle;">
                     ${d.is_watched ? '<span class="star">★</span>' : ''}
-                    <b style="color: ${d.opt_type === 'C' ? 'var(--green)' : 'white'}">${d.strike.toFixed(1)}${d.opt_type}</b>
+                    <b style="color: ${(window._lastPrice && d.strike < window._lastPrice) ? 'white' : 'var(--green)'}">${d.strike.toFixed(1)}${d.opt_type}</b>
                 </td>
                 ${bidHtml}
                 ${askHtml}
@@ -1934,10 +1941,7 @@
             var tl = document.getElementById('traffic-light');
             if (tl && r.icon) tl.textContent = r.icon;
         });
-        // 兼容旧 index_update 顶栏（已隐藏），保留空实现防报错
-        socket.on('index_update', function(d) {
-            // index_update 已与 market_report 同 engine 源，顶栏已由 report 覆盖，无需额外渲染
-        });
+        // 顶栏由上方 index_update 处理器渲染 (report + header 双显, 同 engine 源)
 
         function updateActiveSpreadCount() {
             const container = document.getElementById('spreads-container');
