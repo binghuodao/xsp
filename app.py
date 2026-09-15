@@ -1,4 +1,5 @@
 import time
+import math
 import threading
 import pytz
 import pandas as pd
@@ -235,6 +236,25 @@ def _s5(v):
 def _s1(v):
     """1-point strike rounding (crash leg since 7x2 landing; trend/MR keep _s5)."""
     return int(round(v))
+
+
+def _finite(old, new):
+    """NaN/Inf 不进 historical_stats: 新值有限则用新值, 否则保旧值, 新旧双坏归 0.0.
+    (YF 偶发空洞行会导致整列 NaN, 以前会原样存入并随 emit 毒死浏览器 JSON 解析,
+    见 _scrub_nan. 重启后 old 恒为有限值, 此函数维持该不变式.)"""
+    try:
+        f = float(new)
+        if math.isfinite(f):
+            return f
+    except Exception:
+        pass
+    try:
+        o = float(old)
+        if math.isfinite(o):
+            return o
+    except Exception:
+        pass
+    return 0.0
 
 def _score_ts(v, th):
     for t, s in zip(th, [100, 75, 50, 25, 0]):
@@ -1441,6 +1461,39 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+import math as _math
+
+
+def _scrub_nan(o, _path='$', _hits=None):
+    """递归把非有限 float (NaN/Inf) 换成 0.0, 并记录路径供日志.
+    背景: Python json 默认输出裸 NaN (非法 JSON), 浏览器 JSON.parse 直接炸整包
+    → socket 'parse error' 断线重连死循环、页面全空. 所有 emit 必经此函数.
+    """
+    if isinstance(o, float) and (not _math.isfinite(o)):
+        if _hits is not None:
+            _hits.append(_path)
+        return 0.0
+    if isinstance(o, dict):
+        return {k: _scrub_nan(v, f'{_path}.{k}', _hits) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [ _scrub_nan(v, f'{_path}[{i}]', _hits) for i, v in enumerate(o) ]
+    return o
+
+
+_orig_emit = socketio.emit
+
+
+def _safe_emit(event, data=None, *args, **kwargs):
+    if data is not None and isinstance(data, (dict, list)):
+        _hits = []
+        data = _scrub_nan(data, _path='$', _hits=_hits)
+        if _hits:
+            print(f"🧹 emit {event}: 非有限值已洗 {len(_hits)} 处 ({', '.join(_hits[:5])})")
+    return _orig_emit(event, data, *args, **kwargs)
+
+
+socketio.emit = _safe_emit
+
 # --- AUTHENTICATION ---
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -1686,23 +1739,24 @@ def update_historical_data():
         # VIX 1 year history
         vix_ticker = yf.Ticker("^VIX")
         vix_hist = vix_ticker.history(period="1y")
+        vix_hist = vix_hist.dropna(subset=['Close'])
         if not vix_hist.empty:
             current_vix = vix_hist['Close'].iloc[-1]
             vix_min = vix_hist['Close'].min()
             vix_max = vix_hist['Close'].max()
             vix_rank = (current_vix - vix_min) / (vix_max - vix_min) if (vix_max - vix_min) > 0 else 0.0
             vix_percentile = (vix_hist['Close'] < current_vix).mean()
-            
-            historical_stats["vix"] = float(current_vix)
-            historical_stats["vix_rank"] = float(vix_rank) * 100
-            historical_stats["vix_percentile"] = float(vix_percentile) * 100
+
+            historical_stats["vix"] = _finite(historical_stats["vix"], current_vix)
+            historical_stats["vix_rank"] = _finite(historical_stats["vix_rank"], float(vix_rank) * 100)
+            historical_stats["vix_percentile"] = _finite(historical_stats["vix_percentile"], float(vix_percentile) * 100)
 
         # SKEW Index
         try:
             skew_df = yf.download("^SKEW", period="1mo")
             skew_df.columns = [c[0] for c in skew_df.columns]
             if not skew_df.empty:
-                historical_stats["skew_index"] = float(skew_df['Close'].iloc[-1])
+                historical_stats["skew_index"] = _finite(historical_stats.get("skew_index", 146), skew_df['Close'].iloc[-1])
         except Exception as skew_err:
             print(f"⚠️  SKEW download failed: {skew_err}")
             historical_stats["skew_index"] = 146.0  # fallback to mean
@@ -1711,16 +1765,18 @@ def update_historical_data():
         if Y10_GATE_PP > 0:
             try:
                 tnx_hist = yf.Ticker("^TNX").history(period="6mo")
+                tnx_hist = tnx_hist.dropna(subset=['Close'])
                 if len(tnx_hist) >= 21:
                     tc = tnx_hist['Close']
-                    historical_stats["y10_20d"] = float(tc.iloc[-1] - tc.iloc[-20])
-                    historical_stats["y10_level"] = float(tc.iloc[-1])
+                    historical_stats["y10_20d"] = _finite(historical_stats.get("y10_20d"), float(tc.iloc[-1] - tc.iloc[-20]))
+                    historical_stats["y10_level"] = _finite(historical_stats.get("y10_level"), float(tc.iloc[-1]))
             except Exception as tnx_err:
                 print(f"⚠️  TNX download failed (gate stays off): {tnx_err}")
 
         # XSP ATR 14 & EMA 20 & SMA50
         xsp_ticker = yf.Ticker("^XSP")
         xsp_hist = xsp_ticker.history(period="6mo")
+        xsp_hist = xsp_hist.dropna(subset=['Open', 'High', 'Low', 'Close'])
         if len(xsp_hist) >= 15:
             highs = xsp_hist['High']
             lows = xsp_hist['Low']
@@ -1732,26 +1788,27 @@ def update_historical_data():
             
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr_14 = tr.iloc[-14:].mean()
-            historical_stats["atr_14"] = float(atr_14)
+            historical_stats["atr_14"] = _finite(historical_stats["atr_14"], atr_14)
 
         if len(xsp_hist) >= 20:
             ema_20 = xsp_hist['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-            historical_stats["ema_20"] = float(ema_20)
+            historical_stats["ema_20"] = _finite(historical_stats["ema_20"], ema_20)
 
         if len(xsp_hist) >= 55:
             sma50 = xsp_hist['Close'].rolling(50).mean().iloc[-1]
-            historical_stats["sma50"] = float(sma50)
+            historical_stats["sma50"] = _finite(historical_stats["sma50"], sma50)
             s50_series = xsp_hist['Close'].rolling(50).mean()
-            historical_stats["sma50_slope"] = float(s50_series.iloc[-1] - s50_series.iloc[-6]) if len(s50_series.dropna()) >= 6 else 0
+            historical_stats["sma50_slope"] = _finite(historical_stats.get("sma50_slope", 0), float(s50_series.iloc[-1] - s50_series.iloc[-6])) if len(s50_series.dropna()) >= 6 else 0
 
         if len(xsp_hist) >= 200:
             sma200 = xsp_hist['Close'].rolling(200).mean().iloc[-1]
-            historical_stats["sma200"] = float(sma200)
+            historical_stats["sma200"] = _finite(historical_stats["sma200"], sma200)
 
         # SPY 日线趋势指标 (ADX, ER, BBW, Deviation, Vol Ratio)
         try:
             spy_ticker = yf.Ticker("SPY")
             spy_daily = spy_ticker.history(period="2mo")
+            spy_daily = spy_daily.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
             if len(spy_daily) >= 25:
                 close = spy_daily['Close']
                 high  = spy_daily['High']
@@ -1760,11 +1817,12 @@ def update_historical_data():
 
                 # 1. ADX(14) + Directional Indicators
                 adx_df = ta.adx(high, low, close, length=14)
-                historical_stats["adx"] = float(adx_df['ADX_14'].iloc[-1])
+                historical_stats["adx"] = _finite(historical_stats["adx"], adx_df['ADX_14'].iloc[-1])
                 dmp = float(adx_df['DMP_14'].iloc[-1]) if 'DMP_14' in adx_df.columns else 0.0
                 dmn = float(adx_df['DMN_14'].iloc[-1]) if 'DMN_14' in adx_df.columns else 0.0
                 historical_stats["di_diff_prev"] = historical_stats.get("di_diff", 0)
-                historical_stats["di_diff"] = round((dmp - dmn) / 100, 3)
+                _dd = round((dmp - dmn) / 100, 3)
+                historical_stats["di_diff"] = _finite(historical_stats.get("di_diff", 0), _dd)
 
                 # 2. Efficiency Ratio(10)
                 changes = close.diff().abs()
@@ -1777,19 +1835,19 @@ def update_historical_data():
                 lower = bb_df.iloc[:, 0]  # BBL column
                 mid   = bb_df.iloc[:, 1]  # BBM column
                 bbw_val = (upper - lower) / mid * 100
-                historical_stats["bbw"] = float(bbw_val.iloc[-1])
-                historical_stats["support"] = float(lower.iloc[-1])
-                historical_stats["resistance"] = float(upper.iloc[-1])
+                historical_stats["bbw"] = _finite(historical_stats["bbw"], bbw_val.iloc[-1])
+                historical_stats["support"] = _finite(historical_stats["support"], lower.iloc[-1])
+                historical_stats["resistance"] = _finite(historical_stats["resistance"], upper.iloc[-1])
 
                 # 4. Price Deviation from SMA20(%)
                 sma20 = close.rolling(20).mean()
                 dev_val = (close.iloc[-1] - sma20.iloc[-1]) / sma20.iloc[-1] * 100
-                historical_stats["dev"] = float(dev_val)
+                historical_stats["dev"] = _finite(historical_stats["dev"], dev_val)
 
                 # 5. Volume Ratio (当前量 / 20日均量)
                 avg_vol = vol.rolling(20).mean()
                 vr_val = vol.iloc[-1] / avg_vol.iloc[-1]
-                historical_stats["vr"] = float(vr_val)
+                historical_stats["vr"] = _finite(historical_stats["vr"], vr_val)
 
                 # 6. RSI(14)
                 delta = close.diff()
@@ -1799,12 +1857,12 @@ def update_historical_data():
                 avg_loss = loss.rolling(14).mean()
                 rs = avg_gain / avg_loss.replace(0, float('nan'))
                 rsi_14 = 100 - (100 / (1 + rs))
-                historical_stats["rsi_14"] = float(rsi_14.iloc[-1])
+                historical_stats["rsi_14"] = _finite(historical_stats.get("rsi_14", 50), rsi_14.iloc[-1])
 
                 # 7. Price/EMA20 ratio (%)
                 ema20_price = close.ewm(span=20, adjust=False).mean()
                 pe_ratio = (close.iloc[-1] / ema20_price.iloc[-1] - 1) * 100
-                historical_stats["price_ema20_pct"] = float(pe_ratio)
+                historical_stats["price_ema20_pct"] = _finite(historical_stats.get("price_ema20_pct", 0), pe_ratio)
         except Exception as spy_err:
             emit_toast(socketio, f"⚠️ SPY 趋势数据获取失败: {spy_err}")
 
@@ -1851,16 +1909,21 @@ def format_row(row):
         print(f"❌ 解析错误 {symbol}: {e}")
         return None
 
-    bid = float(row.get('bid_price') or 0.0)
-    ask = float(row.get('ask_price') or 0.0)
-    last = float(row.get('last_price') or 0.0)
+    # 数值清洗: moomoo 偶发 NaN (NaN 是 truthy, 会穿过 or 0.0), 非有限一律归 0
+    # (裸 NaN 进 JSON 即非法, 浏览器整包解析失败 → parse error 断线, 见 _scrub_nan)
+    bid = _finite(0.0, row.get('bid_price') or 0.0)
+    ask = _finite(0.0, row.get('ask_price') or 0.0)
+    last = _finite(0.0, row.get('last_price') or 0.0)
     mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
-    delta = float(row.get('option_delta') or 0.0)
-    gamma = float(row.get('option_gamma') or 0.0)
-    theta = float(row.get('option_theta') or 0.0)
-    vega = float(row.get('option_vega') or 0.0)
-    iv = float(row.get('option_implied_volatility') or 0.0) / 100.0
-    open_interest = int(row.get('option_open_interest') or 0)
+    delta = _finite(0.0, row.get('option_delta') or 0.0)
+    gamma = _finite(0.0, row.get('option_gamma') or 0.0)
+    theta = _finite(0.0, row.get('option_theta') or 0.0)
+    vega = _finite(0.0, row.get('option_vega') or 0.0)
+    iv = _finite(0.0, row.get('option_implied_volatility') or 0.0) / 100.0
+    try:
+        open_interest = int(row.get('option_open_interest') or 0)
+    except Exception:
+        open_interest = 0
 
     # 过滤逻辑 (Put 看负 Delta, Call 看正 Delta)
     # 如果刚开盘 Delta 还没算出来，可以先注释掉这两行
@@ -2822,6 +2885,14 @@ def start_moomoo():
 @login_required
 def index():
     return render_template('index.html', floor_pct=FLOOR_PERCENT, ceiling_pct=CEILING_PERCENT)
+
+
+@app.after_request
+def _no_cache(response):
+    # 手机浏览器无硬刷新 + 可能经代理缓存: 页面/数据一律不缓存, 发版即生效
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    return response
 
 
 @app.route('/api/xsp/ta')
