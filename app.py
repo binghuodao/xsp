@@ -447,6 +447,9 @@ def send_market_report(report_type, force=False):
             _asof = _asof_raw - timedelta(days=1)
     else:
         _asof = datetime.now(ET_TZ).date()
+    # 持有天数按 asof 对齐: 晨报 asof=昨收则计数截至昨日 (否则周五晨报提前半天触发强制平仓,
+    # 与只跑晚报的回测分叉); 晚报 asof=当日, 与原来一致. 开仓落戳仍用实际日期 (见下方开仓分支).
+    _count_date = _asof if report_type == 'morning' else datetime.now(ET_TZ).date()
     _yf_close_t, _yf_date_t, _yf_prev, _yf_date_prev = _get_xsp_closes_with_dates()
     # 缺 T-1 回溯挖: 若 yf 最新非 asof 前一交易日, 用 SPY chg 代理 (yf ^XSP 丢 0828 时)
     _spy_proxy = None
@@ -920,7 +923,7 @@ def send_market_report(report_type, force=False):
 
     # ── Mean Reversion 裸买CALL 展示 ──
     if _mr_entry_date:
-        mr_days = len(pd.bdate_range(_mr_entry_date, datetime.now(ET_TZ).date())) - 1
+        mr_days = len(pd.bdate_range(_mr_entry_date, _count_date)) - 1
         mr_exit_price = price
         lines.append(f"")
         lines.append(f"═══ 裸买MR ({_mr_entry_date}) ═══")
@@ -973,7 +976,7 @@ def send_market_report(report_type, force=False):
 
     # ── Crash bounce 崩盘反弹 展示 ──
     if _crash_entry_date:
-        _today = datetime.now(ET_TZ).date()
+        _today = _count_date
         crash_cal_days = (_today - _crash_entry_date).days
         crash_days = len(pd.bdate_range(_crash_entry_date, _today)) - 1
         lines.append(f"")
@@ -1338,7 +1341,7 @@ def send_market_report(report_type, force=False):
 
     # ── V9 残期期权每日结算: 每张独立判断 收复/到期兜底/续持 (多张可同时骑, 到期日各异) ──
     if _crash_resids:
-        _r_today = datetime.now(ET_TZ).date()
+        _r_today = _count_date
         _keep = []
         for _ri, _res in enumerate(_crash_resids, 1):
             _rdays = (_r_today - _res['open']).days
