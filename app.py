@@ -640,8 +640,9 @@ def send_market_report(report_type, force=False):
         _mr_etf_green = _mr_etf_entry_price * 1.009 if _mr_etf_entry_price else None
         _mr_spxl = ""
         if _mr_etf_stop:
-            _mr_spxl = f" | SPXL止损 ${_mr_etf_stop:.2f} / 首阳 ${_mr_etf_green:.2f}"
-        lines.append(f"止损 ${_stop_price:.2f} (-2%) | 首阳 ${_green_price:.2f} (+0.3%){_mr_spxl}")
+            _mr_spxl = f" / SPXL ${_mr_etf_stop:.2f} (-6%)"
+        _mr_green_spxl = f" / SPXL ${_mr_etf_green:.2f} (+0.9%)" if _mr_etf_green else ""
+        lines.append(f"止损 XSP ${_stop_price:.2f} (-2%){_mr_spxl} | 首阳 XSP ${_green_price:.2f} (+0.3%){_mr_green_spxl}")
         if mr_exit_price <= _stop_price:
             lines.append(f"🛑 MR跌穿-2%止损 ({_mr_entry_price:.2f}→{mr_exit_price:.2f} ≤ 止损${_stop_price:.2f}), 建议平仓")
             close_lines.append(f"  🛑 MR跌穿-2%止损 {mr_days}d (入场${_mr_entry_price:.2f}→现价${mr_exit_price:.2f} ≤ 止损${_stop_price:.2f}), 建议平仓")
@@ -1006,12 +1007,22 @@ def send_market_report(report_type, force=False):
                 print(f"⚠️ Watchlist save failed: {e}")
             socketio.emit('sync_watchlist', user_watchlist)
         lines.append(f"🚀 MR开仓 {_mr_entry_date} {mr_strike}C + SPXL {max(round(2000/_mr_etf_entry_price), 1) if _mr_etf_entry_price else 0}股")
-        lines.append(f"止损 ${_mr_entry_price * 0.98:.2f} (-2%) | 首阳 ${_mr_entry_price * 1.003:.2f} (+0.3%)")
+        # 双腿同示 (对齐崩盘开仓格式; MR 无挂单, 不带限价单行, SPXL 仅供手动执行参考)
+        _mr_open_stop = _mr_entry_price * 0.98
+        _mr_open_green = _mr_entry_price * 1.003
+        _mr_open_etf_stop = _mr_etf_entry_price * 0.94 if _mr_etf_entry_price else None
+        _mr_open_etf_green = _mr_etf_entry_price * 1.009 if _mr_etf_entry_price else None
+        if _mr_open_etf_stop:
+            lines.append(f"止损 XSP ${_mr_open_stop:.2f} (-2%) / SPXL ${_mr_open_etf_stop:.2f} (-6%) | 首阳 XSP ${_mr_open_green:.2f} (+0.3%) / SPXL ${_mr_open_etf_green:.2f} (+0.9%)")
+        else:
+            lines.append(f"止损 XSP ${_mr_open_stop:.2f} (-2%) | 首阳 XSP ${_mr_open_green:.2f} (+0.3%) (SPXL价缺失)")
         _latest_report['mr_entry_date'] = str(_mr_entry_date)
         _latest_report['mr_entry_price'] = _mr_entry_price
         _latest_report['mr_days'] = 0
-        _latest_report['mr_stop'] = _mr_entry_price * 0.98
-        _latest_report['mr_green'] = _mr_entry_price * 1.003
+        _latest_report['mr_stop'] = _mr_open_stop
+        _latest_report['mr_green'] = _mr_open_green
+        _latest_report['mr_etf_stop'] = _mr_open_etf_stop
+        _latest_report['mr_etf_green'] = _mr_open_etf_green
         _latest_report['mr_strike'] = mr_strike
 
     # ── V9 残期期权每日结算: 每张独立判断 收复/到期兜底/续持 (多张可同时骑, 到期日各异) ──

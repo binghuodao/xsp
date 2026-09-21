@@ -642,12 +642,14 @@ def check_day(asof, msg, r, price, blocked, failures):
         exp_fixed = e * (1 - pct)
         if f"固定 ${exp_fixed:.2f} (-{pct*100:.0f}%" not in msg:
             f.append(f'固定止损不符(期望{e*(1-pct):.2f})')
-    # MR formula
+    # MR formula (2026-09-21 双腿文案: 止损 XSP $x (-2%) / SPXL $y (-6%) | 首阳 XSP $x (+0.3%) / SPXL $y (+0.9%))
     if r.get('mr_entry_price'):
         exp_stop = r['mr_entry_price'] * 0.98
         exp_green = r['mr_entry_price'] * 1.003
-        if f"止损 ${exp_stop:.2f} (-2%)" not in msg: f.append('MR止损值不符')
-        if f"首阳 ${exp_green:.2f} (+0.3%)" not in msg: f.append('MR首阳值不符')
+        if f"止损 XSP ${exp_stop:.2f} (-2%)" not in msg: f.append('MR止损值不符')
+        if f"首阳 XSP ${exp_green:.2f} (+0.3%)" not in msg: f.append('MR首阳值不符')
+        if r.get('mr_etf_stop') and f"SPXL ${r['mr_etf_stop']:.2f} (-6%)" not in msg: f.append('MR-SPXL止损值不符')
+        if r.get('mr_etf_green') and f"SPXL ${r['mr_etf_green']:.2f} (+0.9%)" not in msg: f.append('MR-SPXL首阳值不符')
         if r.get('mr_days') is not None and r['mr_days'] >= 3:
             if not any(x in msg for x in ('MR已持3天', 'MR首阳', 'MR跌穿')):
                 f.append('MR到期未平仓')
