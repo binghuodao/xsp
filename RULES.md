@@ -1,5 +1,8 @@
 # XSP 交易规则文档
 
+> **2026-09-21 小改：`get_xsp_anchor_price` fast_info 异常降级 + 告警降级（`'exchangeTimezoneName'` 案）**
+> 起因：日志偶发 `行情数据获取失败: 'exchangeTimezoneName'`——yfinance `fast_info` 读缓存 dict 缺键（cache 轮换时），与我方代码无关；原 `except` 直接回 0（白白丢一轮，其实 `history(1d)` 基本是好的）且 `emit_toast` 会 TG 轰炸（60 秒一条）。改动：fast_info 异常→落 `None` 走日线兜底（0/None/NaN 同条件 `not (x>0)`）；全挂才回 0 并只 `print`（调用方 stale 顶住、下轮重试）。验证：新增 `tests/test_anchor_price.py` 5 例 + 全量 93 通过。
+
 > **2026-09-21 留档：双口径目录按现代码重刷（趋势退役 + MR 双腿文案生效验证）**
 > 动作：`sim_reports_full_7x2` 与 `sim_reports_full_21x15` 全重跑（断言全过）。验证：① 趋势残留清零（无 TREND 开仓、无"趋势结束/方向已由/做多ETF/14DTE价差"行）；② MR 新文案落地（如 `止损 XSP $361.93 (-2%) / SPXL $53.40 (-6%) | 首阳 XSP $370.43 (+0.3%) / SPXL $57.32 (+0.9%)`）；③ 总数：7×2 三层 +$20,487（169 笔），21×15 三层 +$26,114（169 笔，=+26,097+$16.29，即剔除已退役 TREND#1 一笔）。插曲：重刷首轮 sim 自检报 4 条 `MR止损/首阳值不符`——系 check_day 仍按旧文案子串（`止损 $x (-2%)`）匹配，新文案为 `止损 XSP $x`，已同步检查式并加 SPXL 腿断言（XSP±0 / SPXL -6%/+0.9%），非策略问题。教训：改显示文案必须同步改 sim 断言子串。
 

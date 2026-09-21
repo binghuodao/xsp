@@ -1542,16 +1542,21 @@ def get_xsp_anchor_price():
     try:
         # ^XSP is the Yahoo Finance symbol for the Mini-SPX Index
         ticker = yf.Ticker("^XSP")
-        # fast_info provides the most recent price without a full download
-        current_price = ticker.fast_info['last_price']
-        
-        # Fallback to previous close if current is 0 or NaN
-        if not current_price or current_price <= 0:
+        # fast_info provides the most recent price without a full download,
+        # but occasionally raises KeyError (e.g. missing 'exchangeTimezoneName')
+        # when Yahoo rotates its cache (pre-market / post-close) -> fall through to daily bar
+        try:
+            current_price = ticker.fast_info['last_price']
+        except Exception:
+            current_price = None
+        # Fallback to previous close on 0/None/NaN (covers fast_info failure too)
+        if not current_price or not (current_price > 0):
             current_price = ticker.history(period="1d")['Close'].iloc[-1]
-            
+
         return float(current_price)
     except Exception as e:
-        emit_toast(socketio, f"⚠️ 行情数据获取失败: {e}")
+        # 常规噪音只打日志 (此前 emit_toast 会 TG 轰炸); 返回 0 由调用方用 stale 价顶住, 下轮重试
+        print(f"⚠️ 行情数据获取失败(已用 stale 价顶住): {e}")
         return 0
         
 def format_row(row):
