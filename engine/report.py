@@ -142,6 +142,36 @@ def build_report_header(title: str, price: float, hs: Dict[str, Any], direction:
     return lines
 
 
+def _freshness_line(hs: Dict[str, Any]) -> str:
+    """hs 各源数据截至日期 + 滞后告警 (0917 晨报教训: VIX 静默 stale + 鲜价混算出幻影方向).
+
+    相对口径: 只比较各源之间 (周末各源同滞, 不误报); 最老源比最新源落后 ≥2 天才告警。
+    缺失 (None, 如闸门关闭时无 10Y、重启后未刷新) 显示 --, 不参与比较。
+    """
+    import datetime as _dt
+    srcs = [('VIX', hs.get('vix_date')), ('SPY', hs.get('spy_date')),
+            ('XSP', hs.get('xsp_date')), ('10Y', hs.get('tnx_date'))]
+
+    def _parse(d):
+        try:
+            return _dt.date.fromisoformat(str(d)) if d else None
+        except Exception:
+            return None
+
+    def _short(d):
+        return d.strftime('%m/%d') if d else '--'
+
+    parsed = [(name, _parse(d)) for name, d in srcs]
+    line = '🕐 数据 ' + ' · '.join(f'{n} {_short(d)}' for n, d in parsed)
+    have = [(n, d) for n, d in parsed if d]
+    if len(have) >= 2:
+        newest = max(d for _, d in have)
+        lags = [f'{n}滞后{(newest - d).days}天' for n, d in have if (newest - d).days >= 2]
+        if lags:
+            line += ' ⚠️' + ' '.join(lags)
+    return line
+
+
 def build_full_report(title: str, price: float, hs: Dict[str, Any], direction: Optional[str], reason: Optional[str], score: int, icon: str, slbl: str, now_et_str: str, xsp_dbg: str = "", y10_level=None, y10_20d=None, y10_gate_active: bool = False, y10_gate_pp: float = 0.0, close_lines: list = None) -> list:
     """Full report lines — header + XSP dbg + 10Y + close_lines. Pure, no side effects."""
     lines = build_report_header(title, price, hs, direction, reason, score, icon, slbl, now_et_str)
@@ -153,6 +183,7 @@ def build_full_report(title: str, price: float, hs: Dict[str, Any], direction: O
         lines.append("⚠️ 10Y 不可用（闸门自动关，崩盘照常）")
     else:
         lines.append(f"10Y {y10_level:.3f}% (20d {y10_20d:+.2f}%) | 利率闸门 {'🚫 开(拦截崩盘)' if y10_gate_active else '✓ 关'}")
+    lines.append(_freshness_line(hs))
     if close_lines:
         lines.append("")
         lines.append("━━━ 平仓提示 ━━━")

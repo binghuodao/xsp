@@ -1577,6 +1577,10 @@ historical_stats = {
     "sma50": 0.0,
     "sma200": 0.0,
     "di_diff_prev": 0.0,
+    "vix_date": None,     # 各源数据截至日期 (ISO, 仅成功刷新时落戳;
+    "spy_date": None,     # 0917 晨报教训: VIX 静默 stale + 鲜价混算出幻影方向)
+    "xsp_date": None,
+    "tnx_date": None,
     "last_updated": 0
 }
 
@@ -1750,6 +1754,7 @@ def update_historical_data():
             historical_stats["vix"] = _finite(historical_stats["vix"], current_vix)
             historical_stats["vix_rank"] = _finite(historical_stats["vix_rank"], float(vix_rank) * 100)
             historical_stats["vix_percentile"] = _finite(historical_stats["vix_percentile"], float(vix_percentile) * 100)
+            historical_stats["vix_date"] = vix_hist.index[-1].date().isoformat()
 
         # SKEW Index
         try:
@@ -1770,6 +1775,7 @@ def update_historical_data():
                     tc = tnx_hist['Close']
                     historical_stats["y10_20d"] = _finite(historical_stats.get("y10_20d"), float(tc.iloc[-1] - tc.iloc[-20]))
                     historical_stats["y10_level"] = _finite(historical_stats.get("y10_level"), float(tc.iloc[-1]))
+                    historical_stats["tnx_date"] = tnx_hist.index[-1].date().isoformat()
             except Exception as tnx_err:
                 print(f"⚠️  TNX download failed (gate stays off): {tnx_err}")
 
@@ -1777,6 +1783,8 @@ def update_historical_data():
         xsp_ticker = yf.Ticker("^XSP")
         xsp_hist = xsp_ticker.history(period="6mo")
         xsp_hist = xsp_hist.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        if len(xsp_hist) >= 1:
+            historical_stats["xsp_date"] = xsp_hist.index[-1].date().isoformat()
         if len(xsp_hist) >= 15:
             highs = xsp_hist['High']
             lows = xsp_hist['Low']
@@ -1810,6 +1818,7 @@ def update_historical_data():
             spy_daily = spy_ticker.history(period="2mo")
             spy_daily = spy_daily.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
             if len(spy_daily) >= 25:
+                historical_stats["spy_date"] = spy_daily.index[-1].date().isoformat()
                 close = spy_daily['Close']
                 high  = spy_daily['High']
                 low   = spy_daily['Low']
@@ -1868,7 +1877,7 @@ def update_historical_data():
 
         historical_stats["last_updated"] = now_ts
         skew_idx = historical_stats.get('skew_index', 146)
-        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, DI={historical_stats['di_diff']:+.3f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x, SKEW_Idx={skew_idx:.1f}")
+        print(f"✅ Historical data updated: VIX={historical_stats['vix']:.2f} (Rank={historical_stats['vix_rank']:.1f}%, Percentile={historical_stats['vix_percentile']:.1f}%), ATR_14={historical_stats['atr_14']:.2f}, EMA_20={historical_stats['ema_20']:.2f}, SKEW={historical_stats['skew']:.2f}, ADX={historical_stats['adx']:.1f}, DI={historical_stats['di_diff']:+.3f}, ER={historical_stats['er']:.2f}, BBW={historical_stats['bbw']:.1f}%, Dev={historical_stats['dev']:.2f}%, VR={historical_stats['vr']:.2f}x, SKEW_Idx={skew_idx:.1f}, Data(VIX/SPY/XSP/TNX)={historical_stats.get('vix_date')}/{historical_stats.get('spy_date')}/{historical_stats.get('xsp_date')}/{historical_stats.get('tnx_date')}")
     except Exception as e:
         emit_toast(socketio, f"⚠️ 历史数据更新失败: {e}")
 
@@ -2873,7 +2882,8 @@ def start_moomoo():
                 # 5. 控制频率
                 log_premium_snapshot()
                 clean_expired_watchlist(socketio)
-                send_market_report('morning')
+                # 晚报为唯一自动决策点 (2026-09-21 起砍掉晨报自动推送: 晨报信号是昨晚报重放、
+                # 执行价吃盘前噪音, 与只跑晚报的回测分叉; 开平仓只看收盘后晚报)
                 send_market_report('evening')
                 time.sleep(REFRESH_INTERVAL)
                 
@@ -3418,15 +3428,12 @@ def handle_connect():
         # 按照 Expiry 和 Strike 排序后再推送给前端（可选，前端 JS 也有排序逻辑）
         for sym in latest_data["options"]:
             socketio.emit('option_update', latest_data["options"][sym])
-        # 推送最新日报，空则尝试强制生成
+        # 推送最新日报，空则尝试强制生成 (2026-09-21 起只 force evening: 晨报已砍自动推送,
+        # connect 兜底同步只走晚报, 避免盘前噪音改状态)
         if _latest_report:
             socketio.emit('market_report', _latest_report)
         else:
-            now_et = datetime.now(ET_TZ)
-            first, second = ('morning', 'evening') if now_et.hour < 12 else ('evening', 'morning')
-            send_market_report(first, force=True)
-            if not _latest_report:
-                send_market_report(second, force=True)
+            send_market_report('evening', force=True)
     except Exception as e:
         print(f"⚠️ Connect handler error: {e}")
 
