@@ -1,5 +1,8 @@
 # XSP 交易规则文档
 
+> **2026-09-21 运维：生产迁 systemd 服务（日志进 journald，screen 退役）**
+> 起因：生产跑在 detached screen 里，stdout 只活在 scrollback（约一两小时），出事无法倒查。改动：新增 `/etc/systemd/system/xsp_prod.service`（`Restart=always`，零代码改动），停掉 `xsp_prod` screen，`deploy-to-prod.sh` 追加 `systemctl restart` + 状态回显。倒查：`journalctl -u xsp_prod --since .. --until .. -g ..`（已验证；journald 持久化 349M）。注意：① 重启落在报告窗口内会重推当日报告（内存去重重置，内容相同，偶发无害）；② 本次迁移在周末窗口执行，双跑约 1 分钟（旧 screen + 新服务抢 3000 端口，journal 可见 `Address already in use`），周末无报告故无状态损伤；③ 测试环境仍在 screen（`xsp_dev`），不动。
+
 > **2026-09-21 小改：`get_xsp_anchor_price` fast_info 异常降级 + 告警降级（`'exchangeTimezoneName'` 案）**
 > 起因：日志偶发 `行情数据获取失败: 'exchangeTimezoneName'`——yfinance `fast_info` 读缓存 dict 缺键（cache 轮换时），与我方代码无关；原 `except` 直接回 0（白白丢一轮，其实 `history(1d)` 基本是好的）且 `emit_toast` 会 TG 轰炸（60 秒一条）。改动：fast_info 异常→落 `None` 走日线兜底（0/None/NaN 同条件 `not (x>0)`）；全挂才回 0 并只 `print`（调用方 stale 顶住、下轮重试）。验证：新增 `tests/test_anchor_price.py` 5 例 + 全量 93 通过。
 
