@@ -1,5 +1,8 @@
 # XSP 交易规则文档
 
+> **2026-09-21 变更：sim 产物实行“一个口径一份 canonical”+ 写护栏（3y 覆盖事故复盘）**
+> 起因：`sim_rpt_2023.txt` 只有 12 月 5 条——09-10 22:47:02 刚写完 7y 版，23 秒后 3y 版全覆盖（3y 窗 2023-09-11 起扣 60 天 warmup → 2023-12-05 开跑，非 bug）；另 `sim_rpt_2022.txt`（08-15 旧整版）与 H1/H2 并存，实为僵尸。实证：`trades_3y` vs `trades_7y` 重叠窗 84=84 笔、开平结果全同、总和 +$12,450.94（仅 4 笔差 $0.01 浮点尘）——跑几y交易序列确实一样，只差起始日。改动：① `sim_reports_full.py` 新增 `--full-reports`，`sim_rpt_YYYY` 只在 `--period 7y` 或该 flag 下写，1y/3y 默认自动 stats-only（`--outdir` 隔离的扫参不受影响）；② 7y（21×15）已提交产物原样恢复——本次 7×2 重跑三层 +$20,471 与 09-11 留档逐分吻合（数字正确），但按 09-11 纪律回退基准不动，7×2 版另存 `tests/sim_reports_full_7x2/`（断言全过）；③ 删僵尸 `sim_rpt_2022.txt`（08-15 整版，已被 H1/H2 取代）。验证：pytest 88。以后：口径切换即另起目录，文件头口径行（“价差2点 7DTE”/“价差15点 21DTE”）为对账依据。
+
 > **2026-09-21 变更：hs 加各源数据截至日期 + 报告印新鲜度行（0917 晨报幻影 CALL 的根因修复）**
 > 起因：0917 早报原文对账——信号层自洽（chg −0.4469% sig False、闸门关），但 `hs` 新旧混装：ER/BBW/Dev/VR/ATR 是 09-16 鲜值，VIX 15.9（14%）却老了好几天（附近交易日无此收盘，`update_historical_data` 里 VIX 取空静默跳过、`last_updated` 照更新），BB 上轨 774.34 亦偏高。stale BB + 鲜低价 755.18 → dlow 1% → score 恰卡 35 分 → 幻影 `CALL（贴BB下轨）`（鲜数据重算 direction=None；万幸 35<50 未开价差，只显示 ★ 做多 ETF + 趋势止损线并写了 `_active_position_date`）。改动：`historical_stats` 新增 `vix/spy/xsp/tnx_date`（仅成功刷新时落 yf 末棒日期，失败保留旧值即自然暴露滞后）；`build_full_report` 印 `🕐 数据 VIX 09/16 · SPY 09/16 · XSP 09/16 · 10Y 09/16`，相对口径滞后 ≥2 天（周末各源同滞不误报）追加 `⚠️{源}滞后N天`，None 显示 `--` 不参与比较；启动日志同印四源日期。验证：新增 `tests/test_hs_freshness.py` 7 例 + 全量 88 通过。注意：hs 不持久化，重启后未刷新前显示 `--`；前端 `_latest_report` 无全文，新鲜度只在 telegram 全文 + 日志可见。
 

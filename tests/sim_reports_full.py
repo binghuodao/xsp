@@ -99,6 +99,7 @@ ap.add_argument('--opt-sl-decay', type=float, default=0.0, help='time-decay earl
 ap.add_argument('--opt-sl-adaptive', action='store_true', help='standalone option stop needs XSP <= entry (阴跌确认) to trigger; else ride to TP/expiry (default off)')
 ap.add_argument('--outdir', default=OUT_DIR, help='output dir for index/stats/report files (default: tests/sim_reports_full)')
 ap.add_argument('--stats-only', action='store_true', help='skip per-year sim_rpt batch files; write only index + backtest_stats')
+ap.add_argument('--full-reports', action='store_true', help='write per-year sim_rpt batch files even when --period is not 7y (default: sim_rpt canonical set is 7y-only)')
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
 ap.add_argument('--backfill', action='store_true', help='load indicator frames from longest available cache (7y>3y) and replay only the --period window with warmup 0 (default off; 7y unaffected)')
 ap.add_argument('--trace-trend', action='store_true', help='diagnose why TREND layer rarely opens: per-day classify 高位暂缓/三层互斥/已在仓/漏开/融合吃掉/非趋势, write trend_trace_{PERIOD}.txt')
@@ -131,6 +132,13 @@ OPT_SL_DECAY = args.opt_sl_decay
 OPT_SL_ADAPTIVE = args.opt_sl_adaptive
 RESULT_DIR = args.outdir
 STATS_ONLY = args.stats_only
+# 2026-09-21 护栏: sim_rpt 年文件只有一份 canonical (7y); 实证 3y/7y 交易序列完全一致 (84=84, 只差起始日),
+# 故 1y/3y 默认 stats-only, 防 09-10 式覆盖 (3y 跑 23 秒后盖掉 7y 版 sim_rpt_2023~2026)。
+# 扫参用 --outdir 隔离不受影响; 非 7y 确要全文加 --full-reports。
+if PERIOD != '7y' and not STATS_ONLY and not args.full_reports \
+        and os.path.abspath(args.outdir) == os.path.abspath(OUT_DIR):
+    STATS_ONLY = True
+    print(f"ℹ️ 非7y窗口 ({PERIOD}) 默认 stats-only: sim_rpt 年文件为 7y canonical, 不覆盖 (加 --full-reports 可强制写全文)")
 TRACE_TREND = args.trace_trend
 os.makedirs(RESULT_DIR, exist_ok=True)
 WARMUP_DAYS = args.warmup
