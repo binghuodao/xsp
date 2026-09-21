@@ -217,7 +217,7 @@ class TestCloseAlerts:
         bb_lines = [a for a in alerts if 'BB中段' in a]
 
     def test_trend_ended(self, reset_globals, mock_sio):
-        """case 31: 趋势结束→平仓"""
+        """case 31 (2026-09-21 退役): 趋势交易腿已删, 永不出现"趋势结束"平仓提示"""
         self.setup_watchlist([
             make_wl_entry('260724', 755, 745, 740, 'P', entry='1.50'),
         ])
@@ -228,10 +228,11 @@ class TestCloseAlerts:
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
         trend = [a for a in alerts if '趋势结束' in a]
-        assert len(trend) >= 1
+        assert len(trend) == 0
+        assert app._active_position_date is None
 
     def test_direction_switched(self, reset_globals, mock_sio):
-        """case 32: 方向翻转→平仓"""
+        """case 32 (2026-09-21 退役): 方向翻转不再提示平仓 (无持仓可平)"""
         self.setup_watchlist([
             make_wl_entry('260724', 755, 745, 740, 'P', entry='1.50'),
         ])
@@ -242,7 +243,7 @@ class TestCloseAlerts:
         app.send_market_report('morning', force=True)
         alerts = app._latest_report.get('close_alerts', [])
         switch = [a for a in alerts if '方向已由' in a]
-        assert len(switch) >= 1
+        assert len(switch) == 0
 
     def test_no_alert_on_first_run(self, reset_globals, mock_sio):
         """case 33: 首次启动→不触发趋势结束"""
@@ -495,13 +496,14 @@ class TestOutputFormat:
         assert r.get('direction') is None
 
     def test_full_report_trending_call(self, reset_globals, mock_sio):
-        """case 59: 趋势CALL→含ETF+价差推荐"""
+        """case 59 (2026-09-21 退役): 趋势CALL只作展示, 无价差推荐、无持仓状态"""
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
         r = app._latest_report
         assert r.get('direction') == 'CALL'
-        assert '价差' in r.get('single_label', '') or 'CALL' in r.get('single_label', '')
+        assert 'single_label' not in r
+        assert app._active_position_date is None
 
     def test_ranging_direction_exists(self, reset_globals, mock_sio):
         """case 60: 近BB下轨→有方向 (score≥50)"""
@@ -609,26 +611,20 @@ class TestSignalTier:
         assert r2.get('direction') is None
 
     def test_holding_days_increment(self, reset_globals, mock_sio):
-        """同方向两次→holding_days=1"""
+        """(2026-09-21 退役): 同方向两次也不再跟踪持仓, _active_position_date 永为 None"""
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
-        r1 = app._latest_report
-        # Pretend next day: move _active_position_date back 1 day
-        from datetime import timedelta
-        app._active_position_date = app._active_position_date - timedelta(days=1)
         app.send_market_report('morning', force=True)
-        r2 = app._latest_report
+        assert app._active_position_date is None
 
     def test_holding_alert_in_close_lines(self, reset_globals, mock_sio):
-        """持仓>3天→Telegram含换仓提示"""
-        # First report to establish direction
+        """(2026-09-21 退役): 无持仓无换仓提示"""
         app.historical_stats.update(std_hs(di_diff=0.10, adx=35, er=0.6, vr=1.8, vix_rank=50))
         app.latest_data["index"]["price"] = 750.0
         app.send_market_report('morning', force=True)
-        # Simulate position opened 5 days ago
-        from datetime import timedelta
-        app._active_position_date = app._active_position_date - timedelta(days=5)
         app.send_market_report('morning', force=True)
         r = app._latest_report
-        assert mock_sio.emit.called
+        alerts = r.get('close_alerts', [])
+        assert not any('持仓' in a or '换仓' in a or 't+30' in a for a in alerts)
+        assert app._active_position_date is None

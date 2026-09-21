@@ -1,5 +1,8 @@
 # XSP 交易规则文档
 
+> **2026-09-21 变更：退役趋势交易腿（评分/方向保留作展示）——七年一笔 -$16 + 结构性哑火**
+> 起因：2026-04-28 TREND#1（七年唯一）持1天 -$16.29（价差隔夜 -$13.98 + SPXL -$2.31）。逐行对账：开仓时 score 51（线50）、dlow 79%（线80）、DI+0.07 三线刀锋；次日 score 51→42 方向 CALL→None，RULES §6.3 趋势结束即平——趋势层无持有宽限（对比崩盘 T+4），方向逐日无记忆。叠加 08-10 审计（score≥50×融合×DI双正×dlow≤80×互斥相乘→七年只漏一笔）与 04-30 反例（CALL 54 分反被 dlow 84% 拦截、错过更好入场），判定交易腿无实证价值、任何调参皆过拟合（n=1），且 phantom CALL 写 `_active_position_date` 制造 state churn（0917 晨报教训的另一半）。改动：`app.py` 删开仓/持仓/止损/平仓/滚仓/跟踪/t+30/树价差展示/趋势平仓提示/watchlist 自动加入，`_latest_report` 只留 regime 字段；score/direction/reason/header/BB-middle 通用提示保留；`_active_position_date/_trend_opt_*/entry/peak` 全局声明与 load 保留（sim/harness/conftest 只读不断言，永 None），save 不再落盘（文件自然收敛干净）；`_close_trend_spread` 删除；`_no_layer_open` 只剩崩盘/MR。`_opt_mid/_find_delta_strike/_find_n_dte_expiry` 留作通用期权 infra。验证：单测 5 例改断言（趋势结束/方向翻转永不提示、CALL 无价差推荐、无持仓跟踪）+ 全量 88 通过；3y/7y/1y 按现生产口径（7×2）重刷统计（断言全过）：7y 169 笔 +$20,487（=旧 +$20,471 + 死仓 $16）、3y 83 笔 +$9,481、1y 33 笔 +$3,963，趋势节 0 笔。注意：回退 21×15 时趋势节同样为 0（`sim_reports_full_21x15` 未重跑，仍含旧 TREND#1 一笔；回退若执行需重跑刷新）。
+
 > **2026-09-21 变更：sim 产物目录职责切分完成（canonical 只存数，叙事按口径分目录）+ 21×15 基准刷新为 _s1 网格**
 > 起因：`sim_rpt_2023` 12 月之谜（3y 覆盖）+ 已提交 21×15（+$26,038）与现生产代码（崩盘开仓硬编码 `_s1`，`app.py:1289`）不一致。动作：① 护栏收紧：默认一律 stats-only，全文须 `--full-reports` 或 `--outdir` 非默认；② `tests/sim_reports_full/` 删全部 `sim_rpt_*.txt`（含僵尸 2022 整版），只留缓存 + 1y/3y/7y 统计/索引/交易 + macro 诊断；③ 21×15 重跑到 `tests/sim_reports_full_21x15/`（`--dte 21 --spread-w 15 --strike-step 5 --crash-y10-gate 0.4`，断言全过）：三层 **+$26,097**，170 笔序列与已提交逐笔同（开平/ETF 全同），仅期权腿差 +$59——恰为 09-11 留档的步1/步5 网格差（+$26,097 vs +$26,038），因现代码崩盘开仓恒走 `_s1`、`--strike-step` 已不影响 k1。结论：+26,097 为当前代码下 21×15 真基准（回退即用此数）；+26,038 为 _s5 网格旧代码产物，作废（git 历史可查）。验证：pytest 88；7×2 隔离目录三层 +$20,471 不变。
 
