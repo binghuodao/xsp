@@ -158,6 +158,9 @@ def _y10_gate_active():
     TNX missing -> y10_20d None -> gate OFF (silent degradation, trades proceed). Harness may override this function."""
     y = historical_stats.get("y10_20d")
     return y is not None and y >= Y10_GATE_PP
+
+
+_crash_signal_override = None  # research hook (EMA 阶梯): harness 设为零参 lambda 返回 bool, 覆盖收盘信号; None = 生产口径不变
 # 趋势交易腿已退役 (2026-09-21): 声明保留永为 None (sim/harness 只读不断言); _close_trend_spread 已删除。
 _trend_opt_expiry = None
 _trend_opt_strike = None
@@ -497,6 +500,12 @@ def send_market_report(report_type, force=False):
                 xsp_chg_pct, is_crash_signal = calc_crash(_xsp_close_t, _xsp_prev_close, _crash_drop_thresh)
                 _xsp_src = 'mix'
         except:
+            pass
+    # 研究覆盖 (EMA 阶梯, 默认 None = 生产口径不变; harness 逐日注入当日阶梯结论)
+    if _crash_signal_override is not None:
+        try:
+            is_crash_signal = bool(_crash_signal_override())
+        except Exception:
             pass
     # 调试日志：收盘对收盘明细（含来源与日期）
     _xsp_dbg = f"XSP收盘 {(_xsp_close_t if _xsp_close_t is not None else 'NA')} 前收 {(_xsp_prev_close if _xsp_prev_close is not None else 'NA')} chg {(xsp_chg_pct if xsp_chg_pct is not None else 0):.4%} sig {is_crash_signal} thr -0.5% src {_xsp_src} yf[{_yf_date_t}/{_yf_date_prev}] asof {_asof}"

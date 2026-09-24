@@ -103,6 +103,7 @@ ap.add_argument('--full-reports', action='store_true', help='write per-year sim_
 ap.add_argument('--warmup', type=int, default=60, help='indicator warmup days to skip (default 60; 0 = replay from data start 2021-03-01)')
 ap.add_argument('--backfill', action='store_true', help='load indicator frames from longest available cache (7y>3y) and replay only the --period window with warmup 0 (default off; 7y unaffected)')
 ap.add_argument('--trace-trend', action='store_true', help='diagnose why TREND layer rarely opens: per-day classify 高位暂缓/三层互斥/已在仓/漏开/融合吃掉/非趋势, write trend_trace_{PERIOD}.txt')
+ap.add_argument('--ema-ladder', type=int, default=0, help='EMA阶梯开仓 (research): 0=off 生产口径 | 1=L1 单日<-drop-thresh且收盘<EMA20 | 2=L1+L2(2日累积<-0.9%%且两日全在线下) | 3=L1+L2+L3(3日累积<-1.2%%且三日全在线下); OR关系, 经 app._crash_signal_override 注入')
 args = ap.parse_args()
 
 PERIOD = args.period
@@ -123,6 +124,9 @@ ETF_STOP = args.etf_stop
 LAYER_PRIORITY = args.layer_priority
 RISK_GATE = args.risk_gate
 RISK_MULT = args.risk_mult
+EMA_LADDER = args.ema_ladder
+EMA_L2 = 0.009  # L2: 2日累积跌幅线 (-0.9%)
+EMA_L3 = 0.012  # L3: 3日累积跌幅线 (-1.2%)
 Y10_GATE = args.crash_y10_gate
 OPT_MULT = args.opt_mult
 OPT_STANDALONE = args.opt_standalone
@@ -206,6 +210,7 @@ rsi_s = ta.rsi(spy['Close'], length=14)
 sma20_s = spy['Close'].rolling(20).mean()
 avg_vol_s = spy['Volume'].rolling(20).mean()
 ema20p_s = spy['Close'].ewm(span=20, adjust=False).mean()
+x_ema20 = xsp['Close'].ewm(span=20, adjust=False).mean()  # XSP 同源 EMA20 (阶梯用, point-in-time 切片)
 
 # ── risk-gate point-in-time features (XSP index regime; slice by index<=asof in build_snapshot) ──
 _xc = xsp['Close']
@@ -227,6 +232,45 @@ def _st(v, th):
         if v >= t:
             return s
     return 0
+
+def _ema_ladder_signal(asof):
+    """EMA 阶梯开仓信号 (point-in-time, XSP 收盘/EMA20 同源; OR 关系).
+    L1: 1d chg < -DROP_THRESH 且 C[T] < EMA[T]
+    L2: 2d cum < -0.9% 且 T-1,T 全 < 各自当日 EMA
+    L3: 3d cum < -1.2% 且 T-2..T 全 < 各自当日 EMA
+    EMA_LADDER==0 时不调用 (生产口径)."""
+    try:
+        ts = pd.Timestamp(asof)
+        xi = xsp[xsp.index <= ts]
+        if len(xi) < 3:
+            return False
+        c = xi['Close']
+        e = x_ema20[x_ema20.index <= ts]
+        if len(e) < 3:
+            return False
+        ct = float(c.iloc[-1])
+        et = float(e.iloc[-1])
+        if EMA_LADDER >= 1:
+            ct1 = float(c.iloc[-2])
+            if ct1 and (ct - ct1) / ct1 < -DROP_THRESH and ct < et:
+                return True
+        if EMA_LADDER >= 2 and len(xi) >= 3:
+            ct2 = float(c.iloc[-3])
+            ct_1 = float(c.iloc[-2])
+            et1 = float(e.iloc[-2])
+            if ct2 and ct / ct2 - 1 < -EMA_L2 and ct_1 < et1 and ct < et:
+                return True
+        if EMA_LADDER >= 3 and len(xi) >= 4:
+            ct3 = float(c.iloc[-4])
+            ct_2 = float(c.iloc[-3])
+            ct_1 = float(c.iloc[-2])
+            et2 = float(e.iloc[-3])
+            et1 = float(e.iloc[-2])
+            if ct3 and ct / ct3 - 1 < -EMA_L3 and ct_2 < et2 and ct_1 < et1 and ct < et:
+                return True
+    except Exception:
+        return False
+    return False
 
 def build_snapshot(asof):
     """Rebuild app.historical_stats / price / spxl / prev_close as of `asof` (real data)."""
@@ -320,6 +364,11 @@ def build_snapshot(asof):
             raise ValueError(f'unknown --risk-gate {RISK_GATE}')
     app._risk_off_active = (lambda f=bool(flag): f)
     app._y10_gate_active = (lambda: (False if Y10_GATE <= 0 else hs.get('y10_20d', 0.0) >= Y10_GATE))
+    if EMA_LADDER > 0:
+        _lad = _ema_ladder_signal(asof)
+        app._crash_signal_override = (lambda v=_lad: v)
+    else:
+        app._crash_signal_override = None
     app._crash_etf_size = int(ETF_SIZE['CRASH'] * (RISK_MULT if flag else 1.0))
     sp = spxl[spxl.index <= pd.Timestamp(asof)]
     spxl_price = float(sp['Close'].iloc[-1])
@@ -411,6 +460,7 @@ def init_state():
     app._crash_size_mult = RISK_MULT
     app._crash_etf_size = int(ETF_SIZE['CRASH'] * RISK_MULT)
     app._risk_off_active = lambda: False
+    app._crash_signal_override = None  # EMA 阶梯默认关 (build_snapshot 逐日注入)
     app._trend_opt_pnl = 0.0
     app._latest_report = {}
     app._morning_report_date = ''
@@ -1133,6 +1183,13 @@ def main():
                     _is_crash_prev_re = (cp_r - cp2_r) / cp2_r < -DROP_THRESH if cp2_r else False
         except Exception:
             pass
+        if EMA_LADDER > 0:
+            # 阶梯口径: 同价重开的前日信号亦按阶梯算 (前一交易日收盘信号)
+            try:
+                _xi_p = xsp[xsp.index < pd.Timestamp(asof)]
+                _is_crash_prev_re = _ema_ladder_signal(_xi_p.index[-1].date()) if len(_xi_p) else False
+            except Exception:
+                _is_crash_prev_re = False
         try:
             cr_closed = prev_fp is not None and prev_fp[6] is not None and now_fp[6] is None
             no_layer_after_close = now_fp[0] is None and now_fp[1] is None and now_fp[5] is None and now_fp[6] is None
@@ -1392,6 +1449,8 @@ def main():
     bt.append(f'崩盘出场模式: {CRASH_MODE} (首阳退半 {CRASH_HALF:.0%} | 止损-{STOP_PCT:.1%} | 再进≤入场×{REENTRY_PCT:.2f} | 价差{SPREAD_W}点 {DTE}DTE)')
     if RISK_GATE != 'none':
         bt.append(f'熊市门: {RISK_GATE} × mult {RISK_MULT:g} (ON=门亮时崩盘仓缩至 {RISK_MULT:.0%})')
+    if EMA_LADDER > 0:
+        bt.append(f'EMA阶梯: L{EMA_LADDER} (L1 单日<-{DROP_THRESH:.1%}且收盘<EMA20' + (' | L2 2日累积<-0.9%且两日全线下' if EMA_LADDER >= 2 else '') + (' | L3 3日累积<-1.2%且三日全线下' if EMA_LADDER >= 3 else '') + ')')
     bt.append('═' * 70)
     bt.append('')
     LAYER_NAME = {'TREND': '趋势 ETF($5k SPXL)+14DTE CALL价差',
